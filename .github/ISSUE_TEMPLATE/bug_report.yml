@@ -1,0 +1,119 @@
+name: Bug report
+description: Report a reproducible problem with ComiCode
+title: '[bug] '
+labels: ['bug', 'needs-triage']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please do not include real API keys, tokens,
+        private source code, database files, or full logs containing secrets.
+        Redact values as `sk-REDACTED`.
+
+  - type: input
+    id: version
+    attributes:
+      label: ComiCode version
+      description: Output of `comicode --version`.
+      placeholder: 0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Node.js version
+      description: Output of `node --version`. ComiCode requires 22.13 or newer.
+      placeholder: v24.11.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Other (describe below)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installation method
+      options:
+        - npm install -g github:OWNER/comicode
+        - npm install -g ./comicode-*.tgz
+        - npm link / local checkout
+        - Other (describe below)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider involved
+      options:
+        - Gemini
+        - Groq
+        - OpenRouter
+        - OpenAI
+        - Custom OpenAI-compatible endpoint
+        - Custom Gemini-compatible endpoint
+        - Local endpoint (Ollama, LM Studio, vLLM, LiteLLM)
+        - Not provider-specific
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command or TUI action
+      description: The exact command or key sequence that triggered the problem.
+      render: shell
+      placeholder: comicode run "fix the failing test" --yes
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Minimal steps that reliably reproduce the problem.
+      placeholder: |
+        1. Connect two profiles
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the error message, pause reason, or exit code. Redact secrets.
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Paste `comicode doctor --json` with secrets and private paths redacted, if available.
+      render: json
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Screenshots, terminal captures, relevant settings, or provider reset behavior.

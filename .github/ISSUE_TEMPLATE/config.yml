@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/YOUR_USERNAME/comicode/security/advisories/new
+    about: Report credential, path-safety, or command-execution issues privately. Do not open a public issue.
+  - name: Questions and setup help
+    url: https://github.com/YOUR_USERNAME/comicode/discussions
+    about: Ask installation, provider, or usage questions.
+  - name: Read the documentation
+    url: https://github.com/YOUR_USERNAME/comicode#readme
+    about: Installation, provider configuration, routing, and CLI reference.

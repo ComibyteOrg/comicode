@@ -1,0 +1,144 @@
+import { z } from 'zod';
+import type { AccessClassification } from './types.js';
+
+export const ACCESS_CLASSIFICATIONS: AccessClassification[] = [
+  'free-confirmed',
+  'free-tier',
+  'paid',
+  'user-free',
+  'user-paid',
+  'unknown',
+  'unavailable',
+];
+
+export const AccessClassificationSchema = z.enum([
+  'free-confirmed',
+  'free-tier',
+  'paid',
+  'user-free',
+  'user-paid',
+  'unknown',
+  'unavailable',
+]);
+
+export const RoutingPolicySchema = z.object({
+  /** Prefer models classified as free when choosing a fallback. */
+  preferFree: z.boolean().default(true),
+  /** Try other profiles of the same provider before moving to another provider. */
+  preferSameProvider: z.boolean().default(true),
+  /** Bias selection toward models with stronger coding metadata. */
+  preferCoding: z.boolean().default(true),
+  /** Allow fallback to models classified as paid. Explicit selections are still honored. */
+  allowPaid: z.boolean().default(false),
+  /** Allow fallback to models with unknown pricing/access. */
+  allowUnknownAccess: z.boolean().default(true),
+  /** Maximum fallback candidates considered per routing pass. */
+  maxFallbacks: z.number().int().min(1).max(20).default(6),
+  /** Maximum retry attempts against a single candidate (excluding retry-after waits). */
+  maxRetriesPerCandidate: z.number().int().min(0).max(5).default(1),
+  /** Base delay for exponential backoff, in milliseconds. */
+  retryBaseDelayMs: z.number().int().min(100).max(60_000).default(1000),
+  /** Maximum backoff delay, in milliseconds. */
+  retryMaxDelayMs: z.number().int().min(100).max(300_000).default(30_000),
+  /** Provider IDs to prefer, in order. */
+  preferredProviders: z.array(z.string()).default([]),
+  /** Provider IDs that must never be selected. */
+  excludedProviders: z.array(z.string()).default([]),
+  /** Minimum context window required for fallback models. */
+  minContextWindow: z.number().int().min(0).default(0),
+});
+
+export const AgentSettingsSchema = z.object({
+  maxSteps: z.number().int().min(1).max(200).default(40),
+  /** Fraction of the model context window that may be used for prompt context. */
+  contextBudgetRatio: z.number().min(0.2).max(0.9).default(0.6),
+  maxToolOutputChars: z.number().int().min(1000).max(200_000).default(14_000),
+  autoApproveReadOnly: z.boolean().default(true),
+  autoApproveFileEdits: z.boolean().default(false),
+  autoApproveCommands: z.boolean().default(false),
+  allowSecretAccess: z.boolean().default(false),
+  testCommand: z.string().nullable().default(null),
+  lintCommand: z.string().nullable().default(null),
+  buildCommand: z.string().nullable().default(null),
+  collaboration: z
+    .object({
+      enabled: z.boolean().default(false),
+      plannerProfileId: z.string().nullable().default(null),
+      reviewerProfileId: z.string().nullable().default(null),
+      reviewChanges: z.boolean().default(true),
+    })
+    .prefault({}),
+});
+
+export const SettingsSchema = z.object({
+  theme: z.enum(['dark', 'dark-dim']).default('dark'),
+  accent: z.enum(['cyan', 'blue', 'green', 'magenta', 'orange']).default('cyan'),
+  routing: RoutingPolicySchema.prefault({}),
+  agent: AgentSettingsSchema.prefault({}),
+  privacy: z
+    .object({
+      /** ComiCode sends no telemetry. This field documents the guarantee. */
+      telemetry: z.literal(false).default(false),
+    })
+    .prefault({}),
+});
+
+export type AppSettings = z.infer<typeof SettingsSchema>;
+export type RoutingPolicy = z.infer<typeof RoutingPolicySchema>;
+export type AgentSettings = z.infer<typeof AgentSettingsSchema>;
+
+export const DEFAULT_SETTINGS: AppSettings = SettingsSchema.parse({});
+
+/** Deep merge persisted settings with defaults, dropping unknown keys via Zod. */
+export function parseSettings(raw: unknown): AppSettings {
+  const merged = deepMerge(DEFAULT_SETTINGS as unknown as Record<string, unknown>, raw);
+  return SettingsSchema.parse(merged);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export function deepMerge<T extends Record<string, unknown>>(base: T, override: unknown): T {
+  if (!isRecord(override)) return base;
+  const out: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(override)) {
+    if (isRecord(value) && isRecord(out[key])) {
+      out[key] = deepMerge(out[key] as Record<string, unknown>, value);
+    } else if (value !== undefined) {
+      out[key] = value;
+    }
+  }
+  return out as T;
+}
+
+export const SETTING_PATHS = [
+  'routing.preferFree',
+  'routing.preferSameProvider',
+  'routing.preferCoding',
+  'routing.allowPaid',
+  'routing.allowUnknownAccess',
+  'routing.maxFallbacks',
+  'routing.maxRetriesPerCandidate',
+  'routing.retryBaseDelayMs',
+  'routing.retryMaxDelayMs',
+  'routing.minContextWindow',
+  'routing.preferredProviders',
+  'routing.excludedProviders',
+  'agent.maxSteps',
+  'agent.contextBudgetRatio',
+  'agent.maxToolOutputChars',
+  'agent.autoApproveReadOnly',
+  'agent.autoApproveFileEdits',
+  'agent.autoApproveCommands',
+  'agent.allowSecretAccess',
+  'agent.testCommand',
+  'agent.lintCommand',
+  'agent.buildCommand',
+  'agent.collaboration.enabled',
+  'agent.collaboration.plannerProfileId',
+  'agent.collaboration.reviewerProfileId',
+  'agent.collaboration.reviewChanges',
+  'theme',
+  'accent',
+] as const;

@@ -1,0 +1,67 @@
+name: Feature request
+description: Suggest a capability, provider integration, or improvement
+title: '[feature] '
+labels: ['enhancement', 'needs-triage']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ComiCode is intentionally vendor-neutral. New providers should usually be
+        expressible through custom endpoint configuration rather than a new
+        privileged adapter. See `docs/provider-adapters.md`.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what blocks you today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the CLI flags, settings, TUI behavior, or adapter contract you expect.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing flags, providers, workarounds, or why custom endpoint config is insufficient.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Provider / adapter
+        - Routing and quota handling
+        - Agent tools and context
+        - Persistence and resume
+        - CLI
+        - Terminal UI
+        - Safety and credentials
+        - Documentation
+        - Tests / CI
+        - Other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Compatibility
+      options:
+        - label: This should work on Windows, macOS, and Linux.
+          required: false
+        - label: This should not require paid models by default.
+          required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Examples from other tools, API documentation links, or mock responses.

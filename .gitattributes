@@ -1,0 +1,7 @@
+# Normalize line endings so the repository is consistent across Windows,
+# Linux, and macOS checkouts.
+* text=auto eol=lf
+
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
