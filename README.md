@@ -39,6 +39,9 @@ npm install -g github:ComibyteOrg/comicode
 The install is small — the CLI bundle is under 1 MB with a handful of
 lightweight dependencies, and no browser is ever downloaded.
 
+Then just run it — `comicode` opens the interactive workspace. On first
+launch it walks you through connecting a provider.
+
 ## First run: connect a provider
 
 ComiCode needs at least one provider before it can answer.
