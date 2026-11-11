@@ -1,317 +1,197 @@
 # ComiCode
 
-ComiCode is an open-source, multi-provider AI coding agent for the terminal. It can inspect a project, write and patch files, run commands and tests, keep a persistent task history, and keep working across provider quotas by routing to the next eligible model.
+An open-source AI coding agent for your terminal. It reads and edits your
+project, runs commands and tests, keeps every task resumable, and keeps
+working when a provider hits its quota by switching to your next connected
+model — with your approval.
 
 ![ComiCode workspace](docs/screenshots/screen-1.png)
 
-It is not tied to a fixed list of AI vendors. Gemini, Groq, OpenRouter, and OpenAI are first-class providers, and **any OpenAI-compatible or Gemini-compatible endpoint can be added with its own base URL, auth header, model paths, and extra headers**. Local servers such as Ollama, LM Studio, vLLM, and LiteLLM work without an API key.
+Works with Gemini, Groq, OpenRouter, OpenAI, and **any OpenAI- or
+Gemini-compatible endpoint** — including local servers like Ollama and
+LM Studio with no API key.
 
-> **Repository:** https://github.com/ComibyteOrg/comicode
-
-## Highlights
-
-- **Real coding-agent loop** — inspect, search, read, create, edit, delete, apply unified patches, run commands, tests, lint, and builds, inspect diffs, and finish with a summary.
-- **Quota-aware failover** — tries the selected model first, then other profiles of the same provider, then other providers, preferring free capacity. Pauses safely when nothing is eligible and resumes later.
-- **Honest error handling** — distinguishes daily quota, rate limits, outages, network failures, auth problems, permission errors, missing models, context-length limits, billing restrictions, and unsupported tool calling. It honors `Retry-After` and provider reset headers and never invents reset times.
-- **Persistent tasks** — SQLite-backed tasks, transcripts, attempt history, checkpoints, and project-state fingerprints. Resume after a quota pause, crash, or terminal close.
-- **Bring any platform** — configurable base URL, API style, credential header/prefix, chat and model paths, max-token parameter, extra headers, no-auth local endpoints, and manual model IDs when discovery is unavailable.
-- **Secure credentials** — OS credential storage where available (Windows DPAPI, macOS Keychain, Linux Secret Service) with an AES-256-GCM encrypted-file fallback. API keys are never stored in plaintext in SQLite or exported configuration.
-- **Polished Ink terminal UI** — workspace, providers, models, history, usage, settings, command palette, confirmations, and live routing/usage feedback.
-- **No telemetry** — ComiCode sends no analytics or usage data anywhere.
+> Repository: https://github.com/ComibyteOrg/comicode
 
 ## Requirements
 
-- Node.js **22.13+** (Node 24 LTS recommended; ComiCode uses the built-in `node:sqlite` module, which requires the 22.13 floor to run without a flag).
-- Windows, macOS, or Linux.
-- At least one provider profile and API key, or a local no-auth endpoint.
+- Node.js **22.13+** (Node 24 recommended)
+- Windows, macOS, or Linux
+- One provider API key, or a local no-auth endpoint
 
 ## Install
-
-Install ComiCode once as a global CLI. npm puts a small `comicode` launcher in
-its global binary directory (usually already on `PATH`), so the command works
-from any project folder and any new terminal.
-
-The package is not published on npm yet. From GitHub:
-
-```bash
-npm install -g github:ComibyteOrg/comicode
-comicode --version
-```
-
-The install is small: the CLI bundle is under 1 MB and its runtime
-dependencies are a handful of lightweight packages (Ink, React,
-Commander, Zod). Playwright browsers are **never** downloaded —
-`verify_ui` uses whatever browser is already on the machine or a
-project-local Playwright install.
-
-`dist/` is gitignored, so npm builds it during installation with the package's
-`prepare` script. Keep git's default branch installable and do not use
-`--ignore-scripts`.
-
-### Updating
-
-```bash
-comicode update --check   # report only, don't install
-comicode update           # install the latest GitHub release globally
-```
-
-`comicode update` compares your version against the latest GitHub release
-(or tag) and runs `npm install -g github:ComibyteOrg/comicode` for you.
-When ComiCode is published to npm it will prefer the npm registry
-transparently.
-
-Share a build without repository access by installing the tarball:
-
-```bash
-npm pack                                    # run in the source checkout
-npm install -g ./comicode-0.1.0.tgz         # run on the other machine
-```
-
-For a local development checkout:
 
 ```bash
 git clone https://github.com/ComibyteOrg/comicode.git
 cd comicode
 npm install
 npm install -g .    # builds and installs the global command
-# or: npm link      # keeps the global command pointed at this checkout
+# or: npm link      # keeps the command pointed at this checkout
 comicode --version
 ```
 
-If the command is not found, open a new terminal, run
-`where comicode` (Windows) or `which comicode` (macOS/Linux), and compare it with
-`npm config get prefix`. See [docs/install.md](docs/install.md) for PATH,
-permission, version-manager, PowerShell, update, and uninstall guidance.
-
-## Quick start
+Prefer not to clone? Install straight from GitHub:
 
 ```bash
-# 1. Connect a provider profile. The key is hidden and stored securely.
-comicode providers add --provider gemini --name "Gemini personal" --api-key-env GEMINI_API_KEY
-comicode providers add --provider groq --name "Groq free" --api-key-env GROQ_API_KEY
+npm install -g github:ComibyteOrg/comicode
+```
 
-# 2. Discover models (or add one manually when /models is unavailable).
+The install is small — the CLI bundle is under 1 MB with a handful of
+lightweight dependencies, and no browser is ever downloaded.
+
+## First run: connect a provider
+
+ComiCode needs at least one provider before it can answer.
+
+```bash
+# Interactive — easiest: pick a provider, paste your key, done
+comicode connect
+
+# Or from the CLI directly (key is stored in your OS credential store):
+comicode providers add --provider gemini --name "Gemini personal"
+comicode providers add --provider groq   --name "Groq free"
+```
+
+Then discover the models your key can use:
+
+```bash
 comicode models refresh
 comicode models list --free
+```
 
-# 3. Start a task in the current project.
+![Provider selection](docs/screenshots/screen-2.png)
+
+## Use it
+
+**Interactive (recommended):** run `comicode` in any project folder.
+
+- Type what you want — "fix the failing test", "add a settings page" — and
+  the agent inspects your code, plans, edits files, runs checks, and
+  summarizes. Every prompt continues the same task thread.
+- `ctrl+m` picks the model · `tab`/`shift+tab` or `/mode` cycles agent
+  modes · `ctrl+k` opens the command palette · type `/` for commands.
+- While it works you can keep typing — messages queue and run in order.
+- Approvals appear as a small picker in the input area: arrows + Enter, or
+  click. `y`/`a`/`n` shortcuts still work.
+- Scroll the transcript with the mouse wheel, `PgUp`/`PgDn`, or `ctrl+j`
+  to jump between your questions.
+
+![Agent mode selection](docs/screenshots/screen-3.png)
+
+**One-shot from the shell:**
+
+```bash
 comicode run "Find the failing test, fix it, and run the suite"
+```
 
-# 4. If quotas run out, ComiCode pauses with diagnostics. Resume later.
+**Resume later** — tasks survive crashes, quota pauses, and closed terminals:
+
+```bash
 comicode tasks list
 comicode resume <task-id>
 ```
 
-Run `comicode` with no arguments in an interactive terminal to open the TUI. In a non-interactive shell it prints help instead.
+## What happens when a provider limits you
 
-### Safe defaults
+ComiCode doesn't stop at the first quota error:
 
-File edits, shell commands, dangerous commands, secret-file access, and paid fallbacks are gated. For non-interactive runs:
+1. Rotates through **multiple API keys** on the same profile (add several
+   comma-separated keys when connecting).
+2. Tries other **models on the same provider**.
+3. Offers to switch **providers** — it asks before using a different one.
+4. Pauses with progress saved if everything is exhausted — resume anytime.
 
-```bash
-comicode run "update the changelog" --yes
-comicode run "run the tests and fix failures" --yes --allow-commands
-comicode run "use the paid model for this one run" --allow-paid
-```
+Paid models are never used silently; enable them per-run with
+`--allow-paid` or `/allow-paid on`.
 
-Dangerous shell commands additionally require `--allow-dangerous-commands`. Prefer interactive mode when you want to review diffs and commands before they run.
+## Agent modes
+
+Twelve modes adapt tools and prompting to the task — `auto` (default)
+classifies each request and picks one for you:
+
+`build` `plan` `debug` `architect` `review` `refactor` `test` `docs`
+`design` `security` `explain`
+
+`plan`, `review`, `security`, and `explain` are read-only — they can't
+modify files. Before finishing code changes, the agent is nudged to run
+your configured test/lint/build commands, and a `verify_ui` tool can
+screenshot web UIs in a real headless browser when Playwright is
+available.
 
 ## Any AI platform
 
-![Provider selection](docs/screenshots/screen-2.png)
-
-### OpenAI-compatible endpoint
-
-```bash
-comicode providers add \
-  --provider custom \
-  --name "My gateway" \
-  --base-url https://gateway.example.com/v1 \
-  --api-key-env MY_GATEWAY_KEY \
-  --default-model my-coding-model \
-  --api-style openai-compatible \
-  --access unknown
-```
-
-### Custom auth header
+Built-in providers: Gemini, Groq, OpenRouter, OpenAI. Everything else is a
+custom endpoint — OpenAI-compatible, Gemini-compatible, custom auth
+headers, custom model paths, local no-auth servers.
 
 ```bash
-comicode providers add \
-  --provider custom \
-  --name "Internal Azure-style gateway" \
-  --base-url https://ai.example.com \
-  --auth-header api-key \
-  --auth-prefix "" \
-  --chat-path /openai/deployments/my-model/chat/completions \
-  --models-path /openai/models \
-  --max-tokens-param max_completion_tokens \
-  --extra-header "X-Organization: platform-team" \
-  --api-key-env INTERNAL_AI_KEY \
-  --default-model my-model
-```
-
-### Local server with no auth
-
-```bash
-comicode providers add \
-  --provider custom \
+comicode providers presets                 # see ready-made presets
+comicode providers add --provider custom \
   --name "Ollama local" \
   --base-url http://localhost:11434/v1 \
-  --no-auth \
-  --default-model qwen2.5-coder:14b \
-  --access user-free \
-  --refresh
+  --no-auth --default-model qwen2.5-coder:14b
 ```
 
-### Gemini-compatible endpoint
+More examples (custom gateways, auth headers, manual model IDs):
+[docs/provider-adapters.md](docs/provider-adapters.md)
+
+## Common commands
+
+| Command | What it does |
+| --- | --- |
+| `comicode` | Open the interactive workspace |
+| `comicode run "<task>"` | Run a task once, non-interactively |
+| `comicode resume <id>` | Resume a paused/interrupted task |
+| `comicode providers ...` | Add, edit, test, enable/disable profiles |
+| `comicode models ...` | List, refresh, select, classify models |
+| `comicode tasks` / `history` / `usage` | Inspect tasks, transcripts, token usage |
+| `comicode settings ...` | Routing, agent, and UI settings |
+| `comicode doctor` | Diagnose Node, storage, credentials, providers |
+| `comicode update [--check]` | Install the latest release |
+| `comicode data ...` | Storage stats, cleanup, full data deletion |
+
+Most commands accept `--json`. Run `comicode <command> --help` for flags.
+Inside the TUI, `/help` lists everything.
+
+## Updating
 
 ```bash
-comicode providers add \
-  --provider custom \
-  --name "Gemini-compatible proxy" \
-  --base-url https://proxy.example.com/v1beta \
-  --api-style gemini \
-  --auth-header x-goog-api-key \
-  --auth-prefix "" \
-  --api-key-env PROXY_KEY \
-  --default-model gemini-2.5-flash
+comicode update --check   # see if a newer release exists
+comicode update           # install it globally
 ```
 
-Presets for DeepSeek, Mistral, xAI, Together, Fireworks, Cerebras, Ollama, LM Studio, vLLM, Azure, and LiteLLM are available with `comicode providers presets`. Presets are convenience defaults only — every endpoint uses the same configurable transports.
+## Your data
 
-When model discovery is disabled or unavailable, add models by ID:
+Everything lives outside your repos:
 
-```bash
-comicode models add "My gateway" my-coding-model --default
-comicode models select my-coding-model
-```
+| Platform | Location |
+| --- | --- |
+| Windows | `%APPDATA%\comicode` |
+| macOS | `~/Library/Application Support/comicode` |
+| Linux | `~/.config/comicode` |
 
-See [docs/provider-adapters.md](docs/provider-adapters.md) for every configuration field and transport detail.
+Contains `comicode.db` (SQLite: tasks, history, settings, usage), encrypted
+credentials, and logs. `comicode data delete-all` wipes it completely.
+API keys go to your OS credential store — never plaintext in the database,
+never exported, never sent anywhere except your chosen provider.
 
-## Routing and quotas
+## Safety
 
-For each call ComiCode builds a capability-aware chain:
-
-1. The explicitly selected model/profile (honored even when paid or unknown).
-2. Other profiles of the same provider, including the current profile's other catalog models.
-3. Other providers, with preferred providers and free classifications ranked first.
-4. Capability filtering: tool calling is required for coding tasks; vision is required for vision tasks; policy context minimums apply.
-5. Policy filters: paid models are blocked unless `routing.allowPaid` is enabled; unknown access is controlled by `routing.allowUnknownAccess`.
-
-On failure:
-
-- **Rate limit / outage / network** — retries with exponential backoff and jitter, honoring provider reset times up to `routing.retryMaxDelayMs`, then falls back.
-- **Daily quota** — records a persistent limit for that profile/model and falls back immediately. A provider-supplied reset time is used; otherwise a short cooldown prevents an endless retry loop.
-- **Auth, permission, billing** — quarantines the whole profile and falls back.
-- **Model unavailable / unsupported tools** — blocks that model/profile for the task and falls back.
-- **Context length** — retries once with a reduced context budget, then falls back.
-- **Nothing eligible** — pauses the task, saves a checkpoint and diagnostics, prints the resume command, and never silently switches to a paid model.
-
-`routing.allowPaid` is a persisted setting; `--allow-paid` and `/allow-paid on` in the TUI apply per run / interactively. Explicit user selections are always attempted first.
-
-## Terminal UI
-
-Launch with `comicode` on a TTY.
-
-| Key                | Action                                                     |
-| ------------------ | ---------------------------------------------------------- |
-| `←` / `→` or `tab` | Cycle screens (workspace: only when the composer is empty) |
-| `shift+tab`        | Previous screen                                            |
-| `ctrl+k`           | Command palette                                            |
-| `enter`            | Send a message / activate                                  |
-| `esc`              | Pause a running agent, clear a filter, or go back          |
-| `ctrl+c`           | Quit (ignored while a run is active; pause first)          |
-
-Workspace commands: `/help`, `/workspace`, `/providers`, `/models`, `/history`, `/usage`, `/settings`, `/profile <name>`, `/model <name>`, `/resume`, `/allow-paid on|off`, `/new`, `/clear`, `/exit`.
-
-![Agent mode selection](docs/screenshots/screen-3.png)
-
-Twelve agent modes (build, plan, debug, architect, review, refactor, test, docs, design, security, explain, and auto) adapt tool access and prompting to the task — `auto` classifies each request and picks the right workflow.
-
-Screens keep their state mounted, so switching tabs does not cancel a running task. File writes, deletes, commands, dangerous commands, and secret reads show an approval dialog with a diff when relevant.
-
-## CLI reference
-
-| Command                     | Purpose                                                                        |
-| --------------------------- | ------------------------------------------------------------------------------ |
-| `comicode`                  | Open the TUI on a TTY, otherwise print help                                    |
-| `comicode run <request...>` | Run a coding task in the current project                                       |
-| `comicode resume <task>`    | Resume a paused or interrupted task                                            |
-| `comicode chat`             | Multi-turn coding conversation in the current project                          |
-| `comicode init [name]`      | Initialize project state and detect commands                                   |
-| `comicode providers ...`    | Add, edit, list, test, refresh, export/import, enable/disable, remove profiles |
-| `comicode models ...`       | List, refresh, select, classify, add, remove, and inspect models               |
-| `comicode auth ...`         | Show the credential backend, set/remove keys, show per-profile status          |
-| `comicode tasks ...`        | List tasks, show details, list checkpoints, delete tasks                       |
-| `comicode history`          | Task history; `--routing` shows routing events                                 |
-| `comicode usage`            | Token usage, cost estimates, and active limits                                 |
-| `comicode limits`           | Show or clear provider limits                                                  |
-| `comicode settings ...`     | List/get/set/reset routing, agent, and UI settings                             |
-| `comicode config ...`       | Export/import non-secret configuration                                         |
-| `comicode data ...`         | Database stats, compaction, and full local-data deletion                       |
-| `comicode doctor`           | Diagnose Node, storage, credentials, providers, and project state              |
-| `comicode completion`       | Print shell completion guidance                                                |
-
-Most read commands support `--json`. Run `comicode <command> --help` for exact flags.
-
-## Persistence
-
-State lives outside your repositories:
-
-| Platform | Default location                                      |
-| -------- | ----------------------------------------------------- |
-| Windows  | `%APPDATA%\comicode`                                  |
-| macOS    | `~/Library/Application Support/comicode`              |
-| Linux    | `$XDG_CONFIG_HOME/comicode` (or `~/.config/comicode`) |
-
-Contents include `comicode.db` (SQLite), `credentials.enc.json` + `master.key` when the encrypted fallback is used, `secrets.index.json`, and `logs/`.
-
-Overrides: `COMICODE_HOME`, `COMICODE_DB_PATH`. Project state created by `comicode init` lives in `<project>/.comicode/`.
-
-`comicode data delete-all` removes profiles, tasks, usage, limits, settings, and stored credentials. `comicode config export` never includes credentials.
-
-## Security and privacy
-
-- No telemetry.
-- API keys are masked in output, redacted from errors/logs, and removed from exported configuration.
-- Credential backends: Windows DPAPI, macOS Keychain, Linux `secret-tool`, encrypted AES-256-GCM file fallback with `master.key` permissions, or environment variables via `apiKeyEnv`.
-- Path traversal, symlink escapes, protected secret files, dangerous shell commands, sanitized environments, timeouts, and process-tree killing are handled by the safety layer.
-- Agent file writes, edits, deletes, commands, and secret reads require explicit approval unless you opt into auto-approval for that run or in settings.
-
-Report vulnerabilities privately using the process in [SECURITY.md](SECURITY.md).
+File writes, deletes, shell commands, secret files, and paid fallbacks all
+ask for approval first — pick "always allow" if you trust a pattern.
+ComiCode blocks path traversal, protects `.env`/key files, sanitizes
+command environments, and sends **no telemetry**.
 
 ## Development
 
 ```bash
 npm install
-npm run typecheck
-npm run lint
-npm test
-npm run build
-npm run verify        # typecheck + lint + tests + build
+npm run verify    # typecheck + lint + tests + build
 ```
 
-Tests use injected fake adapters and in-memory SQLite; no API keys are required. Real-provider checks are manual and gated by environment variables — see [docs/provider-adapters.md](docs/provider-adapters.md#testing-real-providers).
-
-```bash
-# Optional real-credential smoke tests (never run in CI)
-set COMICODE_REAL_PROVIDER_TESTS=1
-set GEMINI_API_KEY=...
-npm run test:integration
-```
-
-Project layout and internals: [docs/architecture.md](docs/architecture.md).
-
-## Limitations
-
-- Cost figures are catalog estimates unless a provider reports usage; providers bill independently.
-- Free-tier model classifications can change. ComiCode labels confirmed-free, free-tier, and unknown access separately and never assumes a paid model is free.
-- Providers differ in tool-calling quality and streaming quirks. Use `comicode models classify` and profile settings to reflect what your account actually allows.
-- `node:sqlite` is still marked experimental by Node.js; ComiCode filters its warning at the CLI entry point.
-
-## Contributing
-
-Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). See [CHANGELOG.md](CHANGELOG.md) for release notes.
+Tests use fake adapters and in-memory SQLite — no API keys needed.
+Architecture: [docs/architecture.md](docs/architecture.md) ·
+Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## License
 
