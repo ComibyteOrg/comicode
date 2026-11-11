@@ -47,7 +47,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "verify": "npm run typecheck && npm run lint && npm run test && npm run build",
-    "prepare": "npm run build",
+    "prepare": "node -e \"try{require('fs').accessSync('dist/cli.js')}catch{require('child_process').execSync('npm run build',{stdio:'inherit'})}\"",
     "prepublishOnly": "npm run verify"
   },
   "dependencies": {
