@@ -557,20 +557,27 @@ export function registerSystemCommands(program: Command): void {
         return;
       }
       const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-      console.log(dim(`Installing globally from github:${repo} …`));
-      const result = await runProcess(npmCmd, ['install', '-g', `github:${repo}`], {
-        timeoutMs: 600_000,
-      });
-      if (result.code === 0) {
+      // Install the exact release tag when one exists; fall back to main HEAD.
+      const specs = [`github:${repo}#${latest}`, `github:${repo}`];
+      let installed = false;
+      for (const spec of specs) {
+        console.log(dim(`Installing ${spec} …`));
+        const result = await runProcess(npmCmd, ['install', '-g', spec], {
+          timeoutMs: 600_000,
+        });
+        if (result.code === 0) {
+          installed = true;
+          break;
+        }
+        const tail = result.stderr.trim().split('\n').slice(-3).join('\n');
+        if (tail) console.log(dim(tail));
+      }
+      if (installed) {
         console.log(success(`Updated to ${latest}. Restart ComiCode to use the new version.`));
       } else {
         console.log(
-          danger(
-            `Update failed (exit ${result.code ?? 'unknown'}). Run manually: npm install -g github:${repo}`,
-          ),
+          danger(`Update failed. Run manually: npm install -g github:${repo}`),
         );
-        const tail = result.stderr.trim().split('\n').slice(-5).join('\n');
-        if (tail) console.log(dim(tail));
       }
     });
 }

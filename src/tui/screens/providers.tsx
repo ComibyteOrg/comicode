@@ -270,6 +270,8 @@ interface ProvidersProps {
   onBack: () => void;
   /** Render inside a centered modal dialog instead of a full screen. */
   embedded?: boolean;
+  /** When provided, "add provider" delegates to the shared connect flow. */
+  onRequestConnect?: () => void;
 }
 
 function ProvidersFrame({
@@ -314,6 +316,7 @@ export function ProvidersScreen({
   onCycleScreen,
   onBack,
   embedded = false,
+  onRequestConnect,
 }: ProvidersProps): React.ReactElement {
   const { rows, columns } = useLayout();
   const navHint = embedded ? '' : ' ←/→ or tab screens';
@@ -339,6 +342,10 @@ export function ProvidersScreen({
   const current = profiles[Math.min(selected, Math.max(0, profiles.length - 1))] ?? null;
 
   const startAdd = (): void => {
+    if (onRequestConnect) {
+      onRequestConnect();
+      return;
+    }
     setKindIndex(0);
     setError(null);
     setMode({ kind: 'wizard', draft: draftFromKind(kinds[0]!), step: 'kind' });

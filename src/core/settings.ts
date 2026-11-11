@@ -100,6 +100,8 @@ export const SettingsSchema = z.object({
       shortcuts: z.record(z.string(), z.string()).default({}),
       /** Color theme name — see THEMES in src/tui/theme.ts. */
       theme: z.string().default('obsidian'),
+      /** Mouse reporting for wheel-scroll/click. Disable to restore native terminal selection. */
+      mouseScroll: z.boolean().default(true),
     })
     .prefault({}),
   routing: RoutingPolicySchema.prefault({}),
@@ -182,4 +184,5 @@ export const SETTING_PATHS = [
   'agent.collaboration.reviewChanges',
   'theme',
   'accent',
+  'ui.mouseScroll',
 ] as const;

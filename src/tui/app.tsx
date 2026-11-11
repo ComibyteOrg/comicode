@@ -503,6 +503,9 @@ function App({ context }: { context: AppContext }): React.ReactElement {
           notify={notify}
           refreshData={refreshData}
           onStatusChange={setStatus}
+          onRequestConnect={() =>
+            setDialogStack((stack) => [...stack.slice(0, -1), 'connect'])
+          }
         />
       ) : null}
 

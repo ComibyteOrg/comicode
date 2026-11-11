@@ -323,7 +323,9 @@ export function Workspace({
   }, [running]);
 
   // Mouse wheel scrolls the transcript (wheel-up = older, wheel-down = newer).
+  // Disable via settings ui.mouseScroll=false to restore native copy/select.
   useEffect(() => {
+    if (context.store.getSettings().ui.mouseScroll === false) return;
     return enableMouseWheel((direction) => {
       if (!active) return;
       setScrollOffset((value) =>

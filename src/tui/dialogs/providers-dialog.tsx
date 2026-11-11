@@ -9,6 +9,7 @@ interface ProvidersDialogProps {
   notify: (message: string) => void;
   refreshData: () => void;
   onStatusChange?: (status: AgentStatus) => void;
+  onRequestConnect?: () => void;
 }
 
 /**
@@ -22,6 +23,7 @@ export function ProvidersDialog({
   notify,
   refreshData,
   onStatusChange,
+  onRequestConnect,
 }: ProvidersDialogProps): React.ReactElement {
   return (
     <ProvidersScreen
@@ -33,6 +35,7 @@ export function ProvidersDialog({
       onCycleScreen={() => {}}
       onBack={onClose}
       embedded
+      onRequestConnect={onRequestConnect}
     />
   );
 }

@@ -337,12 +337,12 @@ export function classifyProviderError(input: ClassifyInput): ProviderError {
     if (/invalid.*(?:api key|key)|api key not valid/i.test(text)) {
       return new ProviderError({ ...base, category: 'invalid_api_key', retryable: false });
     }
-    if (/model.*(?:not found|does not exist|unavailable|decommissioned)/i.test(text)) {
+    if (/model.*(?:not found|does not exist|not available|unavailable|decommissioned)/i.test(text)) {
       return new ProviderError({ ...base, category: 'model_unavailable', retryable: false });
     }
     return new ProviderError({ ...base, category: 'invalid_request', retryable: false });
   }
-  if (/model.*(?:not found|does not exist|unavailable|decommissioned)/i.test(text)) {
+  if (/model.*(?:not found|does not exist|not available|unavailable|decommissioned)/i.test(text)) {
     return new ProviderError({ ...base, category: 'model_unavailable', retryable: false });
   }
   if (detectDailyQuota(text)) {
