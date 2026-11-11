@@ -4,7 +4,7 @@ ComiCode is an open-source, multi-provider AI coding agent for the terminal. It 
 
 It is not tied to a fixed list of AI vendors. Gemini, Groq, OpenRouter, and OpenAI are first-class providers, and **any OpenAI-compatible or Gemini-compatible endpoint can be added with its own base URL, auth header, model paths, and extra headers**. Local servers such as Ollama, LM Studio, vLLM, and LiteLLM work without an API key.
 
-> **Repository URL placeholder:** this checkout uses `YOUR_USERNAME` in `src/version.ts` and the OpenRouter attribution header. Replace it with your GitHub username or organization before publishing.
+> **Repository:** https://github.com/ComibyteOrg/comicode
 
 ## Highlights
 
@@ -16,6 +16,12 @@ It is not tied to a fixed list of AI vendors. Gemini, Groq, OpenRouter, and Open
 - **Secure credentials** — OS credential storage where available (Windows DPAPI, macOS Keychain, Linux Secret Service) with an AES-256-GCM encrypted-file fallback. API keys are never stored in plaintext in SQLite or exported configuration.
 - **Polished Ink terminal UI** — workspace, providers, models, history, usage, settings, command palette, confirmations, and live routing/usage feedback.
 - **No telemetry** — ComiCode sends no analytics or usage data anywhere.
+
+## Screenshots
+
+![ComiCode workspace](docs/screenshots/screen-1.png)
+![ComiCode dialogs](docs/screenshots/screen-2.png)
+![ComiCode providers](docs/screenshots/screen-3.png)
 
 ## Requirements
 
@@ -32,7 +38,7 @@ from any project folder and any new terminal.
 The package is not published on npm yet. From GitHub:
 
 ```bash
-npm install -g github:YOUR_USERNAME/comicode
+npm install -g github:ComibyteOrg/comicode
 comicode --version
 ```
 
@@ -50,7 +56,7 @@ npm install -g ./comicode-0.1.0.tgz         # run on the other machine
 For a local development checkout:
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/comicode.git
+git clone https://github.com/ComibyteOrg/comicode.git
 cd comicode
 npm install
 npm install -g .    # builds and installs the global command

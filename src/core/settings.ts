@@ -78,11 +78,14 @@ export const AgentSettingsSchema = z.object({
   testCommand: z.string().nullable().default(null),
   lintCommand: z.string().nullable().default(null),
   buildCommand: z.string().nullable().default(null),
+  /** Optional command that visually verifies UI work (e.g. a screenshot/a11y script). */
+  uiVerifyCommand: z.string().nullable().default(null),
   collaboration: z
     .object({
       enabled: z.boolean().default(false),
       plannerProfileId: z.string().nullable().default(null),
       reviewerProfileId: z.string().nullable().default(null),
+      testerProfileId: z.string().nullable().default(null),
       reviewChanges: z.boolean().default(true),
     })
     .prefault({}),
@@ -171,9 +174,11 @@ export const SETTING_PATHS = [
   'agent.testCommand',
   'agent.lintCommand',
   'agent.buildCommand',
+  'agent.uiVerifyCommand',
   'agent.collaboration.enabled',
   'agent.collaboration.plannerProfileId',
   'agent.collaboration.reviewerProfileId',
+  'agent.collaboration.testerProfileId',
   'agent.collaboration.reviewChanges',
   'theme',
   'accent',

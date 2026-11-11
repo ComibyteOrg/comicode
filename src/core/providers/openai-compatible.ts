@@ -112,7 +112,7 @@ function buildHeaders(context: AdapterContext): Record<string, string> {
   }
   if (context.profile.providerId === 'openrouter') {
     if (!headers['HTTP-Referer'] && !headers['http-referer']) {
-      headers['HTTP-Referer'] = 'https://github.com/YOUR_USERNAME/comicode';
+      headers['HTTP-Referer'] = 'https://github.com/ComibyteOrg/comicode';
     }
     if (!headers['X-Title'] && !headers['x-title']) {
       headers['X-Title'] = 'ComiCode';

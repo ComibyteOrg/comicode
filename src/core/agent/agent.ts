@@ -14,7 +14,7 @@ import type { Store } from '../db/store.js';
 import type { AgentHooks, AgentResult, AgentRunOptions, ConfirmationRequest } from './types.js';
 import { loadSkills, type AgentSkill } from './skills.js';
 import { AGENT_MODES, classifyAgentMode, type AgentMode } from './modes.js';
-import { ProjectInspector } from '../project/inspector.js';
+import { ProjectInspector, type ProjectSnapshot } from '../project/inspector.js';
 import { Router } from '../routing/router.js';
 import { ToolExecutor } from './tools/executor.js';
 import { ContextBuilder, estimateTokens, type ContextCache, type BuiltContext } from './context.js';
@@ -170,6 +170,7 @@ export class CodingAgent {
   private completionSummary: string | null = null;
   private finalResponse: string | null = null;
   private reviewCycles = 0;
+  private testerCycles = 0;
   private verificationRan = false;
   private verificationNudged = false;
   private lastBlocked: Array<{ profileId: string | null; modelId: string | null; reason: string }> =
@@ -200,7 +201,14 @@ export class CodingAgent {
           },
         }
       : baseSettings;
-    this.inspector = new ProjectInspector(task.projectPath);
+    this.inspector = new ProjectInspector(task.projectPath, {
+      get: async (path) => {
+        const row = options.store.getProjectSnapshot(path);
+        if (!row) return null;
+        return { snapshot: row.snapshot as ProjectSnapshot, updatedAt: row.updatedAt };
+      },
+      set: (path, snapshot) => options.store.saveProjectSnapshot(path, snapshot),
+    });
     this.router = new Router(options.store, options.routingOverrides);
     this.adapterFactory = options.adapterFactory ?? ((profile) => createAdapter(profile));
     this.contextFactory =
@@ -302,9 +310,17 @@ export class CodingAgent {
               this.store.appendMessage(this.task.id, {
                 role: 'user',
                 content:
-                  '[ComiCode verification] Before completing, run the configured checks with run_tests, run_lint, or run_build and fix any failures you introduced. If verification is impossible, say why in task_complete.',
+                  '[ComiCode verification] Before completing, run the configured checks with run_tests, run_lint, or run_build and fix any failures you introduced. For UI changes, also run the configured uiVerifyCommand via run_command if set. If verification is impossible, say why in task_complete.',
               });
               this.checkpoint('verification-nudge');
+              continue;
+            }
+            const continueAfterTest = await this.testIfEnabled();
+            if (continueAfterTest) {
+              this.completionSummary = null;
+              this.finalResponse = null;
+              this.setPhase('test');
+              this.checkpoint('after-test');
               continue;
             }
             const continueAfterReview = await this.reviewIfEnabled();
@@ -444,6 +460,7 @@ export class CodingAgent {
       this.candidate = null;
       this.contextSlim = false;
       this.reviewCycles = 0;
+      this.testerCycles = 0;
       this.verificationRan = false;
       this.verificationNudged = false;
       this.completionSummary = null;
@@ -970,7 +987,9 @@ export class CodingAgent {
     if (AGENT_MODES[this.mode]?.tools !== 'all') return false;
     if (this.task.changedFiles.length === 0) return false;
     const agent = this.settings.agent;
-    return Boolean(agent.testCommand || agent.lintCommand);
+    return Boolean(
+      agent.testCommand || agent.lintCommand || agent.buildCommand || agent.uiVerifyCommand,
+    );
   }
 
   private updatePhaseForTool(toolName: string): void {
@@ -993,6 +1012,35 @@ export class CodingAgent {
     if (this.task.phase === phase) return;
     this.task = this.store.updateTask(this.task.id, { phase });
     this.hooks.onPhase?.(phase);
+  }
+
+  /**
+   * Optional tester pass: a separate configured model reviews the diff for
+   * test gaps once per run. GAPS verdicts send the agent back to work.
+   */
+  private async testIfEnabled(): Promise<boolean> {
+    const collaboration = this.settings.agent.collaboration;
+    if (!collaboration.enabled || !collaboration.testerProfileId) return false;
+    if (this.testerCycles >= 1) return false;
+    if (this.task.changedFiles.length === 0) return false;
+    this.testerCycles += 1;
+    this.setPhase('test');
+    const summary = this.completionSummary ?? this.finalResponse ?? this.task.summary ?? '';
+    const test = await this.collaborator.test(this.task, this.task.changedFiles, summary);
+    if (!test) return false;
+    this.hooks.onReview?.(`[Tester ${test.modelId}]\n${test.text.slice(0, 4000)}`);
+    this.store.appendMessage(this.task.id, {
+      role: 'system',
+      content: `[Tester ${test.modelId}]\n${test.text.slice(0, 8000)}`,
+    });
+    if (/VERDICT:\s*GAPS/i.test(test.text)) {
+      this.store.appendMessage(this.task.id, {
+        role: 'user',
+        content: `Tester feedback. Address these gaps, verify with tests, then call task_complete again:\n${test.text.slice(0, 8000)}`,
+      });
+      return true;
+    }
+    return false;
   }
 
   // -------------------------------------------------------------- review/done

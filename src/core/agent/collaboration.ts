@@ -238,6 +238,73 @@ export class Collaborator {
     }
   }
 
+  /**
+   * Tester pass: a separate model reviews the change for test gaps and
+   * verifies claims against the actual diff. Returns feedback text, or null
+   * when no tester profile is configured or the pass fails.
+   */
+  async test(
+    task: TaskRecord,
+    changedFiles: string[],
+    summary: string,
+  ): Promise<CollaborationResult | null> {
+    const target = this.resolveProfileModel(this.settings.agent.collaboration.testerProfileId);
+    if (!target) return null;
+    const context = await this.buildReviewContext(changedFiles);
+    const prompt = [
+      'Act as the tester for this coding task. Review the diff and answer:',
+      '1. Which behaviors changed and are they covered by tests?',
+      '2. What edge cases or regressions are untested?',
+      '3. Did the implementer claim verification it cannot have performed?',
+      'Be specific and concise. First line must be "VERDICT: OK" or "VERDICT: GAPS".',
+      '',
+      `Task request:\n${task.userRequest}`,
+      '',
+      `Implementer summary:\n${summary.slice(0, 4000)}`,
+      '',
+      `Changed files:\n${changedFiles.join('\n') || '(none reported)'}`,
+      '',
+      context,
+    ].join('\n');
+
+    try {
+      const result = await this.call(
+        target.profile,
+        target.model,
+        [
+          {
+            role: 'system',
+            content:
+              'You are a senior test engineer. Judge only the supplied diff/context; never invent test results.',
+          },
+          { role: 'user', content: prompt },
+        ],
+        2000,
+      );
+      this.recordUsage(
+        task.id,
+        target.profile,
+        target.model,
+        result.usage ?? parseUsageFromText(result.text),
+      );
+      this.store.recordRoutingEvent({
+        taskId: task.id,
+        toProfileId: target.profile.id,
+        toModelId: target.model.modelId,
+        reason: 'Tester collaboration pass',
+        category: 'collaboration',
+      });
+      return { text: result.text, profileId: target.profile.id, modelId: target.model.modelId };
+    } catch (error) {
+      const classified = classifyThrown(error, target.profile.providerId);
+      this.recordFailure(target.profile, target.model, classified.category, classified.message);
+      this.hooks.onNotice?.(
+        `Tester pass unavailable (${classified.category}): ${classified.message}`,
+      );
+      return null;
+    }
+  }
+
   private recordFailure(
     profile: ProviderProfile,
     model: ModelInfo,

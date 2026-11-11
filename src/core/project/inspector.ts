@@ -70,8 +70,19 @@ function readText(path: string, maxBytes = 40_000): string | null {
   }
 }
 
+export interface ProjectSnapshotCache {
+  get(path: string): Promise<{ snapshot: ProjectSnapshot; updatedAt: string } | null>;
+  set(path: string, snapshot: ProjectSnapshot): Promise<void> | void;
+}
+
+/** Snapshots older than this are rescanned — balances freshness vs rescan cost. */
+const SNAPSHOT_TTL_MS = 120_000;
+
 export class ProjectInspector {
-  constructor(readonly root: string) {}
+  constructor(
+    readonly root: string,
+    private readonly cache?: ProjectSnapshotCache,
+  ) {}
 
   projectName(): string {
     const pkg = readText(join(this.root, 'package.json'), 100_000);
@@ -116,6 +127,31 @@ export class ProjectInspector {
   }
 
   async snapshot(): Promise<ProjectSnapshot> {
+    if (this.cache) {
+      try {
+        const cached = await this.cache.get(this.root);
+        if (
+          cached &&
+          Date.now() - Date.parse(cached.updatedAt) < SNAPSHOT_TTL_MS
+        ) {
+          return cached.snapshot;
+        }
+      } catch {
+        // Cache read failure falls through to a fresh scan.
+      }
+    }
+    const snapshot = await this.scanSnapshot();
+    if (this.cache) {
+      try {
+        await this.cache.set(this.root, snapshot);
+      } catch {
+        // Best-effort persistence only.
+      }
+    }
+    return snapshot;
+  }
+
+  private async scanSnapshot(): Promise<ProjectSnapshot> {
     const files = await listProjectFiles(this.root, 4000);
     const languages = new Map<string, number>();
     const topLevel = new Map<string, { type: 'file' | 'directory'; files: number }>();

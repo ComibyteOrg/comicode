@@ -233,6 +233,26 @@ export class Store {
     return this.getSettings();
   }
 
+  // ----------------------------------------------------------- project cache
+  getProjectSnapshot(projectPath: string): { snapshot: unknown; updatedAt: string } | null {
+    const row = this.db.get<{ snapshot_json: string; updated_at: string }>(
+      'SELECT snapshot_json, updated_at FROM project_cache WHERE project_path = ?',
+      projectPath,
+    );
+    if (!row) return null;
+    return { snapshot: safeJsonParse(row.snapshot_json, null), updatedAt: row.updated_at };
+  }
+
+  saveProjectSnapshot(projectPath: string, snapshot: unknown): void {
+    this.db.run(
+      `INSERT INTO project_cache(project_path, snapshot_json, updated_at) VALUES(?, ?, ?)
+       ON CONFLICT(project_path) DO UPDATE SET snapshot_json = excluded.snapshot_json, updated_at = excluded.updated_at`,
+      projectPath,
+      JSON.stringify(snapshot),
+      nowIso(),
+    );
+  }
+
   // --------------------------------------------------------------- providers
   listProfiles(providerId?: string): ProviderProfile[] {
     const rows = providerId

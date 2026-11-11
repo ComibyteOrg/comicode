@@ -168,4 +168,10 @@ CREATE TABLE IF NOT EXISTS provider_health (
 );
 
 CREATE INDEX IF NOT EXISTS idx_health_profile ON provider_health(profile_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS project_cache (
+  project_path TEXT PRIMARY KEY,
+  snapshot_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `;
