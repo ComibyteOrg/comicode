@@ -42,9 +42,27 @@ npm install -g github:ComibyteOrg/comicode
 comicode --version
 ```
 
+The install is small: the CLI bundle is under 1 MB and its runtime
+dependencies are a handful of lightweight packages (Ink, React,
+Commander, Zod). Playwright browsers are **never** downloaded —
+`verify_ui` uses whatever browser is already on the machine or a
+project-local Playwright install.
+
 `dist/` is gitignored, so npm builds it during installation with the package's
 `prepare` script. Keep git's default branch installable and do not use
 `--ignore-scripts`.
+
+### Updating
+
+```bash
+comicode update --check   # report only, don't install
+comicode update           # install the latest GitHub release globally
+```
+
+`comicode update` compares your version against the latest GitHub release
+(or tag) and runs `npm install -g github:ComibyteOrg/comicode` for you.
+When ComiCode is published to npm it will prefer the npm registry
+transparently.
 
 Share a build without repository access by installing the tarball:
 

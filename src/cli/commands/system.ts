@@ -14,7 +14,7 @@ import { registerSecret } from '../../core/security/redact.js';
 import { getComicodeHome, getDatabasePath } from '../../core/paths.js';
 import { initProject, readProjectConfig } from '../../core/project/init.js';
 import { runProcess } from '../../core/safety/process.js';
-import { VERSION } from '../../version.js';
+import { GITHUB_REPOSITORY, VERSION } from '../../version.js';
 import {
   bold,
   danger,
@@ -482,5 +482,95 @@ export function registerSystemCommands(program: Command): void {
       console.log(VERSION);
       console.log(dim('Data directory: ' + getComicodeHome()));
       void formatRelative;
+    });
+
+  const update = program
+    .command('update')
+    .description('Check for a newer ComiCode release and install it globally')
+    .option('--check', 'only report whether an update is available')
+    .action(async (options: { check?: boolean }) => {
+      const repo = GITHUB_REPOSITORY.replace('https://github.com/', '');
+      let latest: string | null = null;
+      let reachable = false;
+      // Prefer the npm registry once published; fall back to GitHub releases/tags.
+      try {
+        const npmResponse = await fetch('https://registry.npmjs.org/comicode/latest', {
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (npmResponse.ok) {
+          reachable = true;
+          const body = (await npmResponse.json()) as { version?: string };
+          if (body.version) latest = body.version;
+        }
+      } catch {
+        // Registry unreachable — try GitHub below.
+      }
+      if (!latest) {
+        for (const url of [
+          `https://api.github.com/repos/${repo}/releases/latest`,
+          `https://api.github.com/repos/${repo}/tags?per_page=1`,
+        ]) {
+          try {
+            const response = await fetch(url, {
+              headers: {
+                'User-Agent': 'comicode',
+                Accept: 'application/vnd.github+json',
+              },
+              signal: AbortSignal.timeout(10_000),
+            });
+            if (response.status === 404) {
+              reachable = true;
+              continue;
+            }
+            if (!response.ok) continue;
+            reachable = true;
+            const body = (await response.json()) as
+              | { tag_name?: string }
+              | Array<{ name?: string }>;
+            const tag = Array.isArray(body) ? body[0]?.name : body.tag_name;
+            if (tag) {
+              latest = tag.replace(/^v/, '');
+              break;
+            }
+          } catch {
+            // Try the next endpoint, then give up honestly.
+          }
+        }
+      }
+      if (!reachable) {
+        console.log(warning('Could not reach the update server to check for updates.'));
+        return;
+      }
+      if (!latest) {
+        console.log(
+          dim(`No published releases found yet — ${VERSION} is as new as it gets.`),
+        );
+        return;
+      }
+      if (compareVersions(VERSION, latest) >= 0) {
+        console.log(success(`ComiCode ${VERSION} is up to date (latest release: ${latest}).`));
+        return;
+      }
+      console.log(`${warning('Update available')}: ${VERSION} → ${bold(latest)}`);
+      if (options.check) {
+        console.log(dim(`Run ${bold('comicode update')} to install it.`));
+        return;
+      }
+      const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+      console.log(dim(`Installing globally from github:${repo} …`));
+      const result = await runProcess(npmCmd, ['install', '-g', `github:${repo}`], {
+        timeoutMs: 600_000,
+      });
+      if (result.code === 0) {
+        console.log(success(`Updated to ${latest}. Restart ComiCode to use the new version.`));
+      } else {
+        console.log(
+          danger(
+            `Update failed (exit ${result.code ?? 'unknown'}). Run manually: npm install -g github:${repo}`,
+          ),
+        );
+        const tail = result.stderr.trim().split('\n').slice(-5).join('\n');
+        if (tail) console.log(dim(tail));
+      }
     });
 }
