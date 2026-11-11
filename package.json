@@ -1,6 +1,6 @@
 {
   "name": "comicode",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "An open-source, multi-provider AI coding agent with quota-aware routing and persistent tasks.",
   "type": "module",
   "license": "MIT",

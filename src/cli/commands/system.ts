@@ -491,6 +491,9 @@ export function registerSystemCommands(program: Command): void {
     .action(async (options: { check?: boolean }) => {
       const repo = GITHUB_REPOSITORY.replace('https://github.com/', '');
       let latest: string | null = null;
+      // Git ref used for github: installs — the raw tag (e.g. "v0.1.1"),
+      // which differs from the semver `latest` used for comparison.
+      let latestRef: string | null = null;
       let reachable = false;
       // Prefer the npm registry once published; fall back to GitHub releases/tags.
       try {
@@ -528,6 +531,7 @@ export function registerSystemCommands(program: Command): void {
               { tag_name?: string } | Array<{ name?: string }>;
             const tag = Array.isArray(body) ? body[0]?.name : body.tag_name;
             if (tag) {
+              latestRef = tag;
               latest = tag.replace(/^v/, '');
               break;
             }
@@ -555,7 +559,9 @@ export function registerSystemCommands(program: Command): void {
       }
       const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
       // Install the exact release tag when one exists; fall back to main HEAD.
-      const specs = [`github:${repo}#${latest}`, `github:${repo}`];
+      const specs = latestRef
+        ? [`github:${repo}#${latestRef}`, `github:${repo}`]
+        : [`comicode@${latest}`, `github:${repo}`];
       let installed = false;
       for (const spec of specs) {
         console.log(dim(`Installing ${spec} …`));
