@@ -53,6 +53,20 @@ export function disableMouseTracking(): void {
 }
 
 /**
+ * DECSET 1007 "alternate scroll": supporting terminals translate wheel
+ * events into arrow/page keys while in the alternate screen — no mouse
+ * capture, so native highlight/copy keeps working. Harmless on terminals
+ * that do not implement it.
+ */
+export function enableAlternateScroll(): () => void {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return () => {};
+  process.stdout.write('\x1b[?1007h');
+  return () => {
+    process.stdout.write('\x1b[?1007l');
+  };
+}
+
+/**
  * Enable wheel reporting. `handler` receives -1 for wheel up and +1 for
  * wheel down. Returns a cleanup function that disables reporting.
  */

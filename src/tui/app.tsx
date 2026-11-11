@@ -24,6 +24,7 @@ import { shortcutMatches } from './shortcuts/manager.js';
 import { nextAgentMode, type AgentMode } from '../core/agent/modes.js';
 import { VERSION } from '../version.js';
 import { glyph, setActiveTheme, theme } from './theme.js';
+import { enableAlternateScroll } from './mouse.js';
 
 export type DialogId =
   | 'palette'
@@ -105,6 +106,10 @@ function App({ context }: { context: AppContext }): React.ReactElement {
     const timer = setTimeout(() => setToast(null), 5000);
     return () => clearTimeout(timer);
   }, [toast]);
+
+  // Alternate scroll gives wheel support on terminals that implement DECSET
+  // 1007 without capturing the mouse — highlight/copy stays fully native.
+  useEffect(() => enableAlternateScroll(), []);
 
   // One-time tip: with mouse capture on, plain drag can't select text — the
   // terminal needs Shift for native selection or ctrl+y for select mode.
