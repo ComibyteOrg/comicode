@@ -106,6 +106,15 @@ function App({ context }: { context: AppContext }): React.ReactElement {
     return () => clearTimeout(timer);
   }, [toast]);
 
+  // One-time tip: with mouse capture on, plain drag can't select text — the
+  // terminal needs Shift for native selection or ctrl+y for select mode.
+  useEffect(() => {
+    if (context.store.getSettings().ui.mouseScroll !== true) return;
+    if (context.store.db.metaGet('ui.mouse_tip_v1')) return;
+    context.store.db.metaSet('ui.mouse_tip_v1', '1');
+    notify('Mouse scroll on — hold Shift+drag or press ctrl+y to highlight and copy text.');
+  }, [context, notify]);
+
   useEffect(() => {
     let active = true;
     void gitBranch(context.cwd).then((b) => {

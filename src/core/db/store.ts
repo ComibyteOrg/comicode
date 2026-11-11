@@ -208,7 +208,23 @@ export class Store {
     this.db = new Db(path);
     this.applyNativeSelectionDefault();
     this.applyMouseScrollDefault();
+    this.applyMouseScrollDefaultV3();
     this.reclassifyModelAccess();
+  }
+
+  /**
+   * v2 re-enabled wheel scrolling by default, but users kept reporting that
+   * plain drag-selection broke. Keyboard-first default wins: mouse capture
+   * stays off unless the user explicitly enables it in settings.
+   */
+  private applyMouseScrollDefaultV3(): void {
+    if (this.db.metaGet('ui.mouse_scroll_default_v3')) return;
+    const settings = this.getSettings();
+    if (settings.ui.mouseScroll) {
+      settings.ui.mouseScroll = false;
+      this.saveSettings(settings);
+    }
+    this.db.metaSet('ui.mouse_scroll_default_v3', '1');
   }
 
   /**
