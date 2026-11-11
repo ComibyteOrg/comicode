@@ -484,7 +484,7 @@ export function registerSystemCommands(program: Command): void {
       void formatRelative;
     });
 
-  const update = program
+  program
     .command('update')
     .description('Check for a newer ComiCode release and install it globally')
     .option('--check', 'only report whether an update is available')
