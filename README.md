@@ -2,6 +2,8 @@
 
 ComiCode is an open-source, multi-provider AI coding agent for the terminal. It can inspect a project, write and patch files, run commands and tests, keep a persistent task history, and keep working across provider quotas by routing to the next eligible model.
 
+![ComiCode workspace](docs/screenshots/screen-1.png)
+
 It is not tied to a fixed list of AI vendors. Gemini, Groq, OpenRouter, and OpenAI are first-class providers, and **any OpenAI-compatible or Gemini-compatible endpoint can be added with its own base URL, auth header, model paths, and extra headers**. Local servers such as Ollama, LM Studio, vLLM, and LiteLLM work without an API key.
 
 > **Repository:** https://github.com/ComibyteOrg/comicode
@@ -16,12 +18,6 @@ It is not tied to a fixed list of AI vendors. Gemini, Groq, OpenRouter, and Open
 - **Secure credentials** — OS credential storage where available (Windows DPAPI, macOS Keychain, Linux Secret Service) with an AES-256-GCM encrypted-file fallback. API keys are never stored in plaintext in SQLite or exported configuration.
 - **Polished Ink terminal UI** — workspace, providers, models, history, usage, settings, command palette, confirmations, and live routing/usage feedback.
 - **No telemetry** — ComiCode sends no analytics or usage data anywhere.
-
-## Screenshots
-
-![ComiCode workspace](docs/screenshots/screen-1.png)
-![ComiCode dialogs](docs/screenshots/screen-2.png)
-![ComiCode providers](docs/screenshots/screen-3.png)
 
 ## Requirements
 
@@ -121,6 +117,8 @@ comicode run "use the paid model for this one run" --allow-paid
 Dangerous shell commands additionally require `--allow-dangerous-commands`. Prefer interactive mode when you want to review diffs and commands before they run.
 
 ## Any AI platform
+
+![Provider selection](docs/screenshots/screen-2.png)
 
 ### OpenAI-compatible endpoint
 
@@ -225,6 +223,10 @@ Launch with `comicode` on a TTY.
 | `ctrl+c`           | Quit (ignored while a run is active; pause first)          |
 
 Workspace commands: `/help`, `/workspace`, `/providers`, `/models`, `/history`, `/usage`, `/settings`, `/profile <name>`, `/model <name>`, `/resume`, `/allow-paid on|off`, `/new`, `/clear`, `/exit`.
+
+![Agent mode selection](docs/screenshots/screen-3.png)
+
+Twelve agent modes (build, plan, debug, architect, review, refactor, test, docs, design, security, explain, and auto) adapt tool access and prompting to the task — `auto` classifies each request and picks the right workflow.
 
 Screens keep their state mounted, so switching tabs does not cancel a running task. File writes, deletes, commands, dangerous commands, and secret reads show an approval dialog with a diff when relevant.
 
