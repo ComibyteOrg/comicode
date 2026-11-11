@@ -234,6 +234,21 @@ export function classifyDiscoveredAccess(
     };
   }
 
+  // Google AI Studio and Groq run free developer tiers that cover their chat
+  // models under rate limits; the per-token prices in their catalogs are
+  // paid-plan rates, not a statement that the model is paid-only. Label them
+  // free-tier so free-plan users can actually see and use them.
+  if (providerId === 'gemini' || providerId === 'groq') {
+    const priced = (inputPrice ?? 0) > 0 || (outputPrice ?? 0) > 0;
+    return {
+      access: 'free-tier',
+      source: priced ? 'provider-model-catalog' : 'provider-model-list',
+      notes: priced
+        ? 'Listed with paid-plan per-token pricing; the provider free tier covers this model under rate limits.'
+        : 'The provider publishes a free developer tier for this model. Limits are controlled by the provider.',
+    };
+  }
+
   // Positive per-token pricing always wins over provider-level heuristics.
   // A provider can offer a free tier while still billing for individual
   // models, so never label a priced model as free.
@@ -248,14 +263,6 @@ export function classifyDiscoveredAccess(
 
   if (providerId === 'openrouter') {
     return { access: 'unknown', source: 'openrouter-model-catalog', notes: null };
-  }
-
-  // Google AI Studio and Groq both expose a free developer tier for some chat
-  // models, but not every listed model is covered by it. Unknown models stay
-  // "unknown" unless curated metadata or pricing proves otherwise; otherwise
-  // paid-only models would look free.
-  if (providerId === 'gemini' || providerId === 'groq') {
-    return { access: 'unknown', source: 'provider-model-list', notes: null };
   }
 
   if (providerId === 'openai') {

@@ -80,8 +80,12 @@ describe('TUI application', () => {
     expect(frame()).toContain(WORKSPACE_MARKER);
     stdout.clear();
     await send(ESC);
-    expect(frame()).not.toContain('Select model');
-    expect(frame()).toContain(WORKSPACE_MARKER);
+    await flush(200);
+    // stdout accumulates every render; assert on the final frame only, since
+    // an intermediate pre-close render can still contain the dialog title.
+    const tail = frame().slice(-4000);
+    expect(tail).not.toContain('Select model');
+    expect(tail).toContain(WORKSPACE_MARKER);
   });
 
   it('opens the provider manager as a modal with ctrl+b', async () => {

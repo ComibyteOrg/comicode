@@ -235,7 +235,7 @@ export class Store {
    * user classification are left untouched.
    */
   private reclassifyModelAccess(): void {
-    if (this.db.metaGet('models.access_reclassified_v1')) return;
+    if (this.db.metaGet('models.access_reclassified_v2')) return;
     const rows = this.db.all<{
       id: string;
       provider_id: string;
@@ -280,7 +280,7 @@ export class Store {
         row.id,
       );
     }
-    this.db.metaSet('models.access_reclassified_v1', '1');
+    this.db.metaSet('models.access_reclassified_v2', '1');
   }
 
   /**
