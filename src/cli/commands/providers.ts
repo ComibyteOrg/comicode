@@ -8,6 +8,8 @@ import {
   credentialIdForProfile,
   exportProviders,
   importProviders,
+  keysToSecret,
+  parseKeyInput,
   refreshProfileModels,
   removeProfile,
   testProfileConnection,
@@ -190,8 +192,13 @@ async function maybeStoreKey(
 ): Promise<'stored' | 'env' | 'none'> {
   if (envName) return 'env';
   if (!key) return 'none';
-  registerSecret(key);
-  await getCredentialStore().setSecret(credentialIdForProfile(profile.id), key);
+  const keys = parseKeyInput(key);
+  if (keys.length === 0) return 'none';
+  for (const entry of keys) registerSecret(entry);
+  await getCredentialStore().setSecret(
+    credentialIdForProfile(profile.id),
+    keysToSecret(keys),
+  );
   return 'stored';
 }
 
@@ -387,8 +394,8 @@ async function interactiveProviderDraft(existing: ProviderProfile | null): Promi
     keyMode === 'secret'
       ? await promptSecret(
           existing
-            ? 'New API key (leave blank to keep the existing key)'
-            : 'API key (input is hidden)',
+            ? 'New API key(s), comma-separated for multiple (blank keeps existing)'
+            : 'API key(s), comma-separated for multiple (input is hidden)',
         ).catch(() => '')
       : null;
 
@@ -476,7 +483,9 @@ async function addProvider(flags: EndpointFlags): Promise<void> {
     });
     let key = draft?.key ?? flags.apiKey ?? null;
     if (!key && keyMode === 'secret' && isInteractive() && !draft) {
-      key = await promptSecret('API key (input is hidden)').catch(() => '');
+      key = await promptSecret('API key(s), comma-separated for multiple (input is hidden)').catch(
+        () => '',
+      );
     }
     const keyState = await maybeStoreKey(
       profile,
@@ -901,7 +910,11 @@ export function registerProviderCommands(program: Command): void {
   const providers = program
     .command('providers')
     .alias('provider')
-    .description('Manage provider profiles, including custom base URLs');
+    .description('Manage provider profiles, including custom base URLs')
+    .option('--json', 'machine-readable output')
+    .action(async (options) => {
+      await listProviders(options);
+    });
 
   providers
     .command('list')
@@ -1072,4 +1085,4 @@ export function describeKey(key: string): string {
   return maskSecret(key);
 }
 
-export { EndpointConfigSchema };
+export { EndpointConfigSchema, addProvider };

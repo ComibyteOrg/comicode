@@ -1,24 +1,27 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import type { AppContext } from '../../core/app.js';
-import type { AgentHooks, ConfirmationRequest } from '../../core/agent/types.js';
+import type { AgentHooks, ConfirmationRequest, ConfirmDecision } from '../../core/agent/types.js';
 import { CodingAgent, DEFAULT_AUTHORITY } from '../../core/agent/agent.js';
+import { nextAgentMode, type AgentMode } from '../../core/agent/modes.js';
 import type { TaskPlan, TaskRecord } from '../../core/types.js';
-import { resolveModel, resolveProfile } from '../../cli/shared.js';
 import {
   clip,
   clipLines,
-  ConfirmDialog,
   Empty,
   formatCount,
   PromptInput,
   Spinner,
   useLayout,
   type AgentStatus,
-  type PromptSuggestion,
   type ScreenId,
 } from '../components.js';
+import { ConfirmDialog } from '../dialogs/confirm-dialog.js';
+import { ModalWindow } from '../dialogs/modal.js';
 import { glyph, theme } from '../theme.js';
+import { commandRegistry, type CommandContext } from '../commands/registry.js';
+import { listProjectFiles } from '../../core/safety/files.js';
+import { enableMouseWheel, isMouseSequence, isSuppressedInput } from '../mouse.js';
 
 interface Entry {
   id: number;
@@ -43,120 +46,35 @@ export interface ResumeRequest {
   resume: boolean;
 }
 
+export type WorkspaceDialogId =
+  | 'palette'
+  | 'model-picker'
+  | 'connect'
+  | 'providers'
+  | 'tasks'
+  | 'diff'
+  | 'undo'
+  | 'status'
+  | 'usage'
+  | 'settings'
+  | 'shortcuts'
+  | null;
+
 interface WorkspaceProps {
   context: AppContext;
   active: boolean;
   onStatusChange: (status: AgentStatus) => void;
   onNavigate: (screen: ScreenId) => void;
   onCycleScreen: (direction: 1 | -1) => void;
+  onOpenDialog?: (dialog: WorkspaceDialogId) => void;
   onQuit: () => void;
   resumeRequest: ResumeRequest | null;
   notify: (message: string) => void;
   refreshData: () => void;
-}
-
-const HELP = [
-  'Commands',
-  '  /help                 show this list',
-  '  /new                  start a fresh task',
-  '  /clear                clear this transcript',
-  '  /resume               resume the paused task',
-  '  /profile <name>       select a provider profile',
-  '  /model <name>         select a model',
-  '  /allow-paid on|off    allow or block paid fallbacks',
-  '  /providers /models /history /usage /settings   switch screens',
-  '  /workspace            return to the workspace',
-  '  /exit                 quit ComiCode',
-  '',
-  'Keys',
-  '  ←/→ or tab            switch screens when the composer is empty',
-  '  shift+tab             previous screen',
-  '  ctrl+k                command palette',
-  '  pgup / pgdn           scroll the transcript',
-  '  esc                   pause a running task',
-].join('\n');
-
-const COMMAND_CATALOG: PromptSuggestion[] = [
-  { value: '/help', label: '/help', detail: 'Show commands and keys', submit: true },
-  { value: '/new', label: '/new', detail: 'Start a fresh task', submit: true },
-  { value: '/clear', label: '/clear', detail: 'Clear the transcript', submit: true },
-  { value: '/resume', label: '/resume', detail: 'Resume the paused task', submit: true },
-  { value: '/providers', label: '/providers', detail: 'Provider profiles', submit: true },
-  { value: '/models', label: '/models', detail: 'Model catalog', submit: true },
-  { value: '/history', label: '/history', detail: 'Task history', submit: true },
-  { value: '/usage', label: '/usage', detail: 'Usage and limits', submit: true },
-  { value: '/settings', label: '/settings', detail: 'Settings', submit: true },
-  { value: '/workspace', label: '/workspace', detail: 'Back to the workspace', submit: true },
-  { value: '/profile', label: '/profile', detail: 'Select a provider profile' },
-  { value: '/model', label: '/model', detail: 'Select a model' },
-  { value: '/allow-paid', label: '/allow-paid', detail: 'Toggle paid fallbacks' },
-  { value: '/exit', label: '/exit', detail: 'Quit ComiCode', submit: true },
-];
-
-function slashSuggestions(context: AppContext, value: string): PromptSuggestion[] {
-  if (!value.startsWith('/')) return [];
-  const trimmed = value.trimStart();
-  const [command, ...rest] = trimmed.split(/\s+/);
-  const argument = rest.join(' ').trim();
-
-  if (!trimmed.includes(' ')) {
-    const needle = trimmed.toLowerCase();
-    return COMMAND_CATALOG.filter((entry) => entry.value.startsWith(needle)).slice(0, 7);
-  }
-
-  if (command === '/profile') {
-    const needle = argument.toLowerCase();
-    return context.store
-      .listProfiles()
-      .filter(
-        (profile) =>
-          !needle ||
-          profile.name.toLowerCase().includes(needle) ||
-          profile.id.toLowerCase().startsWith(needle),
-      )
-      .slice(0, 6)
-      .map((profile) => ({
-        value: `/profile ${profile.name}`,
-        label: profile.name,
-        detail: `${profile.providerId} ${glyph.bullet} ${profile.defaultModel ?? 'no model'}`,
-        submit: true,
-      }));
-  }
-
-  if (command === '/model') {
-    const needle = argument.toLowerCase();
-    return context.store
-      .listModels()
-      .filter(
-        (model) =>
-          !needle ||
-          model.modelId.toLowerCase().includes(needle) ||
-          model.displayName.toLowerCase().includes(needle),
-      )
-      .sort((a, b) => b.codingSuitability - a.codingSuitability)
-      .slice(0, 6)
-      .map((model) => ({
-        value: `/model ${model.modelId}`,
-        label: model.modelId,
-        detail: `${model.providerId} ${glyph.bullet} ${
-          model.contextWindow ? `${Math.round(model.contextWindow / 1000)}k ctx` : 'ctx unknown'
-        }`,
-        submit: true,
-      }));
-  }
-
-  if (command === '/allow-paid') {
-    return ['on', 'off']
-      .filter((option) => !argument || option.startsWith(argument.toLowerCase()))
-      .map((option) => ({
-        value: `/allow-paid ${option}`,
-        label: option,
-        detail: option === 'on' ? 'Allow paid fallbacks' : 'Block paid fallbacks',
-        submit: true,
-      }));
-  }
-
-  return [];
+  dimmed?: boolean;
+  agentMode?: AgentMode;
+  onAgentMode?: (mode: AgentMode) => void;
+  onShowOutput?: (title: string, text: string) => void;
 }
 
 function taskToEntries(context: AppContext, task: TaskRecord): Entry[] {
@@ -168,7 +86,7 @@ function taskToEntries(context: AppContext, task: TaskRecord): Entry[] {
       entries.push({ id: ++id, kind: 'user', text: clipLines(message.content, 3, 500) });
     } else if (message.role === 'assistant') {
       if (message.content.trim()) {
-        entries.push({ id: ++id, kind: 'assistant', text: clipLines(message.content, 4, 800) });
+        entries.push({ id: ++id, kind: 'assistant', text: clipLines(message.content, 100, 20_000) });
       }
       for (const call of message.toolCalls ?? []) {
         entries.push({
@@ -297,16 +215,41 @@ function roleFor(entry: Entry): {
   }
 }
 
-function EntryCard({ entry }: { entry: Entry }): React.ReactElement {
+/**
+ * Long answers keep both the beginning and the end visible — the conclusion
+ * matters as much as the setup. Bounded so the transcript stays fast.
+ */
+function clipAnswer(text: string, headLines = 14, tailLines = 30): string {
+  const maxChars = 20_000;
+  let body = text;
+  if (body.length > maxChars) {
+    const headChars = Math.floor(maxChars * 0.4);
+    body = `${body.slice(0, headChars)}\n…\n${body.slice(-(maxChars - headChars))}`;
+  }
+  const lines = body.split('\n');
+  if (lines.length <= headLines + tailLines + 2) return body;
+  const hidden = lines.length - headLines - tailLines;
+  return [...lines.slice(0, headLines), `[+${hidden} lines]`, ...lines.slice(-tailLines)].join('\n');
+}
+
+function entryDisplay(entry: Entry): string {
+  if (entry.kind === 'assistant') return clipAnswer(entry.text);
+  if (entry.kind === 'summary') return clipAnswer(entry.text, 20, 40);
+  if (entry.kind === 'review') return clipAnswer(entry.text, 12, 24);
+  const role = roleFor(entry);
+  return clipLines(entry.text, role.lines, role.chars);
+}
+
+function EntryCard({ entry, dimmed }: { entry: Entry; dimmed?: boolean }): React.ReactElement {
   const role = roleFor(entry);
   return (
     <Box flexDirection="column" marginBottom={1} flexShrink={0}>
-      <Text color={role.color} bold>
+      <Text color={role.color} bold dimColor={dimmed}>
         {role.marker} {role.label}
       </Text>
       <Box paddingLeft={2}>
-        <Text color={role.bodyColor} wrap="wrap">
-          {clipLines(entry.text, role.lines, role.chars)}
+        <Text color={role.bodyColor} wrap="wrap" dimColor={dimmed}>
+          {entryDisplay(entry)}
         </Text>
       </Box>
     </Box>
@@ -319,22 +262,31 @@ export function Workspace({
   onStatusChange,
   onNavigate,
   onCycleScreen,
+  onOpenDialog,
   onQuit,
   resumeRequest,
   notify,
   refreshData,
+  dimmed = false,
+  agentMode = 'build',
+  onAgentMode,
+  onShowOutput,
 }: WorkspaceProps): React.ReactElement {
   const { rows } = useLayout();
   const [entries, setEntries] = useState<Entry[]>([]);
   const [input, setInput] = useState('');
+  const [queue, setQueue] = useState<string[]>([]);
   const [history, setHistory] = useState<string[]>([]);
   const [scrollOffset, setScrollOffset] = useState(0);
+  const [jumpOpen, setJumpOpen] = useState(false);
+  const [jumpIndex, setJumpIndex] = useState(0);
   const [running, setRunning] = useState(false);
   const [status, setStatus] = useState<AgentStatus>('idle');
   const [taskId, setTaskId] = useState<string | null>(null);
   const [plan, setPlan] = useState<TaskPlan | null>(null);
   const [route, setRoute] = useState<string | null>(null);
   const [usage, setUsage] = useState({ inputTokens: 0, outputTokens: 0 });
+  const [lastInputTokens, setLastInputTokens] = useState(0);
   const [confirmRequest, setConfirmRequest] = useState<ConfirmationRequest | null>(null);
   const [frame, setFrame] = useState(0);
   const [pauseReason, setPauseReason] = useState<string | null>(null);
@@ -342,7 +294,7 @@ export function Workspace({
 
   const nextId = useRef(1);
   const abortRef = useRef<AbortController | null>(null);
-  const confirmResolve = useRef<((approved: boolean) => void) | null>(null);
+  const confirmResolve = useRef<((decision: ConfirmDecision) => void) | null>(null);
   const adoptedNonce = useRef(0);
   const streamingId = useRef<number | null>(null);
 
@@ -370,20 +322,35 @@ export function Workspace({
     return () => clearInterval(timer);
   }, [running]);
 
-  const respondConfirm = useCallback((approved: boolean) => {
+  // Mouse wheel scrolls the transcript (wheel-up = older, wheel-down = newer).
+  useEffect(() => {
+    return enableMouseWheel((direction) => {
+      if (!active) return;
+      setScrollOffset((value) =>
+        Math.max(0, Math.min(Math.max(0, entries.length - 1), value - direction * 3)),
+      );
+    });
+  }, [entries.length, active]);
+
+  const respondConfirm = useCallback((decision: ConfirmDecision) => {
     const resolve = confirmResolve.current;
     confirmResolve.current = null;
     setConfirmRequest(null);
-    resolve?.(approved);
+    resolve?.(decision);
   }, []);
+
+  const askConfirm = useCallback(
+    (request: ConfirmationRequest) =>
+      new Promise<ConfirmDecision>((resolve) => {
+        confirmResolve.current = resolve;
+        setConfirmRequest(request);
+      }),
+    [],
+  );
 
   const makeHooks = useCallback((): AgentHooks => {
     return {
-      confirm: (request) =>
-        new Promise<boolean>((resolve) => {
-          confirmResolve.current = resolve;
-          setConfirmRequest(request);
-        }),
+      confirm: askConfirm,
       onText: (delta) => {
         let id = streamingId.current;
         if (id === null) {
@@ -408,7 +375,7 @@ export function Workspace({
           return;
         }
         if (id === null) {
-          addEntry({ kind: 'assistant', text: clipLines(content, 8, 4000) });
+          addEntry({ kind: 'assistant', text: content.slice(-80_000) });
         }
       },
       onToolStart: (call) => {
@@ -438,6 +405,7 @@ export function Workspace({
           inputTokens: previous.inputTokens + turnUsage.inputTokens,
           outputTokens: previous.outputTokens + turnUsage.outputTokens,
         }));
+        setLastInputTokens(turnUsage.inputTokens);
       },
       onPlan: (value) => {
         const planValue = value as TaskPlan | undefined;
@@ -486,6 +454,7 @@ export function Workspace({
           hooks: makeHooks(),
           authority: { ...DEFAULT_AUTHORITY },
           settings: context.store.getSettings(),
+          mode: agentMode,
         });
         const result = await agent.run({
           resume,
@@ -514,7 +483,7 @@ export function Workspace({
         refreshData();
       }
     },
-    [addEntry, context, makeHooks, refreshData, running, updateStatus],
+    [addEntry, agentMode, askConfirm, context, makeHooks, refreshData, running, updateStatus],
   );
 
   const startRequest = useCallback(
@@ -540,6 +509,19 @@ export function Workspace({
           ? (context.store.listModels().find((entry) => entry.id === modelKey) ?? null)
           : null;
         addEntry({ kind: 'user', text: request });
+        const mentions = [
+          ...new Set(
+            [...request.matchAll(/@([^\s@]+)/g)]
+              .map((match) => match[1]!)
+              .filter((path) => fileIndex.length === 0 || fileIndex.includes(path)),
+          ),
+        ];
+        const withMentions = (task: TaskRecord): void => {
+          if (!mentions.length) return;
+          context.store.updateTask(task.id, {
+            relevantFiles: [...new Set([...(task.relevantFiles ?? []), ...mentions])],
+          });
+        };
         if (!taskId) {
           const task = context.store.createTask({
             projectPath: context.cwd,
@@ -550,6 +532,7 @@ export function Workspace({
             currentModelId: model?.modelId ?? profile.defaultModel ?? null,
             metadata: { createdBy: 'tui', source: 'comicode' },
           });
+          withMentions(task);
           setTaskId(task.id);
           await execute(task.id, false);
           return;
@@ -564,6 +547,7 @@ export function Workspace({
           return;
         }
         context.store.appendMessage(task.id, { role: 'user', content: request });
+        withMentions(task);
         context.store.updateTask(task.id, {
           status: 'running',
           phase: task.phase === 'done' ? 'implement' : task.phase,
@@ -592,6 +576,7 @@ export function Workspace({
       setPauseReason(task.error ?? null);
       setEntries(taskToEntries(context, task));
       setUsage({ inputTokens: 0, outputTokens: 0 });
+      setLastInputTokens(0);
       setLastResult(task.summary);
       setScrollOffset(0);
       if (request.resume) await execute(task.id, true);
@@ -606,132 +591,110 @@ export function Workspace({
     void adopt(resumeRequest);
   }, [adopt, resumeRequest]);
 
+  const [fileIndex, setFileIndex] = useState<string[]>([]);
+  useEffect(() => {
+    let active = true;
+    void listProjectFiles(context.cwd, 4000)
+      .then((files) => {
+        if (active) setFileIndex(files.map((file) => file.path));
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [context.cwd]);
+
+  const suggestions = useMemo(() => {
+    const mention = /(^|\s)@([^\s@]*)$/.exec(input);
+    if (mention) {
+      const atIndex = input.length - mention[0].length + (mention[1]?.length ?? 0);
+      const prefix = input.slice(0, atIndex);
+      const needle = mention[2]!.toLowerCase();
+      return fileIndex
+        .filter((path) => {
+          const lower = path.toLowerCase();
+          return lower.includes(needle) || (path.split('/').pop() ?? '').toLowerCase().includes(needle);
+        })
+        .slice(0, 8)
+        .map((path) => ({
+          value: `${prefix}@${path} `,
+          label: path.split('/').pop() ?? path,
+          detail: path,
+          submit: false,
+        }));
+    }
+    if (!input.startsWith('/')) return [];
+    return commandRegistry.getSuggestions(context, input);
+  }, [context, input, fileIndex]);
+
   const handleCommand = useCallback(
     async (raw: string): Promise<void> => {
-      const [command, ...rest] = raw.trim().split(/\s+/);
-      const argument = rest.join(' ').trim();
-      switch (command) {
-        case '/help':
-        case '/?':
-          addEntry({ kind: 'notice', title: 'help', text: HELP });
-          return;
-        case '/exit':
-        case '/quit':
-          onQuit();
-          return;
-        case '/new':
-          setTaskId(null);
-          setPlan(null);
-          setPauseReason(null);
-          setLastResult(null);
-          setUsage({ inputTokens: 0, outputTokens: 0 });
+      const commandContext: CommandContext = {
+        context,
+        notify,
+        refreshData,
+        openDialog: (d) => onOpenDialog?.(d as WorkspaceDialogId),
+        closeDialog: () => onOpenDialog?.(null),
+        navigateToScreen: (s) => onNavigate(s),
+        setTaskId: (id) => {
+          setTaskId(id);
+          if (!id) {
+            setPlan(null);
+            setPauseReason(null);
+            setLastResult(null);
+            setUsage({ inputTokens: 0, outputTokens: 0 });
+            setLastInputTokens(0);
+            setEntries([]);
+            setScrollOffset(0);
+            updateStatus('idle');
+          }
+        },
+        getActiveTaskId: () => taskId,
+        clearTranscript: () => {
           setEntries([]);
           setScrollOffset(0);
-          updateStatus('idle');
-          notify('Ready for a new task.');
-          return;
-        case '/clear':
-          setEntries([]);
-          setScrollOffset(0);
-          return;
-        case '/providers':
-          onNavigate('providers');
-          return;
-        case '/models':
-          onNavigate('models');
-          return;
-        case '/history':
-          onNavigate('history');
-          return;
-        case '/usage':
-          onNavigate('usage');
-          return;
-        case '/settings':
-          onNavigate('settings');
-          return;
-        case '/workspace':
-        case '/home':
-          onNavigate('workspace');
-          return;
-        case '/profile': {
-          if (!argument) {
-            onNavigate('providers');
-            return;
-          }
-          try {
-            const profile = resolveProfile(context.store, argument);
-            context.store.setSelectedProfileId(profile.id);
-            notify(`Using profile ${profile.name}.`);
-            refreshData();
-          } catch (error) {
-            addEntry({
-              kind: 'error',
-              text: error instanceof Error ? error.message : String(error),
-            });
-          }
-          return;
-        }
-        case '/model': {
-          if (!argument) {
-            onNavigate('models');
-            return;
-          }
-          try {
-            const resolved = resolveModel(context.store, argument);
-            context.store.setSelectedProfileId(resolved.profile.id);
-            context.store.setSelectedModelId(resolved.model.id);
-            notify(`Using ${resolved.model.modelId} via ${resolved.profile.name}.`);
-            refreshData();
-          } catch (error) {
-            addEntry({
-              kind: 'error',
-              text: error instanceof Error ? error.message : String(error),
-            });
-          }
-          return;
-        }
-        case '/resume': {
-          if (taskId) {
-            await execute(taskId, true);
+        },
+        addNotice: (title, text) => {
+          if (onShowOutput && ['help', 'skills', 'compact'].includes(title)) {
+            onShowOutput(title, text);
           } else {
-            const tasks = context.store.listTasks({ projectPath: context.cwd, limit: 50 });
-            const paused = tasks.find(
-              (task) => task.status === 'paused' || task.status === 'failed',
-            );
-            if (paused) await adopt({ taskId: paused.id, nonce: Date.now(), resume: true });
-            else addEntry({ kind: 'notice', text: 'No paused task to resume.' });
+            addEntry({ kind: 'notice', title, text });
           }
-          return;
-        }
-        case '/allow-paid': {
-          const value = argument.toLowerCase();
-          if (value !== 'on' && value !== 'off') {
-            addEntry({ kind: 'notice', text: 'Usage: /allow-paid on|off' });
-            return;
-          }
-          context.store.updateSettings((settings) => {
-            settings.routing.allowPaid = value === 'on';
-            return settings;
-          });
-          notify(`Paid fallbacks ${value === 'on' ? 'enabled' : 'disabled'}.`);
-          refreshData();
-          return;
-        }
-        default:
-          addEntry({
-            kind: 'error',
-            text: `Unknown command "${command}". Type /help for the list.`,
-          });
+        },
+        showOutput: onShowOutput,
+        addError: (text) => {
+          addEntry({ kind: 'error', text });
+        },
+        executeTask: async (id, resume) => {
+          await execute(id, resume);
+        },
+        toggleToolsExpanded: () => {},
+        onQuit,
+        agentMode,
+        setAgentMode: (mode) => onAgentMode?.(mode),
+        confirm: askConfirm,
+      };
+
+      const handled = await commandRegistry.execute(raw, commandContext);
+      if (!handled) {
+        addEntry({
+          kind: 'error',
+          text: `Unknown command "${raw.trim()}". Type /help for available commands.`,
+        });
       }
     },
     [
       addEntry,
-      adopt,
+      agentMode,
+      askConfirm,
       context,
       execute,
       notify,
+      onAgentMode,
       onNavigate,
+      onOpenDialog,
       onQuit,
+      onShowOutput,
       refreshData,
       taskId,
       updateStatus,
@@ -747,28 +710,57 @@ export function Workspace({
         [...previous.filter((item) => item !== trimmed), trimmed].slice(-60),
       );
       setScrollOffset(0);
+      if (running && !trimmed.startsWith('/')) {
+        setQueue((previous) => [...previous, trimmed]);
+        addEntry({
+          kind: 'notice',
+          title: 'queued',
+          text: `Queued while the agent runs: ${clip(trimmed, 90)}`,
+        });
+        return;
+      }
       if (trimmed.startsWith('/')) {
         void handleCommand(trimmed);
         return;
       }
       void startRequest(trimmed);
     },
-    [handleCommand, startRequest],
+    [addEntry, handleCommand, running, startRequest],
   );
+
+  // Drain the prompt queue one message at a time after each run finishes.
+  useEffect(() => {
+    if (running || queue.length === 0) return;
+    const [next, ...rest] = queue;
+    setQueue(rest);
+    if (next!.startsWith('/')) void handleCommand(next!);
+    else void startRequest(next!);
+  }, [running, queue, handleCommand, startRequest]);
 
   useInput(
     (input, key) => {
+      if (isMouseSequence(input) || isSuppressedInput()) return;
       if (key.escape && running) {
         abortRef.current?.abort();
         notify('Pausing after the current operation…');
         return;
       }
-      if (key.pageUp) {
-        setScrollOffset((value) => Math.min(Math.max(0, entries.length - 1), value + 4));
+      if (key.pageUp || (key.ctrl && key.upArrow)) {
+        setScrollOffset((value) => Math.min(Math.max(0, entries.length - 1), value + 12));
         return;
       }
-      if (key.pageDown) {
-        setScrollOffset((value) => Math.max(0, value - 4));
+      if (key.pageDown || (key.ctrl && key.downArrow)) {
+        setScrollOffset((value) => Math.max(0, value - 12));
+        return;
+      }
+      if (key.ctrl && input === 'j') {
+        const users = entries.flatMap((entry, index) =>
+          entry.kind === 'user' ? [index] : [],
+        );
+        if (users.length > 0) {
+          setJumpIndex(users.length - 1);
+          setJumpOpen(true);
+        }
         return;
       }
       if (running) {
@@ -777,11 +769,22 @@ export function Workspace({
         else if (key.tab) onCycleScreen(key.shift ? -1 : 1);
       }
     },
-    { isActive: active && !confirmRequest },
+    { isActive: active && !dimmed && !confirmRequest },
   );
 
   const task = taskId ? context.store.getTask(taskId) : null;
-  const suggestions = slashSuggestions(context, input);
+  const selectedProfile = (() => {
+    const profiles = context.store.listProfiles();
+    const selectedId = context.store.getSelectedProfileId();
+    return (
+      profiles.find((profile) => profile.id === selectedId) ??
+      profiles.find((profile) => profile.enabled) ??
+      null
+    );
+  })();
+  const effortLabel = selectedProfile?.config?.effort;
+  const effortText =
+    typeof effortLabel === 'string' && effortLabel.length > 0 ? effortLabel : 'default';
   // Keep the newest entries visible even when an older entry is very tall
   // (for example /help). We budget terminal lines rather than entry counts.
   const lineBudget = Math.max(5, rows - 18);
@@ -790,13 +793,85 @@ export function Workspace({
   let used = 0;
   for (let index = end - 1; index >= 0; index -= 1) {
     const entry = entries[index]!;
-    const role = roleFor(entry);
-    const height = clipLines(entry.text, role.lines, role.chars).split(/\r?\n/).length + 2;
+    const height = entryDisplay(entry).split(/\r?\n/).length + 2;
     if (start < end && used + height > lineBudget) break;
     used += height;
     start = index;
   }
   const visible = entries.slice(start, end);
+
+  // Indices of user prompts, for the ctrl+j jump popup.
+  const jumpTargets = entries.flatMap((entry, index) =>
+    entry.kind === 'user' ? [index] : [],
+  );
+  const jumpTo = useCallback(
+    (entryIndex: number): void => {
+      // Show the question plus a few following entries; pgdn returns to latest.
+      setScrollOffset(Math.max(0, entries.length - entryIndex - 10));
+      setJumpOpen(false);
+    },
+    [entries.length],
+  );
+
+  useInput(
+    (input, key) => {
+      if (key.escape) {
+        setJumpOpen(false);
+        return;
+      }
+      const jumpCount = jumpTargets.length;
+      if (key.upArrow) {
+        setJumpIndex((value) => (jumpCount === 0 ? 0 : (value - 1 + jumpCount) % jumpCount));
+        return;
+      }
+      if (key.downArrow || key.pageDown) {
+        setJumpIndex((value) => (jumpCount === 0 ? 0 : (value + 1) % jumpCount));
+        return;
+      }
+      if (key.return) {
+        const target = jumpTargets[Math.min(jumpIndex, jumpTargets.length - 1)];
+        if (target !== undefined) jumpTo(target);
+      }
+    },
+    { isActive: jumpOpen },
+  );
+
+  // Scrollbar geometry — approximate the transcript viewport with the line
+  // budget; the thumb tracks how far back the view is scrolled.
+  const trackHeight = Math.max(6, lineBudget);
+  const thumbHeight =
+    entries.length > visible.length
+      ? Math.max(
+          1,
+          Math.min(trackHeight, Math.round((trackHeight * visible.length) / entries.length)),
+        )
+      : 0;
+  const thumbTop =
+    thumbHeight > 0
+      ? Math.round(((trackHeight - thumbHeight) * start) / Math.max(1, entries.length - visible.length))
+      : 0;
+  const scrollbar =
+    thumbHeight > 0 ? (
+      <Box flexDirection="column" flexShrink={0} paddingLeft={1}>
+        {Array.from({ length: trackHeight }, (_, i) => {
+          const inThumb = i >= thumbTop && i < thumbTop + thumbHeight;
+          return (
+            <Text
+              key={i}
+              color={inThumb ? theme.accent : theme.faint}
+              dimColor={dimmed && !inThumb}
+            >
+              {inThumb ? '█' : '░'}
+            </Text>
+          );
+        })}
+      </Box>
+    ) : null;
+
+  const jumpShown = jumpTargets.slice(-14);
+  const jumpBase = jumpTargets.length - jumpShown.length;
+  const jumpSel = Math.min(jumpIndex, Math.max(0, jumpTargets.length - 1));
+
   const statusColor =
     status === 'running'
       ? theme.accent
@@ -808,142 +883,221 @@ export function Workspace({
             ? theme.danger
             : theme.faint;
 
+  const composerArea = confirmRequest ? (
+    <ConfirmDialog request={confirmRequest} onDecision={respondConfirm} />
+  ) : (
+    <>
+      {running ? (
+        <Box flexDirection="column" flexShrink={0} borderStyle="round" borderColor={theme.border}>
+          <Box paddingX={1} justifyContent="space-between">
+            <Spinner frame={frame} label={route ? `working ${glyph.route} ${route}` : 'working'} />
+            <Text color={theme.faint} dimColor={dimmed}>
+              {formatCount(usage.inputTokens)} in / {formatCount(usage.outputTokens)} out
+              {lastInputTokens > 0 ? ` · ctx ~${formatCount(lastInputTokens)}` : ''}
+              {queue.length > 0 ? ` · ${queue.length} queued` : ''}
+              {`  ${glyph.bullet}  `}type to queue · esc pauses
+            </Text>
+          </Box>
+        </Box>
+      ) : null}
+      <Box
+        flexDirection="column"
+        flexShrink={0}
+        borderStyle="round"
+        borderColor={status === 'paused' ? theme.warning : theme.accentDim}
+        paddingX={1}
+      >
+        <PromptInput
+          value={input}
+          onChange={setInput}
+          onSubmit={submit}
+          focus={active && !dimmed}
+          suggestions={suggestions}
+          history={history}
+          onCycleScreen={onCycleScreen}
+          onCycleMode={(direction) => onAgentMode?.(nextAgentMode(agentMode, direction))}
+          placeholder={
+            status === 'paused'
+              ? 'Describe the next step, /resume, or /new'
+              : 'Ask ComiCode to build, fix, test, or explain…'
+          }
+        />
+        {suggestions.length === 0 ? (
+          <Box>
+            <Text color={theme.faint} wrap="truncate" dimColor={dimmed}>
+              enter send {glyph.bullet} / commands {glyph.bullet} ctrl+m model {glyph.bullet}{' '}
+              ctrl+b provider {glyph.bullet} ctrl+p palette {glyph.bullet} ctrl+j questions
+            </Text>
+          </Box>
+        ) : null}
+      </Box>
+    </>
+  );
+
+  const statusFooter = (
+    <Box flexDirection="column" flexShrink={0} paddingX={1} marginTop={1}>
+      <Text wrap="truncate" dimColor={dimmed}>
+        <Text color={statusColor}>
+          {status === 'running'
+            ? `${glyph.dot} ${status}`
+            : status === 'completed'
+              ? `${glyph.check} ${status}`
+              : status === 'failed'
+                ? `${glyph.cross} ${status}`
+                : `${glyph.ring} ${status}`}
+        </Text>
+        <Text
+          color={agentMode === 'plan' ? theme.info : agentMode === 'debug' ? theme.warning : theme.muted}
+        >
+          {'  '}
+          {glyph.route} {agentMode}
+        </Text>
+        <Text color={theme.faint}>
+          {'  '}
+          effort {effortText}
+        </Text>
+        {selectedProfile ? (
+          <Text color={theme.muted}>
+            {'  '}
+            {glyph.route} {clip(selectedProfile.name, 24)}
+          </Text>
+        ) : (
+          <Text color={theme.faint}>
+            {'  '}
+            {glyph.route} no profile
+          </Text>
+        )}
+      </Text>
+      <Text wrap="truncate" dimColor={dimmed}>
+        {route ? (
+          <Text color={theme.violet}>
+            {glyph.route} {clip(route, 54)}
+          </Text>
+        ) : (
+          <Text color={theme.faint}>{glyph.route} no route yet</Text>
+        )}
+        {task ? (
+          <Text color={theme.faint}>
+            {'  '}
+            {glyph.bullet} task {task.id.slice(0, 8)}
+          </Text>
+        ) : (
+          <Text color={theme.faint}> {glyph.bullet} no task yet</Text>
+        )}
+      </Text>
+      <Text color={theme.faint} wrap="truncate" dimColor={dimmed}>
+        {usage.inputTokens + usage.outputTokens > 0
+          ? `${formatCount(usage.inputTokens)} in · ${formatCount(usage.outputTokens)} out`
+          : `${formatCount(usage.inputTokens + usage.outputTokens)} tokens`}
+        {lastInputTokens > 0 ? ` · ctx ~${formatCount(lastInputTokens)}` : ''}
+        {pauseReason
+          ? ` ${glyph.bullet} ${clip(pauseReason, 48)}`
+          : lastResult
+            ? ` ${glyph.bullet} ${clip(lastResult, 48)}`
+            : ''}
+      </Text>
+    </Box>
+  );
+
+  if (entries.length === 0) {
+    return (
+      <Box flexDirection="column" flexGrow={1} justifyContent="center" paddingX={2}>
+        <Box flexDirection="column" alignItems="center" width="100%">
+          <Box flexDirection="column" alignItems="center" marginBottom={1}>
+            <Text color={theme.accent} bold wrap="truncate">
+              {' ██████╗   ██████╗  ███╗   ███╗ ██╗  ██████╗   ██████╗  ██████╗  ███████╗\n' +
+                '██╔════╝  ██╔═══██╗ ████╗ ████║ ██║ ██╔════╝  ██╔═══██╗ ██╔══██╗ ██╔════╝\n' +
+                '██║       ██║   ██║ ██╔████╔██║ ██║ ██║       ██║   ██║ ██║  ██║ █████╗  \n' +
+                '██║       ██║   ██║ ██║╚██╔╝██║ ██║ ██║       ██║   ██║ ██║  ██║ ██╔══╝  \n' +
+                '╚██████╗  ╚██████╔╝ ██║ ╚═╝ ██║ ██║ ╚██████╗  ╚██████╔╝ ██████╔╝ ███████╗\n' +
+                ' ╚═════╝   ╚═════╝  ╚═╝     ╚═╝ ╚═╝  ╚═════╝   ╚═════╝  ╚═════╝  ╚══════╝'}
+            </Text>
+            <Text color={theme.faint} dimColor={dimmed}>
+              {glyph.route} what should we build?
+            </Text>
+            <Text color={theme.faint} dimColor={dimmed}>
+              try: “fix a bug” {glyph.bullet} “build a feature” {glyph.bullet} “explain this code”
+            </Text>
+          </Box>
+          <Box flexDirection="column" width="100%" maxWidth={84}>
+            {composerArea}
+          </Box>
+          <Box flexDirection="column" width="100%" maxWidth={84}>
+            {statusFooter}
+          </Box>
+        </Box>
+      </Box>
+    );
+  }
+
   return (
     <Box flexDirection="column" flexGrow={1} overflow="hidden">
+      <Box flexDirection="row" flexGrow={1} overflow="hidden">
       <Box flexDirection="column" flexGrow={1} overflow="hidden" paddingTop={1}>
         {start > 0 ? (
           <Box flexShrink={0}>
-            <Text color={theme.faint}>
+            <Text color={theme.faint} dimColor={dimmed}>
               {glyph.arrowUp} {start} earlier {glyph.bullet} pgup to scroll back
             </Text>
           </Box>
         ) : null}
-        {entries.length === 0 ? (
-          <Box flexDirection="column" paddingY={1}>
-            <Text bold color={theme.text}>
-              Ready when you are.
-            </Text>
-            <Text color={theme.muted} wrap="wrap">
-              Describe a coding task. ComiCode inspects the project, edits files, runs checks, and
-              pauses safely when a provider runs out of quota.
-            </Text>
-            <Box flexDirection="column" marginTop={1}>
-              <Text color={theme.faint}>
-                <Text color={theme.accent}>/</Text> commands with completion
-                <Text color={theme.faint}>{`  ${glyph.bullet}  `}</Text>
-                <Text color={theme.accent}>{glyph.arrowLeft}</Text>/
-                <Text color={theme.accent}>{glyph.arrowRight}</Text> switch screens
-              </Text>
-              <Text color={theme.faint}>
-                <Text color={theme.accent}>enter</Text> send
-                <Text color={theme.faint}>{`  ${glyph.bullet}  `}</Text>
-                <Text color={theme.accent}>ctrl+k</Text> command palette
-                <Text color={theme.faint}>{`  ${glyph.bullet}  `}</Text>
-                <Text color={theme.accent}>/help</Text> all commands
-              </Text>
-            </Box>
-          </Box>
-        ) : (
-          visible.map((entry) => <EntryCard key={entry.id} entry={entry} />)
-        )}
+        {visible.map((entry) => <EntryCard key={entry.id} entry={entry} dimmed={dimmed} />)}
         {scrollOffset > 0 && visible.length === 0 ? (
           <Empty>No more transcript above. Press pgdn to return to the latest output.</Empty>
         ) : null}
       </Box>
+      {scrollbar}
+      </Box>
 
       {plan?.steps?.length ? (
         <Box flexDirection="column" flexShrink={0} marginBottom={1}>
-          <Text color={theme.muted} wrap="truncate">
+          <Text color={theme.muted} wrap="truncate" dimColor={dimmed}>
             <Text color={theme.accent}>▤ plan </Text>
             {plan.summary}
           </Text>
-          <Text color={theme.faint}>
+          <Text color={theme.faint} dimColor={dimmed}>
             {plan.steps.filter((step) => step.status === 'completed').length}/{plan.steps.length}{' '}
             steps complete
           </Text>
         </Box>
       ) : null}
 
-      {confirmRequest ? (
-        <ConfirmDialog request={confirmRequest} onDecision={respondConfirm} />
-      ) : running ? (
-        <Box flexDirection="column" flexShrink={0} borderStyle="round" borderColor={theme.border}>
-          <Box paddingX={1} justifyContent="space-between">
-            <Spinner frame={frame} label={route ? `working ${glyph.route} ${route}` : 'working'} />
-            <Text color={theme.faint}>
-              {formatCount(usage.inputTokens)} in / {formatCount(usage.outputTokens)} out
-              {`  ${glyph.bullet}  `}esc pauses
-            </Text>
-          </Box>
-        </Box>
-      ) : (
-        <Box
-          flexDirection="column"
-          flexShrink={0}
-          borderStyle="round"
-          borderColor={status === 'paused' ? theme.warning : theme.accentDim}
-          paddingX={1}
-        >
-          <PromptInput
-            value={input}
-            onChange={setInput}
-            onSubmit={submit}
-            focus={active}
-            suggestions={suggestions}
-            history={history}
-            onCycleScreen={onCycleScreen}
-            placeholder={
-              status === 'paused'
-                ? 'Describe the next step, /resume, or /new'
-                : 'Ask ComiCode to build, fix, test, or explain…'
-            }
-          />
-          {suggestions.length === 0 ? (
-            <Box>
-              <Text color={theme.faint} wrap="truncate">
-                enter send {glyph.bullet} / commands {glyph.bullet} tab next screen {glyph.bullet}{' '}
-                {glyph.arrowLeft}/{glyph.arrowRight} screens
-              </Text>
-            </Box>
-          ) : null}
-        </Box>
-      )}
+      {composerArea}
 
-      <Box flexShrink={0} justifyContent="space-between" paddingX={1} marginTop={1}>
-        <Text wrap="truncate">
-          <Text color={statusColor}>
-            {status === 'running'
-              ? `${glyph.dot} ${status}`
-              : status === 'completed'
-                ? `${glyph.check} ${status}`
-                : status === 'failed'
-                  ? `${glyph.cross} ${status}`
-                  : `${glyph.ring} ${status}`}
-          </Text>
-          {route ? (
-            <Text color={theme.violet}>
-              {'  '}
-              {glyph.route} {clip(route, 54)}
-            </Text>
-          ) : null}
-          {task ? (
-            <Text color={theme.faint}>
-              {' '}
-              {glyph.bullet} task {task.id.slice(0, 8)}
-            </Text>
-          ) : (
-            <Text color={theme.faint}> {glyph.bullet} no task yet</Text>
-          )}
-        </Text>
-        <Text color={theme.faint} wrap="truncate">
-          {formatCount(usage.inputTokens + usage.outputTokens)} tokens
-          {pauseReason
-            ? ` ${glyph.bullet} ${clip(pauseReason, 48)}`
-            : lastResult
-              ? ` ${glyph.bullet} ${clip(lastResult, 48)}`
-              : ''}
-        </Text>
-      </Box>
+      {jumpOpen && jumpTargets.length > 0 ? (
+        <ModalWindow
+          title="JUMP TO QUESTION"
+          subtitle={`${jumpTargets.length} prompt${jumpTargets.length === 1 ? '' : 's'} in this task`}
+          width={72}
+          height={Math.min(rows - 4, 20)}
+          footer={['↑/↓ choose', 'enter jump to that point', 'esc close · pgdn latest']}
+        >
+          <Box flexDirection="column" flexGrow={1} overflow="hidden">
+            {jumpShown.map((entryIndex, offset) => {
+              const pos = jumpBase + offset;
+              const selected = pos === jumpSel;
+              const prompt = entries[entryIndex]?.text ?? '';
+              return (
+                <Box key={entryIndex}>
+                  <Text
+                    color={selected ? theme.black : theme.text}
+                    backgroundColor={selected ? theme.accent : undefined}
+                    wrap="truncate"
+                  >
+                    {selected ? `${glyph.active} ` : '  '}
+                    {clip(prompt, 64)}
+                  </Text>
+                </Box>
+              );
+            })}
+            {jumpTargets.length > jumpShown.length ? (
+              <Text color={theme.faint}>  ⋮ {jumpTargets.length - jumpShown.length} earlier</Text>
+            ) : null}
+          </Box>
+        </ModalWindow>
+      ) : null}
+
+      {statusFooter}
     </Box>
   );
 }

@@ -8,7 +8,14 @@ import type {
 } from '../types.js';
 
 export interface ConfirmationRequest {
-  kind: 'file-write' | 'file-delete' | 'command' | 'dangerous-command' | 'secret-read';
+  kind:
+    | 'file-write'
+    | 'file-delete'
+    | 'command'
+    | 'dangerous-command'
+    | 'secret-read'
+    | 'task-delete'
+    | 'provider-switch';
   title: string;
   description: string;
   path?: string;
@@ -17,7 +24,15 @@ export interface ConfirmationRequest {
   reasons?: string[];
 }
 
-export type ConfirmFn = (request: ConfirmationRequest) => Promise<boolean>;
+/**
+ * Outcome of an approval prompt.
+ * - `allow`: approve this single action.
+ * - `always`: approve and persist a grant so matching future actions skip the prompt.
+ * - `deny`: refuse the action.
+ */
+export type ConfirmDecision = 'allow' | 'always' | 'deny';
+
+export type ConfirmFn = (request: ConfirmationRequest) => Promise<ConfirmDecision>;
 
 export interface ToolResult {
   ok: boolean;

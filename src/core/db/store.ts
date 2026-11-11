@@ -652,6 +652,58 @@ export class Store {
     });
   }
 
+  /** Row counts per table plus the on-disk size of the database file. */
+  storageStats(): { path: string; tables: Record<string, number>; dbBytes: number } {
+    const tables = [
+      'meta',
+      'settings',
+      'provider_profiles',
+      'models',
+      'tasks',
+      'task_messages',
+      'checkpoints',
+      'usage_events',
+      'provider_limits',
+      'routing_events',
+      'provider_health',
+    ];
+    const counts: Record<string, number> = {};
+    for (const table of tables) {
+      const row = this.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table}`);
+      counts[table] = Number(row?.n ?? 0);
+    }
+    let dbBytes = 0;
+    try {
+      dbBytes = statSync(this.path).size;
+    } catch {
+      // Database file may not exist yet.
+    }
+    return { path: this.path, tables: counts, dbBytes };
+  }
+
+  /**
+   * Delete completed/failed tasks older than `days` (with their messages,
+   * checkpoints, and events) and vacuum the database. Paused/running tasks are
+   * never touched.
+   */
+  cleanupCompletedOlderThan(days: number): { deletedTasks: number } {
+    const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
+    const rows = this.db.all<{ id: string }>(
+      `SELECT id FROM tasks
+       WHERE status IN ('completed', 'failed') AND updated_at < ?`,
+      cutoff,
+    );
+    this.db.transaction(() => {
+      for (const row of rows) this.deleteTask(row.id);
+    });
+    try {
+      this.db.run('VACUUM');
+    } catch {
+      // VACUUM can fail inside a transaction on some SQLite builds; skip.
+    }
+    return { deletedTasks: rows.length };
+  }
+
   appendMessage(taskId: string, message: AgentMessage): StoredMessage {
     const seqRow = this.db.get<{ seq: number }>(
       'SELECT COALESCE(MAX(seq), 0) AS seq FROM task_messages WHERE task_id = ?',
@@ -726,6 +778,37 @@ export class Store {
         limit,
       )
       .map(mapMessage);
+  }
+
+  /** Load messages newer than a compaction cutoff. */
+  loadMessagesAfter(taskId: string, afterSeq: number, limit = 500): AgentMessage[] {
+    const rows = this.db.all<Row>(
+      'SELECT * FROM task_messages WHERE task_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?',
+      taskId,
+      afterSeq,
+      limit,
+    );
+    return rows.map((row) => {
+      const message = mapMessage(row);
+      if (message.role === 'assistant') {
+        return {
+          role: 'assistant' as const,
+          content: message.content,
+          ...(message.toolCalls?.length ? { toolCalls: message.toolCalls } : {}),
+        };
+      }
+      if (message.role === 'tool') {
+        return {
+          role: 'tool' as const,
+          toolCallId: message.toolCallId ?? '',
+          name: message.name ?? 'tool',
+          content: message.content,
+          isError: message.isError,
+        };
+      }
+      if (message.role === 'system') return { role: 'system' as const, content: message.content };
+      return { role: 'user' as const, content: message.content };
+    });
   }
 
   messageTokenEstimate(taskId: string): number {

@@ -273,10 +273,7 @@ function usageSummary(): void {
 }
 
 export function registerTaskCommands(program: Command): void {
-  const tasks = program
-    .command('tasks')
-    .alias('task')
-    .description('Inspect and manage persisted tasks');
+  const tasks = program.command('tasks').description('Inspect and manage persisted tasks');
 
   tasks
     .command('list')

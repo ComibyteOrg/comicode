@@ -193,9 +193,10 @@ export function SettingsScreen({
         onCycleScreen(key.shift ? -1 : 1);
         return;
       }
-      if (key.upArrow || input === 'k') setSelected((current) => Math.max(0, current - 1));
-      else if (key.downArrow || input === 'j') {
-        setSelected((current) => Math.min(paths.length - 1, current + 1));
+      if (key.upArrow || input === 'k') {
+        setSelected((current) => (paths.length === 0 ? 0 : (current - 1 + paths.length) % paths.length));
+      } else if (key.downArrow || input === 'j') {
+        setSelected((current) => (paths.length === 0 ? 0 : (current + 1) % paths.length));
       } else if (isEnter(input, key)) beginEdit();
       else if (input === 'r') setConfirmReset(true);
     },

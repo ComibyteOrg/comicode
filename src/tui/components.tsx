@@ -1,17 +1,17 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useInput, useWindowSize, type Key } from 'ink';
-import type { ConfirmationRequest } from '../core/agent/types.js';
 import { glyph, theme } from './theme.js';
+import { isMouseSequence, isSuppressedInput } from './mouse.js';
 
-export type ScreenId = 'workspace' | 'providers' | 'models' | 'history' | 'usage' | 'settings';
+export type ScreenId = 'workspace';
 
+/**
+ * ComiCode is a single-surface UI: the workspace is the only screen. Every
+ * other feature (providers, models, tasks, usage, settings) opens as a modal
+ * dialog layered over the chat, so there is nothing to cycle between.
+ */
 export const SCREENS: Array<{ id: ScreenId; label: string; short: string }> = [
   { id: 'workspace', label: 'workspace', short: 'work' },
-  { id: 'providers', label: 'providers', short: 'prov' },
-  { id: 'models', label: 'models', short: 'model' },
-  { id: 'history', label: 'history', short: 'hist' },
-  { id: 'usage', label: 'usage', short: 'usage' },
-  { id: 'settings', label: 'settings', short: 'config' },
 ];
 
 export type AgentStatus = 'idle' | 'running' | 'paused' | 'completed' | 'failed';
@@ -23,6 +23,39 @@ const STATUS: Record<AgentStatus, { color: string; label: string }> = {
   completed: { color: theme.success, label: 'completed' },
   failed: { color: theme.danger, label: 'failed' },
 };
+
+interface WrappedLine {
+  text: string;
+  /** Code-point index of this line's first char in the source string. */
+  start: number;
+}
+
+/** Greedy word-wrap that prefers breaking at whitespace; keeps char offsets. */
+function wrapText(text: string, width: number): WrappedLine[] {
+  const chars = Array.from(text);
+  const lines: WrappedLine[] = [];
+  let i = 0;
+  while (i < chars.length) {
+    let end = Math.min(i + width, chars.length);
+    if (end < chars.length) {
+      let spaceBreak = -1;
+      for (let j = end; j > i + 1; j -= 1) {
+        if (/\s/.test(chars[j - 1] ?? '')) {
+          spaceBreak = j - 1;
+          break;
+        }
+      }
+      if (spaceBreak > i) end = spaceBreak;
+    }
+    const raw = chars.slice(i, end);
+    let trimEnd = raw.length;
+    while (trimEnd > 0 && /\s/.test(raw[trimEnd - 1] ?? '')) trimEnd -= 1;
+    lines.push({ text: raw.slice(0, trimEnd).join(''), start: i });
+    i = end;
+    while (i < chars.length && /\s/.test(chars[i] ?? '')) i += 1;
+  }
+  return lines.length > 0 ? lines : [{ text: '', start: 0 }];
+}
 
 export function isEnter(input: string, key: Pick<Key, 'return'>): boolean {
   // Terminals differ: xterm/Windows Terminal send \r, some shells and
@@ -78,7 +111,6 @@ export function Chip({
 }
 
 export function Header({
-  screen,
   version,
   cwd,
   profileName,
@@ -86,9 +118,12 @@ export function Header({
   status,
   allowPaid,
   taskId,
+  branch,
   columns,
+  dimmed,
+  agentMode = 'build',
 }: {
-  screen: ScreenId;
+  screen?: ScreenId;
   version: string;
   cwd: string;
   profileName: string | null;
@@ -96,13 +131,17 @@ export function Header({
   status: AgentStatus;
   allowPaid: boolean;
   taskId: string | null;
+  branch?: string | null;
   columns: number;
+  dimmed?: boolean;
+  agentMode?: import('../core/agent/modes.js').AgentMode;
 }): React.ReactElement {
-  const compact = columns < 92;
+  const compact = columns < 96;
   return (
     <Box flexDirection="column" flexShrink={0} paddingX={1}>
+      {/* Top line: Brand, interactive controls, status */}
       <Box justifyContent="space-between">
-        <Text wrap="truncate">
+        <Text wrap="truncate" dimColor={dimmed}>
           <Text bold color={theme.accent}>
             {glyph.brand}
           </Text>
@@ -110,50 +149,83 @@ export function Header({
             {' '}
             comicode
           </Text>
-          <Text color={theme.faint}> v{version}</Text>
+          <Text color={theme.faint}> workspace v{version}</Text>
         </Text>
         <Box columnGap={2}>
-          {allowPaid ? <Text color={theme.warning}>paid fallback on</Text> : null}
+          {allowPaid ? (
+            <Text color={theme.warning} dimColor={dimmed}>
+              paid on
+            </Text>
+          ) : null}
           <StatusPill status={status} />
+          {!compact ? (
+            <Text color={theme.faint} dimColor={dimmed}>
+              ctrl+p commands
+            </Text>
+          ) : null}
         </Box>
       </Box>
 
-      <Box marginTop={1} columnGap={1} width="100%">
-        {SCREENS.map((entry, index) => {
-          const active = entry.id === screen;
-          return (
+      {/* Middle line: Interactive Provider and Model controls */}
+      <Box marginTop={1} justifyContent="space-between" width="100%">
+        <Box columnGap={2}>
+          {/* Provider control */}
+          <Text dimColor={dimmed}>
+            <Text color={theme.faint}>ctrl+b </Text>
             <Text
-              key={entry.id}
-              color={active ? theme.black : theme.muted}
-              backgroundColor={active ? theme.accent : undefined}
-              bold={active}
+              color={profileName ? theme.text : theme.warning}
+              bold
+              backgroundColor={theme.border}
             >
-              {` ${index + 1} ${compact ? entry.short : entry.label} `}
+              {profileName ? ` ${glyph.ring} ${profileName} ` : ' Connect Provider '}
             </Text>
-          );
-        })}
-        <Box flexGrow={1} />
-        {!compact ? <Text color={theme.faint}>ctrl+k palette</Text> : null}
+          </Text>
+
+          {/* Model control */}
+          <Text dimColor={dimmed}>
+            <Text color={theme.faint}>ctrl+m </Text>
+            <Text
+              color={modelName ? theme.accent : theme.warning}
+              bold
+              backgroundColor={theme.border}
+            >
+              {modelName ? ` ${glyph.dot} ${modelName} ` : ' Select Model '}
+            </Text>
+          </Text>
+
+          {/* Agent mode control (tab cycles) */}
+          <Text dimColor={dimmed}>
+            <Text color={theme.faint}>tab </Text>
+            <Text
+              color={agentMode === 'build' ? theme.text : theme.warning}
+              bold
+              backgroundColor={theme.border}
+            >
+              {' '}
+              {agentMode === 'build' ? glyph.tool : agentMode === 'plan' ? glyph.pause : glyph.ring}{' '}
+              {agentMode}{' '}
+            </Text>
+          </Text>
+        </Box>
+
+        {taskId ? (
+          <Text color={theme.faint} dimColor={dimmed}>
+            task {taskId.slice(0, 8)}
+          </Text>
+        ) : null}
       </Box>
 
+      {/* Bottom line: Directory & branch */}
       <Box justifyContent="space-between" marginTop={1}>
-        <Text color={theme.muted} wrap="truncate-middle">
+        <Text color={theme.muted} wrap="truncate-middle" dimColor={dimmed}>
           {cwd}
+          {branch ? <Text color={theme.violet}> ⎇ {branch}</Text> : null}
         </Text>
-        <Text wrap="truncate">
-          <Text color={theme.faint}>profile </Text>
-          <Text color={profileName ? theme.text : theme.warning}>
-            {profileName ?? 'none selected'}
+        {!compact ? (
+          <Text color={theme.faint} dimColor={dimmed}>
+            / commands · ? shortcuts
           </Text>
-          <Text color={theme.faint}> {glyph.bullet} </Text>
-          <Text color={modelName ? theme.accent : theme.warning}>{modelName ?? 'no model'}</Text>
-          {taskId ? (
-            <Text color={theme.faint}>
-              {' '}
-              {glyph.bullet} task {taskId.slice(0, 8)}
-            </Text>
-          ) : null}
-        </Text>
+        ) : null}
       </Box>
       <Box>
         <Divider width={Math.max(1, columns - 2)} />
@@ -257,79 +329,6 @@ export function KeyValue({
   );
 }
 
-export function ConfirmDialog({
-  request,
-  onDecision,
-}: {
-  request: ConfirmationRequest;
-  onDecision: (approved: boolean) => void;
-}): React.ReactElement {
-  useInput((input, key) => {
-    if (input === 'y' || input === 'Y') onDecision(true);
-    else if (input === 'n' || input === 'N' || key.escape) onDecision(false);
-  });
-
-  const diffLines = request.diff ? request.diff.split(/\r?\n/).slice(0, 12) : [];
-
-  return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={theme.warning}
-      paddingX={1}
-      flexShrink={0}
-      overflow="hidden"
-    >
-      <Box justifyContent="space-between">
-        <Text bold color={theme.warning}>
-          Approval needed
-        </Text>
-        <Text color={theme.faint}>y approve {glyph.bullet} n reject</Text>
-      </Box>
-      <Text bold color={theme.text}>
-        {request.title}
-      </Text>
-      <Text color={theme.muted} wrap="wrap">
-        {request.description}
-      </Text>
-      {request.path ? (
-        <Text color={theme.faint} wrap="truncate-middle">
-          path {request.path}
-        </Text>
-      ) : null}
-      {request.command ? <Text color={theme.warning}>$ {request.command}</Text> : null}
-      {request.reasons?.map((reason) => (
-        <Text key={reason} color={theme.danger}>
-          risk {glyph.bullet} {reason}
-        </Text>
-      ))}
-      {diffLines.length ? (
-        <Box flexDirection="column" marginTop={1}>
-          {diffLines.map((line, index) => (
-            <Text
-              key={`${index}-${line.slice(0, 10)}`}
-              color={
-                line.startsWith('+')
-                  ? theme.success
-                  : line.startsWith('-')
-                    ? theme.danger
-                    : theme.muted
-              }
-            >
-              {line || ' '}
-            </Text>
-          ))}
-          {request.diff && request.diff.split(/\r?\n/).length > diffLines.length ? (
-            <Text color={theme.faint}>
-              {glyph.bullet} {request.diff.split(/\r?\n/).length - diffLines.length} more lines
-            </Text>
-          ) : null}
-        </Box>
-      ) : null}
-    </Box>
-  );
-}
-
 export function Toast({ message }: { message: string }): React.ReactElement {
   return (
     <Text color={/fail|error|cannot|not /i.test(message) ? theme.danger : theme.success}>
@@ -364,13 +363,14 @@ export function clipLines(text: string, maxLines = 4, maxChars = 900): string {
   const clipped = text.length > maxChars ? `${text.slice(0, maxChars)}…` : text;
   const lines = clipped.split(/\r?\n/);
   if (lines.length <= maxLines) return clipped;
-  return `${lines.slice(0, maxLines).join('\n')}\n… ${lines.length - maxLines} more lines`;
+  return `${lines.slice(0, maxLines).join('\n')}\n[+${lines.length - maxLines} lines]`;
 }
 
 export interface PromptSuggestion {
   value: string;
   label: string;
   detail?: string;
+  hint?: string;
   /** Enter executes the value immediately instead of completing it. */
   submit?: boolean;
 }
@@ -385,9 +385,12 @@ export interface PromptInputProps {
   suggestions?: PromptSuggestion[];
   history?: string[];
   onCycleScreen?: (direction: 1 | -1) => void;
+  /** Tab cycles the agent mode (build/plan/debug) when provided. */
+  onCycleMode?: (direction: 1 | -1) => void;
   prompt?: React.ReactNode;
   promptColor?: string;
   maxSuggestions?: number;
+  popupTitle?: string;
 }
 
 function normalizeInsertion(input: string): string {
@@ -419,14 +422,17 @@ export function PromptInput({
   suggestions = [],
   history = [],
   onCycleScreen,
+  onCycleMode,
   prompt,
   promptColor = theme.accent,
-  maxSuggestions = 5,
+  maxSuggestions = 8,
+  popupTitle = 'COMMANDS',
 }: PromptInputProps): React.ReactElement {
   const chars = useMemo(() => Array.from(value), [value]);
   const [cursor, setCursor] = useState(chars.length);
   const [suggestionIndex, setSuggestionIndex] = useState(0);
   const [suggestionActive, setSuggestionActive] = useState(false);
+  const [suggestionDismissed, setSuggestionDismissed] = useState(false);
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
   const draftRef = useRef('');
 
@@ -435,10 +441,17 @@ export function PromptInput({
   }, [chars.length]);
 
   useEffect(() => {
+    setSuggestionDismissed(false);
+    setSuggestionIndex(0);
+  }, [value]);
+
+  useEffect(() => {
     if (suggestionIndex >= suggestions.length) setSuggestionIndex(0);
   }, [suggestionIndex, suggestions.length]);
 
   const visibleSuggestions = suggestions.slice(0, maxSuggestions);
+  // An open @token at the end of the input triggers file-mention completion.
+  const mentionMode = /(^|\s)@([^\s@]*)$/.test(value);
   const labelWidth = Math.min(
     28,
     Math.max(10, ...visibleSuggestions.map((suggestion) => suggestion.label.length)),
@@ -448,6 +461,7 @@ export function PromptInput({
     setCursor(0);
     setSuggestionIndex(0);
     setSuggestionActive(false);
+    setSuggestionDismissed(false);
     setHistoryIndex(null);
     draftRef.current = '';
   };
@@ -496,10 +510,16 @@ export function PromptInput({
 
   useInput(
     (input, key) => {
+      if (isMouseSequence(input) || isSuppressedInput()) return;
       const enter = isEnter(input, key);
+      const isSuggestionOpen =
+        visibleSuggestions.length > 0 &&
+        !suggestionDismissed &&
+        (suggestionActive || value.startsWith('/') || mentionMode);
 
       if (key.escape) {
-        if (suggestionActive) {
+        if (isSuggestionOpen) {
+          setSuggestionDismissed(true);
           setSuggestionActive(false);
           return;
         }
@@ -507,7 +527,7 @@ export function PromptInput({
       }
 
       if (enter) {
-        if (suggestionActive && visibleSuggestions.length > 0) {
+        if (isSuggestionOpen) {
           const suggestion =
             visibleSuggestions[Math.min(suggestionIndex, visibleSuggestions.length - 1)]!;
           if (suggestion.submit) {
@@ -524,22 +544,23 @@ export function PromptInput({
       }
 
       if (key.tab) {
-        if (visibleSuggestions.length > 0) {
+        if (isSuggestionOpen) {
           const suggestion =
             visibleSuggestions[suggestionIndex % visibleSuggestions.length] ??
             visibleSuggestions[0]!;
           completeSuggestion(suggestion);
           return;
         }
-        onCycleScreen?.(key.shift ? -1 : 1);
+        if (onCycleMode) onCycleMode(key.shift ? -1 : 1);
+        else onCycleScreen?.(key.shift ? -1 : 1);
         return;
       }
 
       if (key.upArrow || key.downArrow) {
         if (visibleSuggestions.length > 0) {
+          setSuggestionDismissed(false);
           setSuggestionActive(true);
           setSuggestionIndex((current) => {
-            if (!suggestionActive) return key.upArrow ? visibleSuggestions.length - 1 : 0;
             return key.upArrow
               ? (current - 1 + visibleSuggestions.length) % visibleSuggestions.length
               : (current + 1) % visibleSuggestions.length;
@@ -637,15 +658,82 @@ export function PromptInput({
   );
 
   const displayChars = mask ? Array.from(mask.repeat(chars.length)) : chars;
-  const before = displayChars.slice(0, cursor).join('');
-  const at = displayChars[cursor] ?? ' ';
-  const after = displayChars.slice(cursor + 1).join('');
+  const { columns, rows } = useLayout();
+  const renderedChars = [
+    ...displayChars.slice(0, cursor),
+    displayChars[cursor] ?? ' ',
+    ...displayChars.slice(cursor + 1),
+  ];
+  const inputWidth = Math.max(16, columns - 12);
+  const wrapped = wrapText(renderedChars.join(''), inputWidth);
+  const maxLines = Math.min(10, Math.max(4, Math.floor(rows / 3)));
+  let cursorLine = wrapped.length - 1;
+  for (let index = 0; index < wrapped.length; index += 1) {
+    const nextStart = wrapped[index + 1]?.start ?? Number.MAX_SAFE_INTEGER;
+    if (cursor >= wrapped[index]!.start && cursor < nextStart) {
+      cursorLine = index;
+      break;
+    }
+  }
+  const firstLine = Math.max(
+    0,
+    Math.min(cursorLine - Math.floor(maxLines / 2), wrapped.length - maxLines),
+  );
+  const lastLine = Math.min(wrapped.length, firstLine + maxLines);
   const showCursor = focus && (chars.length > 0 || placeholder.length === 0);
   const placeholderFirst = placeholder.slice(0, 1);
   const placeholderRest = placeholder.slice(1);
 
   return (
     <Box flexDirection="column">
+      {focus &&
+      visibleSuggestions.length > 0 &&
+      !suggestionDismissed &&
+      (suggestionActive || value.startsWith('/') || mentionMode) ? (
+        <Box
+          flexDirection="column"
+          borderStyle="round"
+          borderColor={theme.accent}
+          backgroundColor={theme.surface}
+          paddingX={1}
+          marginBottom={1}
+        >
+          <Box justifyContent="space-between" marginBottom={1}>
+            <Text color={theme.accent} bold>
+              {glyph.brand} {mentionMode ? 'FILES' : popupTitle}
+            </Text>
+            <Text color={theme.faint}>
+              {mentionMode
+                ? '↑/↓ choose · tab/enter insert · esc dismiss'
+                : '↑/↓ choose · enter run · tab complete · esc dismiss'}
+            </Text>
+          </Box>
+          {visibleSuggestions.map((suggestion, index) => {
+            const selected = index === suggestionIndex;
+            return (
+              <Box
+                key={`${suggestion.value}-${index}`}
+                justifyContent="space-between"
+                backgroundColor={selected ? theme.surfaceAlt : undefined}
+              >
+                <Box>
+                  <Text color={selected ? theme.accent : theme.text} bold={selected}>
+                    {selected ? `${glyph.active} ` : '  '}
+                    {suggestion.label.padEnd(labelWidth)}
+                  </Text>
+                  {suggestion.detail ? (
+                    <Text color={selected ? theme.text : theme.muted}> {suggestion.detail}</Text>
+                  ) : null}
+                </Box>
+                {suggestion.hint ? (
+                  <Text color={selected ? theme.text : theme.faint}>{suggestion.hint}</Text>
+                ) : null}
+              </Box>
+            );
+          })}
+        </Box>
+      ) : null}
+
       <Box>
         <Text color={promptColor} bold>
           {prompt ?? `${glyph.prompt} `}
@@ -665,43 +753,33 @@ export function PromptInput({
               </Text>
             )
           ) : (
-            <Text color={theme.text} wrap="wrap">
-              {before}
-              {showCursor ? <Text inverse>{at}</Text> : at}
-              {after}
-            </Text>
+            <Box flexDirection="column" flexGrow={1}>
+              {firstLine > 0 ? <Text color={theme.faint}>⋮</Text> : null}
+              {wrapped.slice(firstLine, lastLine).map((line, lineIndex) => {
+                const absolute = firstLine + lineIndex;
+                if (!showCursor || absolute !== cursorLine) {
+                  return (
+                    <Text key={absolute} color={theme.text} wrap="truncate">
+                      {line.text || ' '}
+                    </Text>
+                  );
+                }
+                const lineChars = Array.from(line.text);
+                const col = Math.min(cursor - line.start, lineChars.length);
+                const cursorChar = lineChars[col] ?? ' ';
+                return (
+                  <Text key={absolute} color={theme.text} wrap="truncate">
+                    {lineChars.slice(0, col).join('')}
+                    <Text inverse>{cursorChar}</Text>
+                    {lineChars.slice(col + 1).join('')}
+                  </Text>
+                );
+              })}
+              {lastLine < wrapped.length ? <Text color={theme.faint}>⋮</Text> : null}
+            </Box>
           )}
         </Box>
       </Box>
-
-      {focus && suggestionActive && visibleSuggestions.length > 0 ? (
-        <Box flexDirection="column" marginTop={1}>
-          {visibleSuggestions.map((suggestion, index) => {
-            const selected = index === suggestionIndex;
-            return (
-              <Box key={`${suggestion.value}-${index}`}>
-                <Text
-                  color={selected ? theme.black : theme.text}
-                  backgroundColor={selected ? theme.accent : undefined}
-                  bold={selected}
-                >
-                  {` ${suggestion.label.padEnd(labelWidth)} `}
-                </Text>
-                {suggestion.detail ? (
-                  <Text color={selected ? theme.black : theme.faint}> {suggestion.detail}</Text>
-                ) : null}
-              </Box>
-            );
-          })}
-        </Box>
-      ) : focus && visibleSuggestions.length > 0 ? (
-        <Box marginTop={1}>
-          <Text color={theme.faint}>
-            {glyph.arrowUp}/{glyph.arrowDown} choose {glyph.bullet} tab complete {glyph.bullet}{' '}
-            enter run
-          </Text>
-        </Box>
-      ) : null}
     </Box>
   );
 }

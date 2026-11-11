@@ -154,7 +154,12 @@ describe('custom endpoint configuration', () => {
     });
     process.env.COMICODE_TEST_API_KEY = 'env-secret-1234567890';
     const resolved = await resolveProfileCredential(profile);
-    expect(resolved).toEqual({ apiKey: 'env-secret-1234567890', source: 'environment' });
+    expect(resolved).toEqual({
+      apiKey: 'env-secret-1234567890',
+      source: 'environment',
+      keyIndex: 0,
+      keyCount: 1,
+    });
 
     delete process.env.COMICODE_TEST_API_KEY;
     await expect(resolveProfileCredential(profile)).rejects.toBeInstanceOf(ProviderError);
@@ -164,7 +169,7 @@ describe('custom endpoint configuration', () => {
     const store = makeStore();
     const profile = customProfile(store, { allowNoAuth: true, apiStyle: 'openai-compatible' });
     const resolved = await resolveProfileCredential(profile);
-    expect(resolved).toEqual({ apiKey: '', source: 'none' });
+    expect(resolved).toEqual({ apiKey: '', source: 'none', keyIndex: 0, keyCount: 1 });
   });
 });
 

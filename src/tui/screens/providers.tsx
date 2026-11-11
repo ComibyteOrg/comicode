@@ -10,6 +10,8 @@ import {
 } from '../../core/providers/definitions.js';
 import {
   credentialIdForProfile,
+  keysToSecret,
+  parseKeyInput,
   refreshProfileModels,
   removeProfile,
   testProfileConnection,
@@ -34,10 +36,19 @@ import {
   useLayout,
   type AgentStatus,
 } from '../components.js';
+import { ModalWindow } from '../dialogs/modal.js';
 import { glyph, theme } from '../theme.js';
 
 type WizardStep =
-  'kind' | 'name' | 'baseUrl' | 'defaultModel' | 'apiKey' | 'apiKeyEnv' | 'access' | 'confirm';
+  | 'kind'
+  | 'name'
+  | 'baseUrl'
+  | 'defaultModel'
+  | 'apiKey'
+  | 'apiKeyEnv'
+  | 'access'
+  | 'effort'
+  | 'confirm';
 
 interface Draft {
   providerId: ProviderKind;
@@ -49,6 +60,7 @@ interface Draft {
   apiKey: string;
   apiKeyEnv: string;
   access: AccessClassification;
+  effort: string;
   requiresKey: boolean;
   config: Record<string, unknown>;
   editingId: string | null;
@@ -69,8 +81,27 @@ interface KindOption {
   apiStyle: 'openai-compatible' | 'gemini';
   baseUrl: string;
   requiresKey: boolean;
+  badge?: string;
   config: Record<string, unknown>;
 }
+
+/** Presets that cost nothing to try or run locally. */
+const FREE_PRESET_IDS = new Set([
+  'cerebras',
+  'ollama',
+  'lmstudio',
+  'vllm',
+  'litellm',
+  'github-models',
+  'huggingface',
+  'nvidia-nim',
+  'modelscope',
+  'gitee-ai',
+  'siliconflow',
+  'zhipu',
+  'cloudflare-workers-ai',
+]);
+const FREE_BUILTIN_IDS = new Set<ProviderKind>(['gemini', 'groq', 'openrouter']);
 
 function kindOptions(): KindOption[] {
   const builtins = PROVIDER_ORDER.filter((kind) => kind !== 'custom').map((kind) => {
@@ -78,24 +109,30 @@ function kindOptions(): KindOption[] {
     return {
       key: `builtin:${kind}`,
       label: definition.name,
-      detail: definition.defaultBaseUrl,
+      detail: definition.description,
       providerId: kind,
       preset: null,
       apiStyle: kind === 'gemini' ? 'gemini' : 'openai-compatible',
       baseUrl: definition.defaultBaseUrl,
       requiresKey: true,
+      badge: FREE_BUILTIN_IDS.has(kind) ? 'free tier' : undefined,
       config: {},
     } satisfies KindOption;
   });
   const presets = PROVIDER_PRESETS.map((preset) => ({
     key: `preset:${preset.id}`,
-    label: `${preset.label} (custom preset)`,
-    detail: preset.baseUrl,
+    label: preset.label,
+    detail: preset.notes,
     providerId: 'custom' as ProviderKind,
     preset: preset.id,
     apiStyle: preset.apiStyle,
     baseUrl: preset.baseUrl,
     requiresKey: preset.requiresKey,
+    badge: preset.requiresKey
+      ? FREE_PRESET_IDS.has(preset.id)
+        ? 'free tier'
+        : undefined
+      : 'local · free',
     config: {
       preset: preset.id,
       apiStyle: preset.apiStyle,
@@ -108,30 +145,41 @@ function kindOptions(): KindOption[] {
     ...presets,
     {
       key: 'custom:openai',
-      label: 'Any OpenAI-compatible endpoint',
-      detail: 'Your own base URL, /chat/completions and /models',
+      label: 'OpenAI-compatible endpoint',
+      detail: 'Any server with /chat/completions and /models — your own base URL',
       providerId: 'custom',
       preset: null,
       apiStyle: 'openai-compatible',
       baseUrl: '',
       requiresKey: false,
+      badge: 'custom',
       config: { apiStyle: 'openai-compatible' },
     },
     {
       key: 'custom:gemini',
-      label: 'Any Gemini-compatible endpoint',
-      detail: 'Your own base URL with generateContent',
+      label: 'Gemini-compatible endpoint',
+      detail: 'Any server with generateContent — your own base URL',
       providerId: 'custom',
       preset: null,
       apiStyle: 'gemini',
       baseUrl: '',
       requiresKey: true,
+      badge: 'custom',
       config: { apiStyle: 'gemini', authHeader: 'x-goog-api-key', authPrefix: '' },
     },
   ];
 }
 
 const ACCESS_OPTIONS: AccessClassification[] = ['unknown', 'user-free', 'user-paid', 'unavailable'];
+
+const EFFORT_OPTIONS = ['low', 'medium', 'default', 'high', 'xhigh'] as const;
+const EFFORT_DESCRIPTIONS: Record<string, string> = {
+  low: 'fewest tokens — tight context, few steps, small tool output',
+  medium: 'lean — smaller context budget and fewer agent steps',
+  default: 'balanced — uses the global agent settings',
+  high: 'deeper — larger context, more steps, bigger tool outputs',
+  xhigh: 'maximum depth — largest context and step budget',
+};
 
 const TEXT_STEPS: WizardStep[] = ['name', 'baseUrl', 'defaultModel', 'apiKey', 'apiKeyEnv'];
 
@@ -144,9 +192,11 @@ function stepLabel(step: WizardStep): string {
     case 'defaultModel':
       return 'Default model (optional)';
     case 'apiKey':
-      return 'API key (hidden, blank keeps the current key)';
+      return 'API key(s), comma-separated for multiple (blank keeps current)';
     case 'apiKeyEnv':
       return 'Read the key from an environment variable (optional)';
+    case 'effort':
+      return 'Reasoning effort';
     default:
       return step;
   }
@@ -164,6 +214,7 @@ function draftFromProfile(profile: ProviderProfile): Draft {
     apiKey: '',
     apiKeyEnv: profile.apiKeyEnv ?? '',
     access: profile.accessClassification,
+    effort: typeof profile.config?.effort === 'string' ? profile.config.effort : 'default',
     requiresKey: !config.allowNoAuth,
     config: profile.config,
     editingId: profile.id,
@@ -184,7 +235,8 @@ function draftFromKind(option: KindOption): Draft {
       : '',
     apiKey: '',
     apiKeyEnv: '',
-    access: option.requiresKey ? 'unknown' : 'user-free',
+    access: 'unknown',
+    effort: 'default',
     requiresKey: option.requiresKey,
     config: option.config,
     editingId: null,
@@ -202,6 +254,12 @@ function validateBaseUrl(value: string): string | null {
   }
 }
 
+function lastCheckSucceeded(profile: ProviderProfile): boolean {
+  return Boolean(
+    profile.lastSuccessAt && (!profile.lastErrorAt || profile.lastSuccessAt >= profile.lastErrorAt),
+  );
+}
+
 interface ProvidersProps {
   context: AppContext;
   active: boolean;
@@ -210,6 +268,41 @@ interface ProvidersProps {
   onStatusChange: (status: AgentStatus) => void;
   onCycleScreen: (direction: 1 | -1) => void;
   onBack: () => void;
+  /** Render inside a centered modal dialog instead of a full screen. */
+  embedded?: boolean;
+}
+
+function ProvidersFrame({
+  embedded,
+  title,
+  subtitle,
+  footer,
+  children,
+}: {
+  embedded: boolean;
+  title: string;
+  subtitle?: string;
+  footer?: string[];
+  children: React.ReactNode;
+}): React.ReactElement {
+  if (embedded) {
+    return (
+      <ModalWindow
+        title={title}
+        subtitle={subtitle}
+        width={84}
+        height={34}
+        footer={footer ?? ['↑/↓ move', 'enter select', 'esc back']}
+      >
+        {children}
+      </ModalWindow>
+    );
+  }
+  return (
+    <PanelScreen title={title} subtitle={subtitle}>
+      {children}
+    </PanelScreen>
+  );
 }
 
 export function ProvidersScreen({
@@ -220,12 +313,16 @@ export function ProvidersScreen({
   onStatusChange: _onStatusChange,
   onCycleScreen,
   onBack,
+  embedded = false,
 }: ProvidersProps): React.ReactElement {
   const { rows, columns } = useLayout();
+  const navHint = embedded ? '' : ' ←/→ or tab screens';
+  const backHint = embedded ? 'esc close' : 'esc back to workspace';
   const [mode, setMode] = useState<Mode>({ kind: 'list' });
   const [selected, setSelected] = useState(0);
   const [kindIndex, setKindIndex] = useState(0);
   const [accessIndex, setAccessIndex] = useState(0);
+  const [effortIndex, setEffortIndex] = useState(2);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [frame, setFrame] = useState(0);
@@ -262,6 +359,7 @@ export function ProvidersScreen({
       'apiKey',
       'apiKeyEnv',
       'access',
+      'effort',
       'confirm',
     ];
     const index = order.indexOf(step);
@@ -282,6 +380,7 @@ export function ProvidersScreen({
           apiStyle: draft.apiStyle,
           preset: draft.preset,
           allowNoAuth: !draft.apiKey.trim() && !draft.apiKeyEnv.trim() ? !draft.requiresKey : false,
+          effort: draft.effort,
         });
         const authType: 'api-key' | 'bearer' =
           draft.providerId === 'gemini' || config.authHeader === 'x-goog-api-key'
@@ -312,9 +411,10 @@ export function ProvidersScreen({
           });
         }
         const credentialId = credentialIdForProfile(profile.id);
-        if (draft.apiKey.trim()) {
-          registerSecret(draft.apiKey.trim());
-          await getCredentialStore().setSecret(credentialId, draft.apiKey.trim());
+        const apiKeys = parseKeyInput(draft.apiKey);
+        if (apiKeys.length > 0) {
+          for (const entry of apiKeys) registerSecret(entry);
+          await getCredentialStore().setSecret(credentialId, keysToSecret(apiKeys));
         }
         if (draft.apiKeyEnv.trim()) {
           await getCredentialStore().deleteSecret(credentialId);
@@ -444,9 +544,10 @@ export function ProvidersScreen({
           onCycleScreen(key.shift ? -1 : 1);
           return;
         }
-        if (key.upArrow || input === 'k') setSelected((value) => Math.max(0, value - 1));
-        else if (key.downArrow || input === 'j') {
-          setSelected((value) => Math.min(Math.max(0, profiles.length - 1), value + 1));
+        if (key.upArrow || input === 'k') {
+          setSelected((value) => (profiles.length === 0 ? 0 : (value - 1 + profiles.length) % profiles.length));
+        } else if (key.downArrow || input === 'j') {
+          setSelected((value) => (profiles.length === 0 ? 0 : (value + 1) % profiles.length));
         } else if (input === 'a') startAdd();
         else if (current && input === 'e') startEdit(current);
         else if (current && input === 't') void runTest(current);
@@ -488,9 +589,10 @@ export function ProvidersScreen({
         return;
       }
       if (mode.kind === 'wizard' && mode.step === 'kind') {
-        if (key.upArrow || input === 'k') setKindIndex((value) => Math.max(0, value - 1));
-        else if (key.downArrow || input === 'j') {
-          setKindIndex((value) => Math.min(kinds.length - 1, value + 1));
+        if (key.upArrow || input === 'k') {
+          setKindIndex((value) => (kinds.length === 0 ? 0 : (value - 1 + kinds.length) % kinds.length));
+        } else if (key.downArrow || input === 'j') {
+          setKindIndex((value) => (kinds.length === 0 ? 0 : (value + 1) % kinds.length));
         } else if (isEnter(input, key)) {
           const option = kinds[kindIndex];
           if (option) {
@@ -502,12 +604,24 @@ export function ProvidersScreen({
         return;
       }
       if (mode.kind === 'wizard' && mode.step === 'access') {
-        if (key.upArrow || input === 'k') setAccessIndex((value) => Math.max(0, value - 1));
-        else if (key.downArrow || input === 'j') {
-          setAccessIndex((value) => Math.min(ACCESS_OPTIONS.length - 1, value + 1));
+        if (key.upArrow || input === 'k') {
+          setAccessIndex((value) => (ACCESS_OPTIONS.length === 0 ? 0 : (value - 1 + ACCESS_OPTIONS.length) % ACCESS_OPTIONS.length));
+        } else if (key.downArrow || input === 'j') {
+          setAccessIndex((value) => (ACCESS_OPTIONS.length === 0 ? 0 : (value + 1) % ACCESS_OPTIONS.length));
         } else if (isEnter(input, key)) {
           const access = ACCESS_OPTIONS[accessIndex] ?? 'unknown';
-          setMode({ kind: 'wizard', draft: { ...mode.draft, access }, step: 'confirm' });
+          setMode({ kind: 'wizard', draft: { ...mode.draft, access }, step: 'effort' });
+        }
+        return;
+      }
+      if (mode.kind === 'wizard' && mode.step === 'effort') {
+        if (key.upArrow || input === 'k') {
+          setEffortIndex((value) => (value - 1 + EFFORT_OPTIONS.length) % EFFORT_OPTIONS.length);
+        } else if (key.downArrow || input === 'j') {
+          setEffortIndex((value) => (value + 1) % EFFORT_OPTIONS.length);
+        } else if (isEnter(input, key)) {
+          const effort = EFFORT_OPTIONS[effortIndex] ?? 'default';
+          setMode({ kind: 'wizard', draft: { ...mode.draft, effort }, step: 'confirm' });
         }
         return;
       }
@@ -531,9 +645,9 @@ export function ProvidersScreen({
 
   if (mode.kind === 'busy') {
     return (
-      <PanelScreen title="Providers" subtitle="working">
+      <ProvidersFrame embedded={embedded} title="Providers" subtitle="working">
         <Spinner frame={frame} label={mode.label} />
-      </PanelScreen>
+      </ProvidersFrame>
     );
   }
 
@@ -541,9 +655,11 @@ export function ProvidersScreen({
     const draft = mode.draft;
     const isText = TEXT_STEPS.includes(mode.step);
     return (
-      <PanelScreen
+      <ProvidersFrame
+        embedded={embedded}
         title={draft.editingId ? 'Edit provider' : 'Add provider'}
         subtitle={isText ? stepLabel(mode.step) : mode.step}
+        footer={['enter continue', 'esc back']}
       >
         <Text color={theme.muted} wrap="wrap">
           Custom platforms are first-class: any OpenAI-compatible or Gemini-compatible endpoint
@@ -552,22 +668,38 @@ export function ProvidersScreen({
         {error ? <Text color={theme.danger}>{error}</Text> : null}
         {mode.step === 'kind' ? (
           <Box flexDirection="column" marginTop={1} overflow="hidden">
+            <Text color={theme.faint} wrap="truncate">
+              {'  '}Free options are marked. Local endpoints need no key.
+            </Text>
             {kinds.slice(kindStart, kindStart + kindWindow).map((option, offset) => {
               const index = kindStart + offset;
               const activeRow = index === kindIndex;
               return (
-                <Box key={option.key} flexDirection="column">
-                  <Text
-                    color={activeRow ? theme.black : theme.text}
-                    backgroundColor={activeRow ? theme.accent : undefined}
-                    bold={activeRow}
-                  >
-                    {activeRow ? ` ${glyph.active} ` : '   '}
-                    {option.label}
-                  </Text>
+                <Box
+                  key={option.key}
+                  flexDirection="column"
+                  backgroundColor={activeRow ? theme.surfaceAlt : undefined}
+                >
+                  <Box>
+                    <Text color={activeRow ? theme.accent : theme.faint} bold={activeRow}>
+                      {activeRow ? `${glyph.active} ` : '  '}
+                    </Text>
+                    <Text bold color={activeRow ? theme.text : theme.text}>
+                      {option.label}
+                    </Text>
+                    {option.badge ? (
+                      <Text color={activeRow ? theme.accent : theme.success}>
+                        {'  '}
+                        [{option.badge}]
+                      </Text>
+                    ) : null}
+                  </Box>
                   <Text color={theme.faint} wrap="truncate">
                     {'     '}
-                    {clip(option.detail, Math.max(20, columns - 10))}
+                    {clip(option.detail, Math.max(20, columns - 12))}
+                    {option.baseUrl && option.preset ? (
+                      <Text color={theme.faint}>{`  ${clip(option.baseUrl, 40)}`}</Text>
+                    ) : null}
                   </Text>
                 </Box>
               );
@@ -653,6 +785,38 @@ export function ProvidersScreen({
             </Hint>
           </Box>
         ) : null}
+        {mode.step === 'effort' ? (
+          <Box flexDirection="column" marginTop={1}>
+            <Text color={theme.muted} wrap="wrap">
+              How deep should the agent go on this profile? Lower effort uses far fewer tokens.
+            </Text>
+            {EFFORT_OPTIONS.map((effort, index) => {
+              const activeRow = index === effortIndex;
+              return (
+                <Box
+                  key={effort}
+                  backgroundColor={activeRow ? theme.surfaceAlt : undefined}
+                  flexDirection="column"
+                >
+                  <Text
+                    color={activeRow ? theme.black : theme.text}
+                    backgroundColor={activeRow ? theme.accent : undefined}
+                    bold={activeRow}
+                  >
+                    {activeRow ? ` ${glyph.active} ` : '   '}
+                    {effort.padEnd(10)}
+                    <Text color={activeRow ? theme.black : theme.faint}>
+                      {EFFORT_DESCRIPTIONS[effort]}
+                    </Text>
+                  </Text>
+                </Box>
+              );
+            })}
+            <Hint>
+              ↑/↓ choose {glyph.bullet} enter continue {glyph.bullet} esc cancel
+            </Hint>
+          </Box>
+        ) : null}
         {mode.step === 'confirm' ? (
           <Box flexDirection="column" marginTop={1}>
             <KeyValue
@@ -671,6 +835,7 @@ export function ProvidersScreen({
                       : 'none',
                 ],
                 ['Access', draft.access],
+                ['Effort', draft.effort],
                 [
                   'Discovery',
                   draft.apiStyle === 'gemini' || draft.providerId !== 'gemini'
@@ -690,7 +855,7 @@ export function ProvidersScreen({
             {error ? <Text color={theme.danger}>{error}</Text> : null}
           </Box>
         ) : null}
-      </PanelScreen>
+      </ProvidersFrame>
     );
   }
 
@@ -698,9 +863,9 @@ export function ProvidersScreen({
     const profile = context.store.getProfile(mode.profileId);
     if (!profile) {
       return (
-        <PanelScreen title="Providers" subtitle="missing">
+        <ProvidersFrame embedded={embedded} title="Providers" subtitle="missing">
           <Text color={theme.muted}>This profile no longer exists. Press esc to return.</Text>
-        </PanelScreen>
+        </ProvidersFrame>
       );
     }
     const config = readEndpointConfig(profile);
@@ -716,7 +881,12 @@ export function ProvidersScreen({
           ? 'no auth'
           : 'missing';
     return (
-      <PanelScreen title={profile.name} subtitle={providerDisplayName(profile.providerId)}>
+      <ProvidersFrame
+        embedded={embedded}
+        title={profile.name}
+        subtitle={providerDisplayName(profile.providerId)}
+        footer={['t test', 'r refresh', 'e edit', 'space toggle', 'd delete', 'esc back']}
+      >
         {error ? <Text color={theme.danger}>{error}</Text> : null}
         <KeyValue
           rows={[
@@ -727,6 +897,7 @@ export function ProvidersScreen({
             ['Default model', profile.defaultModel ?? '—'],
             ['Enabled', profile.enabled ? 'yes' : 'no'],
             ['Access', profile.accessClassification],
+            ['Effort', typeof config.effort === 'string' ? config.effort : 'default'],
             ['Discovery', config.supportsModelDiscovery ? 'yes' : 'no'],
             ['Streaming', config.supportsStreaming ? 'yes' : 'no'],
             ['Models', String(models.length)],
@@ -747,7 +918,7 @@ export function ProvidersScreen({
             </Text>
           ))}
           {models.length > 6 ? (
-            <Text color={theme.faint}> … {models.length - 6} more on the models screen</Text>
+            <Text color={theme.faint}> … {models.length - 6} more in the model picker</Text>
           ) : null}
         </Box>
         <Box marginTop={1} flexShrink={0}>
@@ -759,13 +930,18 @@ export function ProvidersScreen({
             <Text color={theme.accent}>d</Text> delete {glyph.bullet} esc back
           </Text>
         </Box>
-        <Hint>←/→ or tab screens {glyph.bullet} esc returns to the profile list</Hint>
-      </PanelScreen>
+        <Hint>{`esc returns to the profile list${navHint}`}</Hint>
+      </ProvidersFrame>
     );
   }
 
   return (
-    <PanelScreen title="Providers" subtitle={`${profiles.length} connected`}>
+    <ProvidersFrame
+      embedded={embedded}
+      title="Providers"
+      subtitle={`${profiles.length} configured`}
+      footer={['a add', 'enter details', 'e edit', 't test', 'r refresh', 'space toggle', 'd delete', 'esc close']}
+    >
       {error ? <Text color={theme.danger}>{error}</Text> : null}
       {profiles.length === 0 ? (
         <Empty>
@@ -792,8 +968,8 @@ export function ProvidersScreen({
                   ) : (
                     '  '
                   )}
-                  <Text color={profile.enabled ? theme.success : theme.faint}>
-                    {profile.enabled ? glyph.dot : glyph.ring}
+                  <Text color={lastCheckSucceeded(profile) ? theme.success : theme.faint}>
+                    {lastCheckSucceeded(profile) ? glyph.check : glyph.ring}
                   </Text>{' '}
                   <Text bold color={activeRow ? theme.text : theme.text}>
                     {profile.name}
@@ -832,8 +1008,8 @@ export function ProvidersScreen({
         </Box>
       )}
       <Hint>
-        ↑/↓ move {glyph.bullet} ←/→ or tab screens {glyph.bullet} esc back to workspace
+        {`↑/↓ move${navHint} ${glyph.bullet} ${backHint}`}
       </Hint>
-    </PanelScreen>
+    </ProvidersFrame>
   );
 }

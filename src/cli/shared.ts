@@ -395,10 +395,10 @@ export async function runTask(
           `${warning('!')} ${request.title} was not approved because no interactive confirmation is available.`,
         );
         console.log(dim(`  Re-run with ${AUTHORITY_FLAGS.join(', ')} as appropriate.`));
-        return false;
+        return 'deny';
       }
       printConfirmation(request);
-      return promptConfirm('Approve this action?', false);
+      return (await promptConfirm('Approve this action?', false)) ? 'allow' : 'deny';
     },
   };
 

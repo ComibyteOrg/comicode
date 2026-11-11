@@ -12,6 +12,8 @@ import { z } from 'zod';
 import type { AgentAuthority, TaskPlan, ToolCall } from '../../types.js';
 import type { AppSettings } from '../../settings.js';
 import type { ConfirmFn, ConfirmationRequest, ToolResult } from '../types.js';
+import { AGENT_MODES, PLAN_MODE_TOOLS, type AgentMode } from '../modes.js';
+import { findSkill, type AgentSkill } from '../skills.js';
 import { PathGuard, PathSafetyError } from '../../safety/paths.js';
 import { isSecretFile, looksLikePrivateKey } from '../../safety/secrets.js';
 import { isBinaryBuffer, listProjectFiles } from '../../safety/files.js';
@@ -83,6 +85,7 @@ const planSchema = z.object({
     .max(50),
 });
 const completeSchema = z.object({ summary: z.string().min(1).max(8000) });
+const skillSchema = z.object({ name: z.string().min(1).max(200) });
 
 export interface ToolExecutorOptions {
   root: string;
@@ -90,6 +93,14 @@ export interface ToolExecutorOptions {
   authority: AgentAuthority;
   confirm?: ConfirmFn;
   inspector: ProjectInspector;
+  /** Agent mode; 'plan' restricts the model to read-only tools. */
+  mode?: AgentMode;
+  /** Discovered skills made available through the use_skill tool. */
+  skills?: AgentSkill[];
+  /** Fresh settings lookup so mid-run permission grants take effect. */
+  getSettings?: () => AppSettings;
+  /** Persist an "always allow" grant chosen in an approval dialog. */
+  onGrant?: (request: ConfirmationRequest) => void;
   onPlan?: (plan: TaskPlan) => void;
   onTaskComplete?: (summary: string) => void;
   onNotice?: (message: string) => void;
@@ -133,7 +144,14 @@ export class ToolExecutor {
     this.guard = new PathGuard(options.root);
   }
 
+  private readOnlyMode(): boolean {
+    return this.options.mode ? AGENT_MODES[this.options.mode].tools === 'read-only' : false;
+  }
+
   definitions() {
+    if (this.readOnlyMode()) {
+      return TOOL_DEFINITIONS.filter((tool) => PLAN_MODE_TOOLS.has(tool.name));
+    }
     return TOOL_DEFINITIONS;
   }
 
@@ -141,8 +159,45 @@ export class ToolExecutor {
     this.options.onNotice?.(message);
   }
 
+  private permissionGrants(): { allowCommands: string[]; allowPaths: string[] } {
+    const settings = this.options.getSettings?.() ?? this.options.settings;
+    return settings.agent.permissions;
+  }
+
+  /** True when a persisted "always allow" grant covers this request. */
+  private grantMatches(request: ConfirmationRequest): boolean {
+    const grants = this.permissionGrants();
+    if (request.kind === 'command' || request.kind === 'dangerous-command') {
+      const command = request.command ?? '';
+      if (!command) return false;
+      return grants.allowCommands.some((grant) =>
+        grant.endsWith('*')
+          ? command.startsWith(grant.slice(0, -1))
+          : command === grant,
+      );
+    }
+    if (request.path) {
+      const target = request.path.replace(/\\/g, '/').replace(/^\.\//, '');
+      return grants.allowPaths.some((grant) => {
+        const base = grant.replace(/\\/g, '/').replace(/\/+$/, '');
+        return target === base || target.startsWith(`${base}/`);
+      });
+    }
+    return false;
+  }
+
   private async approve(request: ConfirmationRequest, auto: boolean): Promise<boolean> {
     if (auto) return true;
+    const settings = this.options.getSettings?.() ?? this.options.settings;
+    const mode = settings.agent.permissionMode ?? 'ask';
+    if (mode === 'auto') return true;
+    if (mode === 'trusted' && request.kind !== 'dangerous-command' && request.kind !== 'secret-read') {
+      return true;
+    }
+    if (this.grantMatches(request)) {
+      this.notice(`Allowed by saved permission: ${request.title}.`);
+      return true;
+    }
     if (!this.options.confirm) {
       this.notice(
         `Approval required for ${request.title}, but no interactive confirmation is available. ` +
@@ -151,7 +206,12 @@ export class ToolExecutor {
       return false;
     }
     try {
-      return await this.options.confirm(request);
+      const decision = await this.options.confirm(request);
+      if (decision === 'always') {
+        this.options.onGrant?.(request);
+        return true;
+      }
+      return decision === 'allow';
     } catch {
       return false;
     }
@@ -186,6 +246,12 @@ export class ToolExecutor {
   }
 
   async execute(call: ToolCall): Promise<ToolResult> {
+    if (this.readOnlyMode() && !PLAN_MODE_TOOLS.has(call.name)) {
+      return {
+        ok: false,
+        content: `Tool ${call.name} is not available in ${this.options.mode} mode. Inspect and update the plan instead.`,
+      };
+    }
     try {
       switch (call.name) {
         case 'list_files':
@@ -220,6 +286,8 @@ export class ToolExecutor {
           return this.taskComplete(call.arguments);
         case 'environment_info':
           return await this.environmentInfo();
+        case 'use_skill':
+          return this.useSkill(call.arguments);
         default:
           return { ok: false, content: `Unknown tool: ${call.name}` };
       }
@@ -696,6 +764,25 @@ export class ToolExecutor {
     if (!parsed.ok) return parsed.result;
     this.options.onTaskComplete?.(parsed.data.summary);
     return { ok: true, content: 'Task marked complete.' };
+  }
+
+  private useSkill(args: unknown): ToolResult {
+    const parsed = this.parse(skillSchema, args);
+    if (!parsed.ok) return parsed.result;
+    const skills = this.options.skills ?? [];
+    if (skills.length === 0) {
+      return { ok: false, content: 'No skills are available in this project.' };
+    }
+    const skill = findSkill(skills, parsed.data.name);
+    if (!skill) {
+      const names = skills.map((entry) => entry.name).join(', ');
+      return { ok: false, content: `Unknown skill "${parsed.data.name}". Available: ${names}` };
+    }
+    return {
+      ok: true,
+      content: `# Skill: ${skill.name}\n${skill.description}\n\n${skill.content}`,
+      metadata: { skill: skill.name, source: skill.source },
+    };
   }
 
   private async environmentInfo(): Promise<ToolResult> {

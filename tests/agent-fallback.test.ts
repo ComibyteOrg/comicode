@@ -277,4 +277,134 @@ describe('agent quota failover and resume', () => {
     expect(result.status).toBe('completed');
     expect(store.getTask(task.id)?.status).toBe('completed');
   });
+
+  it('rotates through a profile API-key pool before falling back', async () => {
+    const store = openStore(':memory:');
+    cleanup.push(() => store.db.close());
+    const projectPath = tempProject();
+
+    const pooled = createProfile(store, {
+      providerId: 'gemini',
+      name: 'Pooled Google',
+      defaultModel: 'gemini-2.5-flash',
+    });
+    store.upsertModels('gemini', [discovered('gemini-2.5-flash')]);
+
+    const task = store.createTask({
+      projectPath,
+      projectName: 'agent-test',
+      userRequest: 'Finish quickly.',
+      currentProfileId: pooled.id,
+      currentModelId: 'gemini-2.5-flash',
+    });
+
+    const pooledContextFactory = async (
+      profile: ProviderProfile,
+      keyIndex = 0,
+    ): Promise<AdapterContext> => ({
+      profile,
+      apiKey: `key-${keyIndex + 1}`,
+      keyIndex,
+      keyCount: 3,
+    });
+
+    const usedKeys: number[] = [];
+    const notices: string[] = [];
+    const agent = new CodingAgent({
+      store,
+      taskId: task.id,
+      authority: DEFAULT_AUTHORITY,
+      adapterFactory: (profile) => ({
+        kind: profile.providerId,
+        supportsStreaming: true,
+        async chat(context: AdapterContext): Promise<ChatResponse> {
+          const keyIndex = context.keyIndex ?? 0;
+          usedKeys.push(keyIndex);
+          if (keyIndex < 2) throw quotaError(profile.providerId);
+          return completionResponse();
+        },
+        async listModels(): Promise<DiscoveredModel[]> {
+          return [];
+        },
+        async testConnection() {
+          return { ok: true, latencyMs: 1, message: 'fake', modelCount: 0 };
+        },
+      }),
+      contextFactory: pooledContextFactory,
+      hooks: {
+        onNotice: (message) => notices.push(message),
+      },
+    });
+
+    const result = await agent.run();
+    expect(result.status).toBe('completed');
+    // Keys 1 and 2 hit daily quota; key 3 succeeded — all on the same profile.
+    expect(usedKeys.slice(0, 3)).toEqual([0, 1, 2]);
+    expect(notices.some((n) => n.includes('trying key 2/3'))).toBe(true);
+    expect(notices.some((n) => n.includes('trying key 3/3'))).toBe(true);
+    // The task stayed on the same profile the whole time — no provider switch.
+    expect(store.getTask(task.id)?.currentProfileId).toBe(pooled.id);
+  });
+});
+
+describe('verification gate', () => {
+  it('nudges the agent to run configured checks before completing', async () => {
+    const store = openStore(':memory:');
+    cleanup.push(() => store.db.close());
+    const projectPath = tempProject();
+    const profile = createProfile(store, {
+      providerId: 'groq',
+      name: 'Groq free',
+      defaultModel: 'llama-3.3-70b-versatile',
+    });
+    store.upsertModels('groq', [discovered('llama-3.3-70b-versatile')]);
+    const task = store.createTask({
+      projectPath,
+      projectName: 'verify-gate',
+      userRequest: 'Create a file then finish.',
+      taskType: 'coding',
+      currentProfileId: profile.id,
+      currentModelId: 'llama-3.3-70b-versatile',
+    });
+
+    const writeCall: ToolCall = {
+      id: 'w1',
+      name: 'write_file',
+      arguments: { path: 'hello.txt', content: 'hi' },
+    };
+    store.updateSettings((s) => {
+      s.agent.testCommand = 'npm test';
+      return s;
+    });
+    let calls = 0;
+    const agent = new CodingAgent({
+      store,
+      taskId: task.id,
+      authority: { ...DEFAULT_AUTHORITY, allowFileWrites: true },
+      adapterFactory: fakeAdapterFactory({
+        onChat: () => {
+          calls += 1;
+          if (calls === 1) {
+            return {
+              content: '',
+              toolCalls: [writeCall],
+              usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+              finishReason: 'tool_calls',
+            };
+          }
+          return completionResponse();
+        },
+      }),
+      contextFactory: fakeContextFactory,
+      hooks: { confirm: async () => 'allow' },
+    });
+
+    const result = await agent.run();
+    expect(result.status).toBe('completed');
+    expect(calls).toBeGreaterThanOrEqual(3);
+    const nudged = store
+      .loadMessages(task.id)
+      .some((message) => message.content.includes('[ComiCode verification]'));
+    expect(nudged).toBe(true);
+  });
 });

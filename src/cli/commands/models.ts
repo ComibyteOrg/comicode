@@ -371,7 +371,22 @@ function parseBool(value: string): boolean {
 }
 
 export function registerModelCommands(program: Command): void {
-  const models = program.command('models').description('Inspect, refresh, and select models');
+  const models = program
+    .command('models')
+    .description('Inspect, refresh, and select models')
+    .option('--profile <profile>', 'limit to one profile')
+    .option('--provider <provider>', 'limit to one provider kind')
+    .option('--free', 'only free or user-free models')
+    .option('--tools', 'only models with tool calling')
+    .option('--vision', 'only vision models')
+    .option('--available', 'only currently available models')
+    .option('--all', 'include providers without a connected profile')
+    .option('--search <text>', 'filter by model id or name')
+    .option('--limit <number>', 'maximum rows', '200')
+    .option('--json', 'machine-readable output')
+    .action(async (options: ListOptions) => {
+      await listModels(options);
+    });
 
   models
     .command('list')

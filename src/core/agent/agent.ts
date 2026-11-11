@@ -11,7 +11,9 @@ import type {
 } from '../types.js';
 import type { AppSettings, RoutingPolicy } from '../settings.js';
 import type { Store } from '../db/store.js';
-import type { AgentHooks, AgentResult, AgentRunOptions } from './types.js';
+import type { AgentHooks, AgentResult, AgentRunOptions, ConfirmationRequest } from './types.js';
+import { loadSkills, type AgentSkill } from './skills.js';
+import { AGENT_MODES, classifyAgentMode, type AgentMode } from './modes.js';
 import { ProjectInspector } from '../project/inspector.js';
 import { Router } from '../routing/router.js';
 import { ToolExecutor } from './tools/executor.js';
@@ -24,6 +26,8 @@ import { classifyThrown, describeCategory, ProviderError } from '../providers/er
 import type { ErrorCategory } from '../types.js';
 import { redactSecrets } from '../security/redact.js';
 import { logger } from '../logger.js';
+import { compactionOf } from './compaction.js';
+import { captureGitBaseline, recordGitFinalMetadata } from '../git/repository.js';
 
 export const DEFAULT_AUTHORITY: AgentAuthority = {
   allowFileWrites: false,
@@ -33,17 +37,78 @@ export const DEFAULT_AUTHORITY: AgentAuthority = {
   allowGitWrite: false,
 };
 
+interface EffortProfile {
+  maxSteps: number;
+  contextBudgetRatio: number;
+  maxToolOutputChars: number;
+  historyLimit: number;
+  maxOutputTokens: number;
+  tokenHint: string | null;
+}
+
+/**
+ * Per-profile reasoning effort (`profile.config.effort`). Lower effort means
+ * fewer steps, a tighter context budget, smaller tool outputs, and less
+ * history — directly reducing token spend. `default` keeps global settings.
+ */
+const EFFORT_PROFILES: Record<string, EffortProfile> = {
+  low: {
+    maxSteps: 12,
+    contextBudgetRatio: 0.35,
+    maxToolOutputChars: 6_000,
+    historyLimit: 150,
+    maxOutputTokens: 2_048,
+    tokenHint:
+      'Token discipline: minimum possible response. Answer in the fewest words that fully satisfy the request. No preamble, no recap, no explanations unless asked. Still use tools when needed.',
+  },
+  medium: {
+    maxSteps: 25,
+    contextBudgetRatio: 0.5,
+    maxToolOutputChars: 9_000,
+    historyLimit: 250,
+    maxOutputTokens: 4_096,
+    tokenHint:
+      'Token discipline: be concise. Skip preamble and unnecessary explanation; get to the result.',
+  },
+  high: {
+    maxSteps: 70,
+    contextBudgetRatio: 0.7,
+    maxToolOutputChars: 16_000,
+    historyLimit: 500,
+    maxOutputTokens: 8_192,
+    tokenHint: null,
+  },
+  xhigh: {
+    maxSteps: 120,
+    contextBudgetRatio: 0.85,
+    maxToolOutputChars: 24_000,
+    historyLimit: 800,
+    maxOutputTokens: 16_384,
+    tokenHint: null,
+  },
+};
+
+function effortProfileFor(store: Store, currentProfileId: string | null): EffortProfile | null {
+  const profileId = currentProfileId ?? store.getSelectedProfileId();
+  if (!profileId) return null;
+  const effort = store.getProfile(profileId)?.config?.effort;
+  if (typeof effort !== 'string' || effort === 'default') return null;
+  return EFFORT_PROFILES[effort] ?? null;
+}
+
 export interface CodingAgentOptions {
   store: Store;
   taskId: string;
   hooks?: AgentHooks;
   authority?: AgentAuthority;
   settings?: AppSettings;
+  /** Agent mode: build (default), plan (read-only), or debug (diagnosis-first). */
+  mode?: AgentMode;
   /** One-run overrides that do not persist to the database. */
   routingOverrides?: Partial<RoutingPolicy>;
   /** Injection points used by tests and embedding hosts. */
   adapterFactory?: (profile: ProviderProfile) => ProviderAdapter;
-  contextFactory?: (profile: ProviderProfile) => Promise<AdapterContext>;
+  contextFactory?: (profile: ProviderProfile, keyIndex?: number) => Promise<AdapterContext>;
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -79,23 +144,41 @@ export class CodingAgent {
   private readonly collaborator: Collaborator;
   private readonly builder = new ContextBuilder();
   private readonly adapterFactory: (profile: ProviderProfile) => ProviderAdapter;
-  private readonly contextFactory: (profile: ProviderProfile) => Promise<AdapterContext>;
+  private readonly contextFactory: (
+    profile: ProviderProfile,
+    keyIndex?: number,
+  ) => Promise<AdapterContext>;
 
   private contextCache: ContextCache = {};
   private contextSummary = '';
+  private compactionCutoff = 0;
   private relevantFiles: Array<{ path: string; reason: string }> = [];
   private projectSummary = '';
   private candidate: RouteCandidate | null = null;
   private exclude = new Set<string>();
   private retryCounts = new Map<string, number>();
+  private consecutiveFailures = 0;
+  private excludedProfiles = new Set<string>();
+  private profileFailures = new Map<string, number>();
+  private switchConsent = new Set<string>();
+  private baselineProfileId: string | null = null;
+  private hadFailure = false;
+  private lastFailureInfo: string | null = null;
+  private keyCursor = new Map<string, number>();
+  private keyCounts = new Map<string, number>();
   private contextSlim = false;
   private completionSummary: string | null = null;
   private finalResponse: string | null = null;
   private reviewCycles = 0;
+  private verificationRan = false;
+  private verificationNudged = false;
   private lastBlocked: Array<{ profileId: string | null; modelId: string | null; reason: string }> =
     [];
   private usage = { inputTokens: 0, outputTokens: 0 };
   private steps = 0;
+  private readonly mode: AgentMode;
+  private readonly skills: AgentSkill[];
+  private readonly effort: EffortProfile | null;
 
   constructor(options: CodingAgentOptions) {
     this.store = options.store;
@@ -104,17 +187,41 @@ export class CodingAgent {
     this.task = task;
     this.hooks = options.hooks ?? {};
     this.authority = options.authority ?? DEFAULT_AUTHORITY;
-    this.settings = options.settings ?? options.store.getSettings();
+    const baseSettings = options.settings ?? options.store.getSettings();
+    this.effort = effortProfileFor(options.store, task.currentProfileId);
+    this.settings = this.effort
+      ? {
+          ...baseSettings,
+          agent: {
+            ...baseSettings.agent,
+            maxSteps: this.effort.maxSteps,
+            contextBudgetRatio: this.effort.contextBudgetRatio,
+            maxToolOutputChars: this.effort.maxToolOutputChars,
+          },
+        }
+      : baseSettings;
     this.inspector = new ProjectInspector(task.projectPath);
     this.router = new Router(options.store, options.routingOverrides);
     this.adapterFactory = options.adapterFactory ?? ((profile) => createAdapter(profile));
-    this.contextFactory = options.contextFactory ?? ((profile) => createProfileContext(profile));
+    this.contextFactory =
+      options.contextFactory ?? ((profile, keyIndex) => createProfileContext(profile, keyIndex));
+    const requestedMode = options.mode ?? 'build';
+    this.mode =
+      requestedMode === 'auto' ? classifyAgentMode(task.summary ?? '') : requestedMode;
+    if (requestedMode === 'auto' && this.mode !== 'auto') {
+      this.hooks.onNotice?.(`Auto mode selected ${this.mode} for this task.`);
+    }
+    this.skills = loadSkills(task.projectPath);
     this.executor = new ToolExecutor({
       root: task.projectPath,
       settings: this.settings,
       authority: this.authority,
       inspector: this.inspector,
       confirm: this.hooks.confirm,
+      mode: this.mode,
+      skills: this.skills,
+      getSettings: () => this.store.getSettings(),
+      onGrant: (request) => this.persistGrant(request),
       onPlan: (plan) => this.applyPlan(plan),
       onTaskComplete: (summary) => {
         this.completionSummary = summary;
@@ -139,7 +246,7 @@ export class CodingAgent {
         if (options.signal?.aborted) {
           return this.halt('paused', 'Cancelled by user. Progress saved.');
         }
-        const candidate = this.ensureCandidate();
+        const candidate = await this.ensureCandidate();
         if (!candidate) {
           return this.halt('paused', this.buildPauseReason());
         }
@@ -150,10 +257,19 @@ export class CodingAgent {
         let response: ChatResponse;
         try {
           response = await this.callModel(candidate, built, options.signal);
+          this.consecutiveFailures = 0;
+          this.hadFailure = false;
+          this.profileFailures.clear();
         } catch (error) {
           const outcome = await this.handleFailure(error, candidate, options.signal);
           if (outcome === 'cancel') {
             return this.halt('paused', 'Cancelled by user. Progress saved.');
+          }
+          if (outcome === 'stop') {
+            return this.halt(
+              'paused',
+              'Stopped after 5 consecutive provider failures. Progress and checkpoints are saved — check provider quota, then resume.',
+            );
           }
           this.checkpoint('after-failure');
           continue;
@@ -179,6 +295,18 @@ export class CodingAgent {
             return this.halt('paused', 'Cancelled by user. Progress saved.');
           }
           if (completed || this.completionSummary) {
+            if (this.shouldRequestVerification()) {
+              this.verificationNudged = true;
+              this.completionSummary = null;
+              this.finalResponse = null;
+              this.store.appendMessage(this.task.id, {
+                role: 'user',
+                content:
+                  '[ComiCode verification] Before completing, run the configured checks with run_tests, run_lint, or run_build and fix any failures you introduced. If verification is impossible, say why in task_complete.',
+              });
+              this.checkpoint('verification-nudge');
+              continue;
+            }
             const continueAfterReview = await this.reviewIfEnabled();
             if (continueAfterReview) {
               this.completionSummary = null;
@@ -242,6 +370,30 @@ export class CodingAgent {
     this.settings = this.store.getSettings();
     this.store.clearExpiredLimits();
 
+    const compaction = compactionOf(this.task);
+    if (compaction) {
+      this.compactionCutoff = compaction.cutoffSeq;
+      this.contextSummary = compaction.summary;
+    }
+
+    // Capture a pre-task snapshot once, before any file edits. Undo uses this
+    // baseline and refuses files whose content changed after the task finished.
+    if (
+      this.task.metadata.gitBaseline === undefined &&
+      (!options.resume || this.task.changedFiles.length === 0)
+    ) {
+      try {
+        const baseline = await captureGitBaseline(this.task.projectPath, this.task.id);
+        if (baseline) {
+          this.task = this.store.updateTask(this.task.id, {
+            metadata: { ...this.task.metadata, gitBaseline: baseline },
+          });
+        }
+      } catch (error) {
+        logger.warn(`Unable to capture a git baseline for task ${this.task.id}: ${String(error)}`);
+      }
+    }
+
     if (options.resume) {
       const checkpoint = this.store.latestCheckpoint(this.task.id);
       if (checkpoint?.state?.contextCache) this.contextCache = checkpoint.state.contextCache;
@@ -280,9 +432,20 @@ export class CodingAgent {
       });
       this.exclude.clear();
       this.retryCounts.clear();
+      this.consecutiveFailures = 0;
+      this.excludedProfiles.clear();
+      this.profileFailures.clear();
+      this.switchConsent.clear();
+      this.baselineProfileId = null;
+      this.hadFailure = false;
+      this.lastFailureInfo = null;
+      this.keyCursor.clear();
+      this.keyCounts.clear();
       this.candidate = null;
       this.contextSlim = false;
       this.reviewCycles = 0;
+      this.verificationRan = false;
+      this.verificationNudged = false;
       this.completionSummary = null;
       this.finalResponse = null;
       this.usage = { inputTokens: 0, outputTokens: 0 };
@@ -377,6 +540,26 @@ export class CodingAgent {
     this.checkpoint('planner');
   }
 
+  /** Persist an "always allow" grant chosen in an approval dialog. */
+  private persistGrant(request: ConfirmationRequest): void {
+    this.store.updateSettings((settings) => {
+      const permissions = settings.agent.permissions;
+      const push = (list: string[], value: string | undefined): void => {
+        if (!value || list.includes(value) || list.length >= 200) return;
+        list.push(value);
+      };
+      if (request.kind === 'command' || request.kind === 'dangerous-command') {
+        push(permissions.allowCommands, request.command);
+      } else if (request.path) {
+        push(permissions.allowPaths, request.path.replace(/\\/g, '/'));
+      }
+      return settings;
+    });
+    this.hooks.onNotice?.(
+      `Saved permission: future matching ${request.kind === 'command' || request.kind === 'dangerous-command' ? 'commands' : 'paths'} will be allowed automatically.`,
+    );
+  }
+
   private applyPlan(plan: TaskPlan): void {
     const completed = plan.steps
       .filter((step) => step.status === 'completed' || step.status === 'skipped')
@@ -395,7 +578,7 @@ export class CodingAgent {
   }
 
   // ---------------------------------------------------------------- routing
-  private ensureCandidate(): RouteCandidate | null {
+  private async ensureCandidate(): Promise<RouteCandidate | null> {
     if (this.candidate) {
       const profile = this.store.getProfile(this.candidate.profile.id);
       const limit =
@@ -404,33 +587,61 @@ export class CodingAgent {
       if (profile?.enabled && !limit?.active) return this.candidate;
       this.candidate = null;
     }
-    const result = this.router.select({
-      taskId: this.task.id,
-      taskType: this.task.taskType,
-      profileId: this.task.currentProfileId,
-      modelId: this.task.currentModelId,
-      excludeKeys: [...this.exclude],
-      requirements: { tools: true, vision: this.task.taskType === 'vision' },
-    });
-    this.lastBlocked = result.outcome.blocked;
-    if (!result.decision) {
-      this.candidate = null;
-      return null;
+    for (;;) {
+      const result = this.router.select({
+        taskId: this.task.id,
+        taskType: this.task.taskType,
+        profileId: this.task.currentProfileId,
+        modelId: this.task.currentModelId,
+        excludeKeys: [...this.exclude],
+        excludedProfileIds: [...this.excludedProfiles],
+        requirements: { tools: true, vision: this.task.taskType === 'vision' },
+      });
+      this.lastBlocked = result.outcome.blocked;
+      if (!result.decision) {
+        this.candidate = null;
+        return null;
+      }
+      const candidate = result.decision.candidate;
+      const needsConsent =
+        this.hadFailure &&
+        this.baselineProfileId !== null &&
+        candidate.profile.id !== this.baselineProfileId &&
+        !this.switchConsent.has(candidate.profile.id);
+      if (needsConsent && this.hooks.confirm) {
+        const decision = await this.hooks.confirm({
+          kind: 'provider-switch',
+          title: 'Switch provider?',
+          description: `${candidate.profile.name} can continue this task. Previous provider hit a limit${
+            this.lastFailureInfo ? `: ${this.lastFailureInfo.slice(0, 80)}` : '.'
+          }`,
+          path: `${candidate.profile.name} · ${candidate.model.modelId}`,
+        });
+        if (decision === 'deny') {
+          this.excludedProfiles.add(candidate.profile.id);
+          this.hooks.onNotice?.(
+            `Skipped ${candidate.profile.name} — continuing with remaining providers.`,
+          );
+          continue;
+        }
+        if (decision === 'always') this.switchConsent.add(candidate.profile.id);
+      }
+      const previousProfile = this.task.currentProfileId;
+      const previousModel = this.task.currentModelId;
+      this.candidate = candidate;
+      this.baselineProfileId = candidate.profile.id;
+      this.router.record(result.decision, {
+        taskId: this.task.id,
+        previousProfileId: previousProfile,
+        previousModelId: previousModel,
+      });
+      this.task = this.store.updateTask(this.task.id, {
+        currentProfileId: candidate.profile.id,
+        currentModelId: candidate.model.modelId,
+      });
+      this.hooks.onRoute?.(result.decision);
+      return candidate;
     }
-    const previousProfile = this.task.currentProfileId;
-    const previousModel = this.task.currentModelId;
-    this.candidate = result.decision.candidate;
-    this.router.record(result.decision, {
-      taskId: this.task.id,
-      previousProfileId: previousProfile,
-      previousModelId: previousModel,
-    });
-    this.task = this.store.updateTask(this.task.id, {
-      currentProfileId: this.candidate.profile.id,
-      currentModelId: this.candidate.model.modelId,
-    });
-    this.hooks.onRoute?.(result.decision);
-    return this.candidate;
   }
 
   private buildContext(candidate: RouteCandidate): BuiltContext {
@@ -443,7 +654,11 @@ export class CodingAgent {
           },
         }
       : this.settings;
-    const history = this.store.loadMessages(this.task.id, 400);
+    const historyLimit = this.effort?.historyLimit ?? 400;
+    const history =
+      this.compactionCutoff > 0
+        ? this.store.loadMessagesAfter(this.task.id, this.compactionCutoff, historyLimit)
+        : this.store.loadMessages(this.task.id, historyLimit);
     const built = this.builder.build({
       task: this.task,
       model: candidate.model,
@@ -454,6 +669,9 @@ export class CodingAgent {
       cache: this.contextCache,
       summary: this.contextSummary,
       projectSummary: this.projectSummary,
+      skills: this.skills,
+      mode: this.mode,
+      effortHint: this.effort?.tokenHint ?? undefined,
     });
     this.contextCache = built.cache;
     this.contextSummary = built.summary;
@@ -466,10 +684,14 @@ export class CodingAgent {
     built: BuiltContext,
     signal?: AbortSignal,
   ): Promise<ChatResponse> {
-    const context = await this.contextFactory(candidate.profile);
+    const profileId = candidate.profile.id;
+    const keyIndex = this.keyCursor.get(profileId) ?? 0;
+    const context = await this.contextFactory(candidate.profile, keyIndex);
+    this.keyCounts.set(profileId, context.keyCount ?? 1);
     context.signal = signal;
     const adapter = this.adapterFactory(candidate.profile);
-    const maxOutput = Math.min(8192, candidate.model.maxOutputTokens ?? 4096);
+    const outputCap = this.effort?.maxOutputTokens ?? 8192;
+    const maxOutput = Math.min(outputCap, candidate.model.maxOutputTokens ?? 4096);
     return adapter.chat(
       context,
       {
@@ -489,11 +711,19 @@ export class CodingAgent {
     error: unknown,
     candidate: RouteCandidate,
     signal?: AbortSignal,
-  ): Promise<'retry' | 'fallback' | 'cancel'> {
+  ): Promise<'retry' | 'fallback' | 'cancel' | 'stop'> {
     const classified =
       error instanceof ProviderError ? error : classifyThrown(error, candidate.profile.providerId);
 
     if (classified.category === 'cancelled' || signal?.aborted) return 'cancel';
+
+    this.consecutiveFailures += 1;
+    if (this.consecutiveFailures > 5) {
+      this.hooks.onNotice?.(
+        'Stopping after 5 consecutive provider failures. Progress is saved; resume after checking quota.',
+      );
+      return 'stop';
+    }
 
     const key = Router.key(candidate.profile.id, candidate.model.modelId);
     this.store.addAttempt(this.task.id, {
@@ -525,6 +755,31 @@ export class CodingAgent {
       return 'retry';
     }
 
+    // Key-pool rotation: quota/auth failures on one API key try the next key
+    // in the same profile before falling back to other models/providers.
+    const KEY_ROTATION_CATEGORIES: ErrorCategory[] = [
+      'rate_limit',
+      'daily_quota',
+      'invalid_api_key',
+      'auth_failure',
+      'billing_restriction',
+      'permission_error',
+    ];
+    if (KEY_ROTATION_CATEGORIES.includes(classified.category)) {
+      const profileId = candidate.profile.id;
+      const count = this.keyCounts.get(profileId) ?? 1;
+      const current = this.keyCursor.get(profileId) ?? 0;
+      if (current + 1 < count) {
+        this.keyCursor.set(profileId, current + 1);
+        // Rotating to a fresh credential is progress, not a provider failure.
+        this.consecutiveFailures = Math.max(0, this.consecutiveFailures - 1);
+        this.hooks.onNotice?.(
+          `${candidate.profile.name}: ${classified.category} on key ${current + 1}/${count} — trying key ${current + 2}/${count}.`,
+        );
+        return 'retry';
+      }
+    }
+
     const retryable =
       classified.category === 'rate_limit' ||
       classified.category === 'provider_outage' ||
@@ -535,7 +790,7 @@ export class CodingAgent {
       const delay = this.backoff(failures, classified);
       if (delay !== null && delay <= this.settings.routing.retryMaxDelayMs) {
         this.hooks.onRetry?.({
-          attempt: failures,
+          attempt: this.consecutiveFailures,
           delayMs: delay,
           category: classified.category,
           message: classified.message,
@@ -554,12 +809,35 @@ export class CodingAgent {
       }
     }
 
+    this.hadFailure = true;
+    this.lastFailureInfo = `${classified.category}: ${classified.message}`.slice(0, 160);
+
     const profileLevel: ErrorCategory[] = [
       'invalid_api_key',
       'auth_failure',
       'permission_error',
       'billing_restriction',
     ];
+    if (profileLevel.includes(classified.category)) {
+      this.excludedProfiles.add(candidate.profile.id);
+      this.hooks.onNotice?.(
+        `${candidate.profile.name} rejected this request (${classified.category}) — excluding this provider.`,
+      );
+    } else {
+      // daily_quota is usually account-scoped, so it counts double: three
+      // quota failures across models strongly suggests the provider itself
+      // is exhausted rather than one model.
+      const weight = classified.category === 'daily_quota' ? 2 : 1;
+      const providerFailures = (this.profileFailures.get(candidate.profile.id) ?? 0) + weight;
+      this.profileFailures.set(candidate.profile.id, providerFailures);
+      if (providerFailures >= 5) {
+        this.excludedProfiles.add(candidate.profile.id);
+        this.hooks.onNotice?.(
+          `${candidate.profile.name}: ${providerFailures} consecutive failures — moving to another provider.`,
+        );
+      }
+    }
+
     const shouldPersistLimit =
       profileLevel.includes(classified.category) ||
       classified.category === 'rate_limit' ||
@@ -669,10 +947,30 @@ export class CodingAgent {
         }
       }
       if (call.name === 'task_complete' && result.ok) completed = true;
+      if (
+        (call.name === 'run_tests' ||
+          call.name === 'run_lint' ||
+          call.name === 'run_build') &&
+        result.ok
+      ) {
+        this.verificationRan = true;
+      }
       this.checkpoint(`tool:${call.name}`);
       if (signal?.aborted) return false;
     }
     return completed || Boolean(this.completionSummary);
+  }
+
+  /**
+   * Quality gate: write-capable modes that changed files must attempt the
+   * configured verification commands once before task_complete is accepted.
+   */
+  private shouldRequestVerification(): boolean {
+    if (this.verificationRan || this.verificationNudged) return false;
+    if (AGENT_MODES[this.mode]?.tools !== 'all') return false;
+    if (this.task.changedFiles.length === 0) return false;
+    const agent = this.settings.agent;
+    return Boolean(agent.testCommand || agent.lintCommand);
   }
 
   private updatePhaseForTool(toolName: string): void {
@@ -730,12 +1028,15 @@ export class CodingAgent {
   }
 
   private complete(): AgentResult {
+    const latest = this.store.getTask(this.task.id);
+    if (latest) this.task = latest;
     const summary = (
       this.completionSummary ??
       this.finalResponse ??
       this.task.summary ??
       'Task completed.'
     ).slice(0, 8000);
+    const finalMetadata = recordGitFinalMetadata(this.task.projectPath, this.task);
     this.task = this.store.updateTask(this.task.id, {
       status: 'completed',
       phase: 'done',
@@ -744,6 +1045,7 @@ export class CodingAgent {
       completedAt: new Date().toISOString(),
       pendingSteps: [],
       attempts: this.task.attempts,
+      ...(finalMetadata ? { metadata: finalMetadata } : {}),
     });
     this.checkpoint('completed');
     this.hooks.onTaskComplete?.(summary);
@@ -760,11 +1062,15 @@ export class CodingAgent {
 
   private halt(status: 'paused' | 'failed', reason: string): AgentResult {
     const safeReason = redactSecrets(reason);
+    const latest = this.store.getTask(this.task.id);
+    if (latest) this.task = latest;
+    const finalMetadata = recordGitFinalMetadata(this.task.projectPath, this.task);
     this.task = this.store.updateTask(this.task.id, {
       status,
       phase: status === 'failed' ? this.task.phase : 'paused',
       error: safeReason,
       summary: this.completionSummary ?? this.task.summary,
+      ...(finalMetadata ? { metadata: finalMetadata } : {}),
     });
     try {
       const messages = this.store.loadMessages(this.task.id, 5);

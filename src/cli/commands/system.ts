@@ -1,12 +1,16 @@
 import { existsSync, statSync } from 'node:fs';
 import type { Command } from 'commander';
 import type { ProviderProfile } from '../../core/types.js';
-import { credentialIdForProfile, testProfileConnection } from '../../core/providers/service.js';
+import {
+  credentialIdForProfile,
+  keysToSecret,
+  parseKeyInput,
+  testProfileConnection,
+} from '../../core/providers/service.js';
 import { describeCategory } from '../../core/providers/errors.js';
 import { providerDisplayName } from '../../core/providers/definitions.js';
 import { getCredentialStore } from '../../core/security/credentials.js';
 import { registerSecret } from '../../core/security/redact.js';
-import { maskSecret } from '../../core/security/masking.js';
 import { getComicodeHome, getDatabasePath } from '../../core/paths.js';
 import { initProject, readProjectConfig } from '../../core/project/init.js';
 import { runProcess } from '../../core/safety/process.js';
@@ -135,14 +139,21 @@ async function authSet(
           'Provide --key in non-interactive mode, or set an environment variable with --api-key-env.',
         );
       }
-      key = (await promptSecret(`API key for ${profile.name} (input is hidden)`)).trim();
+      key = (
+        await promptSecret(
+          `API key(s) for ${profile.name}, comma-separated for multiple (input is hidden)`,
+        )
+      ).trim();
     }
-    if (!key) throw new Error('The API key cannot be empty.');
-    registerSecret(key);
-    await getCredentialStore().setSecret(credentialIdForProfile(profile.id), key);
+    const keys = parseKeyInput(key);
+    if (keys.length === 0) throw new Error('The API key cannot be empty.');
+    for (const entry of keys) registerSecret(entry);
+    await getCredentialStore().setSecret(credentialIdForProfile(profile.id), keysToSecret(keys));
     store.updateProfile(profile.id, { apiKeyEnv: null, lastError: null, lastErrorAt: null });
     store.clearLimit(profile.id, '*');
-    console.log(`${success('✔')} Stored a credential for ${profile.name}: ${maskSecret(key)}`);
+    console.log(
+      `${success('✔')} Stored ${keys.length} API key${keys.length === 1 ? '' : 's'} for ${profile.name}.`,
+    );
     if (options.test) {
       const fresh = store.getProfile(profile.id);
       if (fresh) {

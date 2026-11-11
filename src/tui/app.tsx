@@ -1,26 +1,50 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, render, useApp, useInput } from 'ink';
 import type { AppContext } from '../core/app.js';
 import { openAppContext } from '../core/app.js';
 import type { TaskRecord } from '../core/types.js';
 import { refreshProfileModels } from '../core/providers/service.js';
+import { gitBranch } from '../core/git/repository.js';
 import {
   Footer,
   Header,
   PromptInput,
-  SCREENS,
   useLayout,
   type AgentStatus,
-  type ScreenId,
 } from './components.js';
 import { Workspace, type ResumeRequest } from './screens/workspace.js';
-import { ProvidersScreen } from './screens/providers.js';
-import { ModelsScreen } from './screens/models.js';
-import { HistoryScreen } from './screens/history.js';
-import { UsageScreen } from './screens/usage.js';
-import { SettingsScreen } from './screens/settings.js';
+import { ProvidersDialog } from './dialogs/providers-dialog.js';
+import { ModelPicker } from './dialogs/model-picker.js';
+import { ConnectDialog } from './dialogs/connect-dialog.js';
+import { TasksDialog } from './dialogs/tasks-dialog.js';
+import { DiffDialog } from './dialogs/diff-dialog.js';
+import { UndoDialog } from './dialogs/undo-dialog.js';
+import { StatusDialog } from './dialogs/status-dialog.js';
+import { UsageDialog } from './dialogs/usage-dialog.js';
+import { SettingsDialog } from './dialogs/settings-dialog.js';
+import { ShortcutsDialog } from './dialogs/shortcuts-dialog.js';
+import { OutputDialog } from './dialogs/output-dialog.js';
+import { EffortDialog } from './dialogs/effort-dialog.js';
+import { ModalWindow } from './dialogs/modal.js';
+import { shortcutMatches } from './shortcuts/manager.js';
+import { nextAgentMode, type AgentMode } from '../core/agent/modes.js';
 import { VERSION } from '../version.js';
-import { glyph, theme } from './theme.js';
+import { glyph, setActiveTheme, theme } from './theme.js';
+
+export type DialogId =
+  | 'palette'
+  | 'model-picker'
+  | 'connect'
+  | 'providers'
+  | 'tasks'
+  | 'diff'
+  | 'undo'
+  | 'status'
+  | 'usage'
+  | 'settings'
+  | 'shortcuts'
+  | 'output'
+  | 'effort';
 
 interface PaletteAction {
   label: string;
@@ -31,16 +55,43 @@ interface PaletteAction {
 function App({ context }: { context: AppContext }): React.ReactElement {
   const { exit } = useApp();
   const { columns, rows } = useLayout();
-  const [screen, setScreen] = useState<ScreenId>('workspace');
+  // Keep the live theme proxy in sync with the persisted setting.
+  setActiveTheme(context.store.getSettings().ui.theme);
   const [status, setStatus] = useState<AgentStatus>('idle');
   const [tick, setTick] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
   const [resumeRequest, setResumeRequest] = useState<ResumeRequest | null>(null);
-  const [paletteOpen, setPaletteOpen] = useState(false);
+  // Dialog stack: the top entry is the visible modal. Nested dialogs push
+  // entries; closing pops back to the previous one.
+  const [dialogStack, setDialogStack] = useState<DialogId[]>([]);
   const [paletteQuery, setPaletteQuery] = useState('');
   const [paletteIndex, setPaletteIndex] = useState(0);
+  const [branch, setBranch] = useState<string | null>(null);
+  const [agentMode, setAgentMode] = useState<AgentMode>('auto');
+  const [outputContent, setOutputContent] = useState<{ title: string; text: string } | null>(
+    null,
+  );
+  const quitArmedAt = useRef(0);
+  const activeDialog = dialogStack.length > 0 ? dialogStack[dialogStack.length - 1]! : null;
+  const isDialogOpen = activeDialog !== null;
+
+  const openDialog = useCallback((id: DialogId) => {
+    setDialogStack((stack) => (stack[stack.length - 1] === id ? stack : [...stack, id]));
+  }, []);
+  const closeDialog = useCallback(() => {
+    setDialogStack((stack) => stack.slice(0, -1));
+  }, []);
+  const closeAllDialogs = useCallback(() => setDialogStack([]), []);
+  const showOutput = useCallback(
+    (title: string, text: string) => {
+      setOutputContent({ title, text });
+      openDialog('output');
+    },
+    [openDialog],
+  );
 
   const refreshData = useCallback(() => setTick((value) => value + 1), []);
+
   const notify = useCallback((message: string) => {
     setToast(message);
     setTick((value) => value + 1);
@@ -52,22 +103,24 @@ function App({ context }: { context: AppContext }): React.ReactElement {
     return () => clearTimeout(timer);
   }, [toast]);
 
+  useEffect(() => {
+    let active = true;
+    void gitBranch(context.cwd).then((b) => {
+      if (active) setBranch(b);
+    });
+    return () => {
+      active = false;
+    };
+  }, [context.cwd, tick]);
+
   const openTask = useCallback((taskId: string, resume: boolean) => {
     setResumeRequest({ taskId, nonce: Date.now(), resume });
-    setScreen('workspace');
-  }, []);
+    closeAllDialogs();
+  }, [closeAllDialogs]);
 
   const quit = useCallback(() => {
     exit();
   }, [exit]);
-
-  const cycleScreen = useCallback((direction: 1 | -1) => {
-    setScreen((current) => {
-      const index = SCREENS.findIndex((entry) => entry.id === current);
-      const next = (index + direction + SCREENS.length) % SCREENS.length;
-      return SCREENS[next]?.id ?? 'workspace';
-    });
-  }, []);
 
   const togglePaid = useCallback(() => {
     context.store.updateSettings((settings) => {
@@ -89,24 +142,65 @@ function App({ context }: { context: AppContext }): React.ReactElement {
 
   const paletteActions = useMemo<PaletteAction[]>(
     () => [
-      ...SCREENS.map((entry) => ({
-        label: `Go to ${entry.label}`,
-        detail: `screen ${SCREENS.findIndex((item) => item.id === entry.id) + 1}`,
-        run: () => setScreen(entry.id),
-      })),
       {
-        label: 'Add a provider profile',
-        detail: 'providers',
-        run: () => {
-          setScreen('providers');
-          notify('In providers press a to add a profile.');
-        },
+        label: 'Select an AI model',
+        detail: 'model-picker (ctrl+m)',
+        run: () => openDialog('model-picker'),
+      },
+      {
+        label: 'Choose reasoning effort',
+        detail: 'effort (ctrl+e) or /profile',
+        run: () => openDialog('effort'),
+      },
+      {
+        label: 'Manage providers & profiles',
+        detail: 'providers (ctrl+b)',
+        run: () => openDialog('providers'),
+      },
+      {
+        label: 'Connect a new provider',
+        detail: 'connect',
+        run: () => openDialog('connect'),
+      },
+      {
+        label: 'Manage active & saved tasks',
+        detail: 'tasks (ctrl+t)',
+        run: () => openDialog('tasks'),
+      },
+      {
+        label: 'View token usage & limits',
+        detail: 'usage',
+        run: () => openDialog('usage'),
+      },
+      {
+        label: 'View git diff for task',
+        detail: 'diff',
+        run: () => openDialog('diff'),
+      },
+      {
+        label: 'Safe undo task changes',
+        detail: 'undo',
+        run: () => openDialog('undo'),
+      },
+      {
+        label: 'View system and quota status',
+        detail: 'status (ctrl+s)',
+        run: () => openDialog('status'),
+      },
+      {
+        label: 'Open settings',
+        detail: 'settings',
+        run: () => openDialog('settings'),
+      },
+      {
+        label: 'Show keyboard shortcuts',
+        detail: 'shortcuts (?)',
+        run: () => openDialog('shortcuts'),
       },
       {
         label: 'Refresh all model catalogs',
         detail: 'models',
         run: async () => {
-          setScreen('models');
           const profiles = context.store.listProfiles().filter((profile) => profile.enabled);
           let discovered = 0;
           for (const profile of profiles) {
@@ -114,7 +208,7 @@ function App({ context }: { context: AppContext }): React.ReactElement {
               const result = await refreshProfileModels(context.store, profile);
               discovered += result.discovered;
             } catch {
-              // Per-profile failures are visible on the models/providers screens.
+              // Per-profile failures are visible in the model picker.
             }
           }
           notify(`Refreshed ${discovered} models across ${profiles.length} profiles.`);
@@ -134,21 +228,27 @@ function App({ context }: { context: AppContext }): React.ReactElement {
         },
       },
       {
+        label: 'Cycle agent mode (build/plan/debug)',
+        detail: 'tab',
+        run: () => setAgentMode((mode) => nextAgentMode(mode, 1)),
+      },
+      {
         label: 'Toggle paid fallbacks',
         detail: 'settings',
         run: () => togglePaid(),
       },
       {
         label: 'Start a fresh task',
-        detail: 'workspace',
+        detail: 'new (ctrl+n)',
         run: () => {
-          setScreen('workspace');
-          notify('Use /new in the workspace to start fresh.');
+          setResumeRequest(null);
+          notify('Ready for a new task.');
+          refreshData();
         },
       },
       { label: 'Quit ComiCode', detail: 'exit', run: () => quit() },
     ],
-    [context, latestPaused, notify, openTask, quit, refreshData, togglePaid],
+    [context, latestPaused, notify, openDialog, openTask, quit, refreshData, togglePaid],
   );
 
   const filteredActions = useMemo(() => {
@@ -165,18 +265,64 @@ function App({ context }: { context: AppContext }): React.ReactElement {
   }, [filteredActions.length]);
 
   useInput((input, key) => {
-    if (key.ctrl && input === 'c') {
+    // While a modal is open it owns the keyboard; nothing leaks into the chat.
+    if (isDialogOpen) return;
+
+    const shortcutOverrides = context.store.getSettings().ui.shortcuts;
+    if (shortcutMatches('quit', input, key, shortcutOverrides)) {
       if (status === 'running') {
         notify('Pause the run with esc before quitting.');
         return;
       }
-      quit();
+      // Ctrl+C is also the terminal's copy shortcut, so quitting takes two
+      // presses within a short window (OpenCode-style).
+      const now = Date.now();
+      if (now - quitArmedAt.current < 2000) {
+        quitArmedAt.current = 0;
+        quit();
+        return;
+      }
+      quitArmedAt.current = now;
+      notify('Press ctrl+c again to quit.');
       return;
     }
-    if (key.ctrl && input === 'k') {
-      setPaletteOpen((value) => !value);
+
+    if (shortcutMatches('palette', input, key, shortcutOverrides)) {
+      openDialog('palette');
       setPaletteQuery('');
       setPaletteIndex(0);
+      return;
+    }
+
+    if (shortcutMatches('model', input, key, shortcutOverrides)) {
+      openDialog('model-picker');
+      return;
+    }
+
+    if (shortcutMatches('provider', input, key, shortcutOverrides)) {
+      openDialog('providers');
+      return;
+    }
+
+    if (shortcutMatches('tasks', input, key, shortcutOverrides)) {
+      openDialog('tasks');
+      return;
+    }
+
+    if (shortcutMatches('status', input, key, shortcutOverrides)) {
+      openDialog('status');
+      return;
+    }
+
+    if (shortcutMatches('effort', input, key, shortcutOverrides)) {
+      openDialog('effort');
+      return;
+    }
+
+    if (shortcutMatches('newTask', input, key, shortcutOverrides)) {
+      setResumeRequest(null);
+      notify('Ready for a new task.');
+      refreshData();
       return;
     }
   });
@@ -184,21 +330,23 @@ function App({ context }: { context: AppContext }): React.ReactElement {
   useInput(
     (_input, key) => {
       if (key.escape) {
-        setPaletteOpen(false);
+        closeDialog();
         setPaletteQuery('');
         return;
       }
-      if (key.upArrow) setPaletteIndex((value) => Math.max(0, value - 1));
-      else if (key.downArrow) {
-        setPaletteIndex((value) => Math.min(Math.max(0, filteredActions.length - 1), value + 1));
+      const count = filteredActions.length;
+      if (key.upArrow) {
+        setPaletteIndex((value) => (count === 0 ? 0 : (value - 1 + count) % count));
+      } else if (key.downArrow) {
+        setPaletteIndex((value) => (count === 0 ? 0 : (value + 1) % count));
       }
     },
-    { isActive: paletteOpen },
+    { isActive: activeDialog === 'palette' },
   );
 
   const runPaletteAction = (index: number): void => {
     const action = filteredActions[index];
-    setPaletteOpen(false);
+    closeDialog();
     setPaletteQuery('');
     if (action) void action.run();
   };
@@ -214,22 +362,22 @@ function App({ context }: { context: AppContext }): React.ReactElement {
     : null;
   const allowPaid = context.store.getSettings().routing.allowPaid;
 
-  const hints = paletteOpen
-    ? ['type to filter', '↑/↓ choose', 'enter run', 'esc close']
-    : screen === 'workspace'
-      ? [
-          '←/→ or tab screens',
-          '/ commands',
-          'enter send',
-          'esc pause',
-          'ctrl+k palette',
-          'ctrl+c quit',
-        ]
-      : ['←/→ or tab screens', '↑/↓ move', 'enter open', 'esc back', 'ctrl+k palette'];
+  const hints = isDialogOpen
+    ? ['↑/↓ navigate', 'enter select', 'esc close']
+    : [
+        '/ commands',
+        'enter send',
+        'tab mode',
+        'esc pause',
+        'ctrl+k palette',
+        'ctrl+m model',
+        'ctrl+b providers',
+        'ctrl+c×2 quit',
+      ];
 
   void tick;
 
-  const paletteRows = Math.max(4, rows - 11);
+  const paletteRows = Math.max(4, rows - 14);
   const paletteStart = Math.max(
     0,
     Math.min(
@@ -241,7 +389,6 @@ function App({ context }: { context: AppContext }): React.ReactElement {
   return (
     <Box flexDirection="column" height={rows} width={columns} overflow="hidden">
       <Header
-        screen={screen}
         version={VERSION}
         cwd={context.cwd}
         profileName={selectedProfile?.name ?? null}
@@ -249,178 +396,188 @@ function App({ context }: { context: AppContext }): React.ReactElement {
         status={status}
         allowPaid={allowPaid}
         taskId={resumeRequest?.taskId ?? null}
+        branch={branch}
         columns={columns}
+        dimmed={isDialogOpen}
+        agentMode={agentMode}
       />
 
       <Box flexDirection="column" flexGrow={1} overflow="hidden" paddingX={1}>
-        <Box
-          display={paletteOpen ? 'none' : 'flex'}
-          flexDirection="column"
-          flexGrow={1}
-          overflow="hidden"
-        >
-          <Box
-            display={screen === 'workspace' ? 'flex' : 'none'}
-            flexDirection="column"
-            flexGrow={1}
-            overflow="hidden"
-          >
-            <Workspace
-              context={context}
-              active={!paletteOpen && screen === 'workspace'}
-              onStatusChange={setStatus}
-              onNavigate={setScreen}
-              onCycleScreen={cycleScreen}
-              onQuit={quit}
-              resumeRequest={resumeRequest}
-              notify={notify}
-              refreshData={refreshData}
-            />
-          </Box>
-          <Box
-            display={screen === 'providers' ? 'flex' : 'none'}
-            flexDirection="column"
-            flexGrow={1}
-            overflow="hidden"
-          >
-            <ProvidersScreen
-              context={context}
-              active={!paletteOpen && screen === 'providers'}
-              notify={notify}
-              refreshData={refreshData}
-              onStatusChange={setStatus}
-              onCycleScreen={cycleScreen}
-              onBack={() => setScreen('workspace')}
-            />
-          </Box>
-          <Box
-            display={screen === 'models' ? 'flex' : 'none'}
-            flexDirection="column"
-            flexGrow={1}
-            overflow="hidden"
-          >
-            <ModelsScreen
-              context={context}
-              active={!paletteOpen && screen === 'models'}
-              notify={notify}
-              refreshData={refreshData}
-              onCycleScreen={cycleScreen}
-              onBack={() => setScreen('workspace')}
-            />
-          </Box>
-          <Box
-            display={screen === 'history' ? 'flex' : 'none'}
-            flexDirection="column"
-            flexGrow={1}
-            overflow="hidden"
-          >
-            <HistoryScreen
-              context={context}
-              active={!paletteOpen && screen === 'history'}
-              notify={notify}
-              refreshData={refreshData}
-              onOpenTask={openTask}
-              version={tick}
-              onCycleScreen={cycleScreen}
-              onBack={() => setScreen('workspace')}
-            />
-          </Box>
-          <Box
-            display={screen === 'usage' ? 'flex' : 'none'}
-            flexDirection="column"
-            flexGrow={1}
-            overflow="hidden"
-          >
-            <UsageScreen
-              context={context}
-              active={!paletteOpen && screen === 'usage'}
-              notify={notify}
-              refreshData={refreshData}
-              onCycleScreen={cycleScreen}
-              onBack={() => setScreen('workspace')}
-            />
-          </Box>
-          <Box
-            display={screen === 'settings' ? 'flex' : 'none'}
-            flexDirection="column"
-            flexGrow={1}
-            overflow="hidden"
-          >
-            <SettingsScreen
-              context={context}
-              active={!paletteOpen && screen === 'settings'}
-              notify={notify}
-              refreshData={refreshData}
-              onCycleScreen={cycleScreen}
-              onBack={() => setScreen('workspace')}
-            />
-          </Box>
-        </Box>
-
-        {paletteOpen ? (
-          <Box
-            flexDirection="column"
-            flexGrow={1}
-            height="100%"
-            borderStyle="round"
-            borderColor={theme.accentDim}
-            paddingX={1}
-            overflow="hidden"
-          >
-            <Box justifyContent="space-between" flexShrink={0}>
-              <Text bold color={theme.text}>
-                <Text color={theme.accent}>{glyph.brand} </Text>
-                Command palette
-              </Text>
-              <Text color={theme.faint}>{filteredActions.length} actions</Text>
-            </Box>
-            <Box marginTop={1} flexShrink={0}>
-              <PromptInput
-                value={paletteQuery}
-                onChange={(value) => {
-                  setPaletteQuery(value);
-                  setPaletteIndex(0);
-                }}
-                onSubmit={() => runPaletteAction(paletteIndex)}
-                focus={paletteOpen}
-                placeholder="Search screens, providers, models, tasks…"
-              />
-            </Box>
-            <Box flexDirection="column" flexGrow={1} overflow="hidden" marginTop={1}>
-              {filteredActions.length === 0 ? (
-                <Text color={theme.muted}>No matching actions.</Text>
-              ) : (
-                filteredActions
-                  .slice(paletteStart, paletteStart + paletteRows)
-                  .map((action, offset) => {
-                    const index = paletteStart + offset;
-                    const selected = index === paletteIndex;
-                    return (
-                      <Box key={action.label}>
-                        <Text
-                          color={selected ? theme.black : theme.text}
-                          backgroundColor={selected ? theme.accent : undefined}
-                          bold={selected}
-                        >
-                          {selected ? ` ${glyph.active} ` : '   '}
-                          {action.label}
-                          {'  '}
-                        </Text>
-                        <Text color={selected ? theme.black : theme.faint}>{action.detail}</Text>
-                      </Box>
-                    );
-                  })
-              )}
-            </Box>
-            <Box flexShrink={0}>
-              <Text color={theme.faint}>
-                {glyph.arrowUp}/{glyph.arrowDown} choose {glyph.bullet} enter run {glyph.bullet} esc
-                close
-              </Text>
-            </Box>
-          </Box>
-        ) : null}
+        {/* The chat workspace stays mounted and visible behind every dialog. */}
+        <Workspace
+          context={context}
+          active={!isDialogOpen}
+          dimmed={isDialogOpen}
+          onStatusChange={setStatus}
+          onNavigate={() => {}}
+          onCycleScreen={() => {}}
+          onOpenDialog={(d) => {
+            if (d) openDialog(d);
+            else closeDialog();
+          }}
+          onQuit={quit}
+          resumeRequest={resumeRequest}
+          notify={notify}
+          refreshData={refreshData}
+          agentMode={agentMode}
+          onAgentMode={setAgentMode}
+          onShowOutput={showOutput}
+        />
       </Box>
+
+      {activeDialog === 'palette' ? (
+        <ModalWindow
+          title="COMMAND PALETTE"
+          subtitle={`${filteredActions.length} actions`}
+          width={76}
+          height={Math.max(10, rows - 8)}
+          footer={['type to filter', '↑/↓ choose', 'enter run', 'esc close']}
+        >
+          <Box marginBottom={1} flexShrink={0}>
+            <PromptInput
+              value={paletteQuery}
+              onChange={(value) => {
+                setPaletteQuery(value);
+                setPaletteIndex(0);
+              }}
+              onSubmit={() => runPaletteAction(paletteIndex)}
+              focus
+              placeholder="Search commands, providers, models, tasks…"
+            />
+          </Box>
+          <Box flexDirection="column" flexGrow={1} overflow="hidden">
+            {filteredActions.length === 0 ? (
+              <Text color={theme.muted}>No matching actions.</Text>
+            ) : (
+              filteredActions
+                .slice(paletteStart, paletteStart + paletteRows)
+                .map((action, offset) => {
+                  const index = paletteStart + offset;
+                  const selected = index === paletteIndex;
+                  return (
+                    <Box key={action.label}>
+                      <Text
+                        color={selected ? theme.black : theme.text}
+                        backgroundColor={selected ? theme.accent : undefined}
+                        bold={selected}
+                      >
+                        {selected ? ` ${glyph.active} ` : '   '}
+                        {action.label}
+                        {'  '}
+                      </Text>
+                      <Text color={selected ? theme.black : theme.faint}>{action.detail}</Text>
+                    </Box>
+                  );
+                })
+            )}
+          </Box>
+        </ModalWindow>
+      ) : null}
+
+      {activeDialog === 'model-picker' ? (
+        <ModelPicker
+          context={context}
+          onClose={closeDialog}
+          notify={notify}
+          refreshData={refreshData}
+        />
+      ) : null}
+
+      {activeDialog === 'connect' ? (
+        <ConnectDialog
+          context={context}
+          onClose={closeDialog}
+          onConnected={(profile) => {
+            notify(`Connected ${profile.name}.`);
+            refreshData();
+          }}
+          notify={notify}
+          refreshData={refreshData}
+        />
+      ) : null}
+
+      {activeDialog === 'providers' ? (
+        <ProvidersDialog
+          context={context}
+          onClose={closeDialog}
+          notify={notify}
+          refreshData={refreshData}
+          onStatusChange={setStatus}
+        />
+      ) : null}
+
+      {activeDialog === 'tasks' ? (
+        <TasksDialog
+          context={context}
+          onClose={closeDialog}
+          onOpenTask={(taskId, resume) => openTask(taskId, resume)}
+          onNewTask={() => {
+            setResumeRequest(null);
+            notify('Ready for a new task.');
+          }}
+          notify={notify}
+          refreshData={refreshData}
+        />
+      ) : null}
+
+      {activeDialog === 'diff' ? (
+        <DiffDialog context={context} taskId={resumeRequest?.taskId ?? null} onClose={closeDialog} />
+      ) : null}
+
+      {activeDialog === 'undo' ? (
+        <UndoDialog
+          context={context}
+          taskId={resumeRequest?.taskId ?? null}
+          onClose={closeDialog}
+          notify={notify}
+          refreshData={refreshData}
+        />
+      ) : null}
+
+      {activeDialog === 'status' ? (
+        <StatusDialog
+          context={context}
+          taskId={resumeRequest?.taskId ?? null}
+          onClose={closeDialog}
+        />
+      ) : null}
+
+      {activeDialog === 'usage' ? (
+        <UsageDialog
+          context={context}
+          onClose={closeDialog}
+          notify={notify}
+          refreshData={refreshData}
+        />
+      ) : null}
+
+      {activeDialog === 'settings' ? (
+        <SettingsDialog
+          context={context}
+          onClose={closeDialog}
+          notify={notify}
+          refreshData={refreshData}
+        />
+      ) : null}
+
+      {activeDialog === 'shortcuts' ? <ShortcutsDialog onClose={closeDialog} /> : null}
+
+      {activeDialog === 'output' && outputContent ? (
+        <OutputDialog
+          title={outputContent.title}
+          text={outputContent.text}
+          onClose={closeDialog}
+        />
+      ) : null}
+
+      {activeDialog === 'effort' ? (
+        <EffortDialog
+          context={context}
+          onClose={closeDialog}
+          notify={notify}
+          refreshData={refreshData}
+        />
+      ) : null}
 
       <Footer hints={hints} toast={toast} width={columns} />
     </Box>
@@ -432,6 +589,9 @@ export async function runTui(): Promise<void> {
     throw new Error('The ComiCode TUI needs an interactive terminal. Use `comicode run` instead.');
   }
   const context = openAppContext(process.cwd());
+  setActiveTheme(context.store.getSettings().ui.theme);
+  // Set the terminal window/tab title to the app name.
+  process.stdout.write('\x1b]0;ComiCode\x07');
   let instance: ReturnType<typeof render> | null = null;
   try {
     instance = render(<App context={context} />, {

@@ -209,6 +209,18 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     description: 'Show OS, Node version, git state, and detected test/lint/build commands.',
     parameters: { type: 'object', properties: {}, required: [] },
   },
+  {
+    name: 'use_skill',
+    description:
+      'Load a skill by name to get detailed instructions for a kind of work (debugging, testing, review, refactoring). Skills are listed in the system context.',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Skill name or unique substring.' },
+      },
+      required: ['name'],
+    },
+  },
 ];
 
 export const TOOL_NAMES = new Set(TOOL_DEFINITIONS.map((tool) => tool.name));

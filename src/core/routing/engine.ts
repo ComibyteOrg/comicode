@@ -10,6 +10,7 @@ import type {
 import type { RoutingPolicy } from '../settings.js';
 import { effectiveAccess, isPaidAccess } from '../providers/catalog.js';
 import { providerDisplayName } from '../providers/definitions.js';
+import { capabilityScore } from './capabilities.js';
 
 export interface RoutingRequirements {
   tools: boolean;
@@ -76,6 +77,7 @@ function modelScore(model: ModelInfo, taskType: TaskType, preferCoding: boolean)
   if (taskType === 'coding') score += model.codingSuitability * 4;
   if (model.contextWindow) score += Math.min(20, Math.log10(model.contextWindow) * 2);
   if (model.maxOutputTokens) score += Math.min(10, Math.log10(model.maxOutputTokens));
+  score += capabilityScore(model, taskType) * 8;
   return score;
 }
 

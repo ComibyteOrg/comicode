@@ -82,9 +82,10 @@ export function HistoryScreen({
         onCycleScreen(key.shift ? -1 : 1);
         return;
       }
-      if (key.upArrow || input === 'k') setSelected((value) => Math.max(0, value - 1));
-      else if (key.downArrow || input === 'j') {
-        setSelected((value) => Math.min(Math.max(0, tasks.length - 1), value + 1));
+      if (key.upArrow || input === 'k') {
+        setSelected((value) => (tasks.length === 0 ? 0 : (value - 1 + tasks.length) % tasks.length));
+      } else if (key.downArrow || input === 'j') {
+        setSelected((value) => (tasks.length === 0 ? 0 : (value + 1) % tasks.length));
       } else if (input === 'a') {
         setAllProjects((value) => !value);
         setSelected(0);

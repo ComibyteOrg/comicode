@@ -101,17 +101,31 @@ async function runCommand(parts: string[], flags: RunFlags): Promise<void> {
   });
 }
 
-async function resumeCommand(reference: string, flags: RunFlags): Promise<void> {
-  await withStore(async ({ store }) => {
+async function resumeCommand(reference: string | undefined, flags: RunFlags): Promise<void> {
+  await withStore(async ({ store, cwd }) => {
     const tasks = store.listTasks({ limit: 1000 });
-    const exact =
-      tasks.find((task) => task.id === reference) ??
-      (() => {
-        const matches = tasks.filter((task) => task.id.startsWith(reference));
-        if (matches.length === 1) return matches[0]!;
-        if (matches.length > 1) throw new Error(`Task id "${reference}" is ambiguous.`);
-        return null;
-      })();
+    let exact: TaskRecord | null = null;
+    if (reference) {
+      exact =
+        tasks.find((task) => task.id === reference) ??
+        (() => {
+          const matches = tasks.filter((task) => task.id.startsWith(reference));
+          if (matches.length === 1) return matches[0]!;
+          if (matches.length > 1) throw new Error(`Task id "${reference}" is ambiguous.`);
+          return null;
+        })();
+    } else {
+      exact =
+        tasks.find(
+          (task) =>
+            task.projectPath === cwd && (task.status === 'paused' || task.status === 'failed'),
+        ) ??
+        tasks.find((task) => task.status === 'paused' || task.status === 'failed') ??
+        null;
+      if (!exact) {
+        throw new Error('No paused or interrupted task found to resume.');
+      }
+    }
     if (!exact) throw new Error(`Task not found: ${reference}`);
     if (exact.status === 'completed') {
       throw new Error('This task is already completed. Start a new task instead.');
@@ -213,12 +227,90 @@ export function buildProgram(): Command {
     });
 
   program
-    .command('resume <task>')
+    .command('task <request...>')
+    .description('Run a coding task in the current project (alias for run)')
+    .option('-p, --profile <profile>', 'provider profile to start with')
+    .option('-m, --model <model>', 'model to start with (explicit selections are honored)')
+    .option('-t, --type <type>', 'coding, reasoning, review, vision, or general', 'coding')
+    .option('--max-steps <number>', 'maximum agent steps for this run')
+    .option('--json', 'emit a single JSON result instead of streaming output')
+    .action(async (parts: string[], flags: RunFlags) => {
+      await runCommand(parts, flags);
+    });
+
+  program
+    .command('resume [task]')
     .description('Resume a paused or interrupted task')
     .option('--max-steps <number>', 'maximum agent steps for this run')
     .option('--json', 'emit a single JSON result instead of streaming output')
-    .action(async (reference: string, flags: RunFlags) => {
+    .action(async (reference: string | undefined, flags: RunFlags) => {
       await resumeCommand(reference, flags);
+    });
+
+  program
+    .command('connect')
+    .description('Connect an AI provider profile (interactive or flagged)')
+    .option('--provider <kind>', 'gemini, groq, openrouter, openai, or custom')
+    .option('--name <name>', 'profile name')
+    .option('--api-key <key>', 'API key')
+    .option('--base-url <url>', 'API base URL')
+    .action(async (options) => {
+      const { addProvider } = await import('./cli/commands/providers.js');
+      await addProvider(options);
+    });
+
+  program
+    .command('status')
+    .description('Show provider, quota, model, and git status')
+    .option('--json', 'machine-readable output')
+    .action(async (options: { json?: boolean }) => {
+      await withStore(async ({ store, cwd }) => {
+        const { gitSummary } = await import('./core/git/repository.js');
+        const { jsonOut, printKeyValue, printSection, success, warning, danger } =
+          await import('./cli/output.js');
+        const profiles = store.listProfiles();
+        const activeProfileId = store.getSelectedProfileId();
+        const activeModelId = store.getSelectedModelId();
+        const limits = store.listLimits(true);
+        const settings = store.getSettings();
+        const git = await gitSummary(cwd);
+
+        if (options.json) {
+          jsonOut({
+            selectedProfileId: activeProfileId,
+            selectedModelId: activeModelId,
+            profiles,
+            limits,
+            allowPaid: settings.routing.allowPaid,
+            git,
+          });
+          return;
+        }
+
+        printSection('ComiCode Status');
+        const activeProfile = profiles.find((p) => p.id === activeProfileId);
+        printKeyValue([
+          ['Selected Profile', activeProfile ? activeProfile.name : dim('(none selected)')],
+          ['Selected Model', activeModelId ?? dim('(provider default)')],
+          [
+            'Paid Fallbacks',
+            settings.routing.allowPaid ? warning('enabled') : success('disabled (free only)'),
+          ],
+          ['Connected Profiles', `${profiles.length} connected`],
+          [
+            'Active Limits',
+            limits.length === 0 ? success('none') : danger(`${limits.length} active limits`),
+          ],
+          [
+            'Git Repository',
+            git.repository
+              ? git.clean
+                ? success(`clean (⎇ ${git.branch ?? 'HEAD'})`)
+                : warning(`modified (⎇ ${git.branch ?? 'HEAD'}, ${git.files.length} changed)`)
+              : dim('not a git repository'),
+          ],
+        ]);
+      });
     });
 
   program
@@ -233,7 +325,7 @@ export function buildProgram(): Command {
     });
 
   for (const command of program.commands) {
-    if (['run', 'resume', 'chat'].includes(command.name())) authorityFlags(command);
+    if (['run', 'task', 'resume', 'chat'].includes(command.name())) authorityFlags(command);
   }
 
   registerProviderCommands(program);
@@ -242,6 +334,20 @@ export function buildProgram(): Command {
   registerUsageCommands(program);
   registerSettingsCommands(program);
   registerSystemCommands(program);
+
+  program
+    .command('bench')
+    .description('Run honest micro-benchmarks (startup, memory, context build, tokens)')
+    .option('-n, --iterations <number>', 'samples per metric', '5')
+    .action(async (options: { iterations?: string }) => {
+      const iterations = Math.max(1, Math.min(50, Number(options.iterations) || 5));
+      const { runBenchmarks } = await import('./core/bench.js');
+      const results = await runBenchmarks(process.cwd(), iterations);
+      const width = Math.max(...results.map((r) => r.metric.length));
+      for (const result of results) {
+        console.log(`${result.metric.padEnd(width)}  ${String(result.value).padStart(10)} ${result.unit}`);
+      }
+    });
 
   program
     .command('completion')

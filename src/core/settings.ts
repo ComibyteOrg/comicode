@@ -57,6 +57,24 @@ export const AgentSettingsSchema = z.object({
   autoApproveFileEdits: z.boolean().default(false),
   autoApproveCommands: z.boolean().default(false),
   allowSecretAccess: z.boolean().default(false),
+  /**
+   * How the agent asks for approval:
+   * - `ask`: prompt for every sensitive action (per-action "always allow" grants still apply).
+   * - `trusted`: auto-approve file edits and normal commands; still ask for dangerous commands and secrets.
+   * - `auto`: never prompt; only hard safety blocks apply.
+   */
+  permissionMode: z.enum(['ask', 'trusted', 'auto']).default('ask'),
+  /**
+   * Persistent "always allow" grants chosen in approval dialogs.
+   * Commands match exactly or by trailing `*` prefix; paths are
+   * project-relative and also match everything beneath them.
+   */
+  permissions: z
+    .object({
+      allowCommands: z.array(z.string()).default([]),
+      allowPaths: z.array(z.string()).default([]),
+    })
+    .prefault({}),
   testCommand: z.string().nullable().default(null),
   lintCommand: z.string().nullable().default(null),
   buildCommand: z.string().nullable().default(null),
@@ -73,12 +91,26 @@ export const AgentSettingsSchema = z.object({
 export const SettingsSchema = z.object({
   theme: z.enum(['dark', 'dark-dim']).default('dark'),
   accent: z.enum(['cyan', 'blue', 'green', 'magenta', 'orange']).default('cyan'),
+  ui: z
+    .object({
+      /** Shortcut id to binding string, for example { model: "ctrl+g" }. */
+      shortcuts: z.record(z.string(), z.string()).default({}),
+      /** Color theme name — see THEMES in src/tui/theme.ts. */
+      theme: z.string().default('obsidian'),
+    })
+    .prefault({}),
   routing: RoutingPolicySchema.prefault({}),
   agent: AgentSettingsSchema.prefault({}),
   privacy: z
     .object({
       /** ComiCode sends no telemetry. This field documents the guarantee. */
       telemetry: z.literal(false).default(false),
+    })
+    .prefault({}),
+  storage: z
+    .object({
+      /** Days to keep completed/failed tasks before /cleanup removes them. */
+      retentionDays: z.number().int().min(1).max(3650).default(30),
     })
     .prefault({}),
 });
@@ -132,6 +164,10 @@ export const SETTING_PATHS = [
   'agent.autoApproveFileEdits',
   'agent.autoApproveCommands',
   'agent.allowSecretAccess',
+  'agent.permissionMode',
+  'agent.permissions.allowCommands',
+  'agent.permissions.allowPaths',
+  'storage.retentionDays',
   'agent.testCommand',
   'agent.lintCommand',
   'agent.buildCommand',

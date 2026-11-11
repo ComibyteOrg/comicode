@@ -1,4 +1,10 @@
-import type { AccessClassification, DiscoveredModel, ModelInfo, ProviderKind } from '../types.js';
+import type {
+  AccessClassification,
+  DiscoveredModel,
+  ModelInfo,
+  ProviderKind,
+  ProviderProfile,
+} from '../types.js';
 
 interface KnownModel {
   displayName: string;
@@ -269,6 +275,23 @@ export function knownModelsForProvider(providerId: ProviderKind): ModelInfo[] {
 }
 
 /** Effective access after applying the user's explicit classification. */
+/** Find the profile that owns a catalog model. Custom endpoints are scoped. */
+export function owningProfileForModel(
+  profiles: ProviderProfile[],
+  model: ModelInfo,
+): ProviderProfile | null {
+  if (model.profileId) return profiles.find((profile) => profile.id === model.profileId) ?? null;
+  return (
+    profiles.find(
+      (profile) =>
+        profile.providerId === model.providerId && profile.defaultModel === model.modelId,
+    ) ??
+    profiles.find((profile) => profile.providerId === model.providerId && profile.enabled) ??
+    profiles.find((profile) => profile.providerId === model.providerId) ??
+    null
+  );
+}
+
 export function effectiveAccess(
   model: ModelInfo,
   profileAccess: AccessClassification | null = null,

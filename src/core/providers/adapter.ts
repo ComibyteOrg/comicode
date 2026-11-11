@@ -12,6 +12,10 @@ export interface AdapterContext {
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
   baseUrl?: string;
+  /** Index of the API key in use within the profile's key pool (0-based). */
+  keyIndex?: number;
+  /** Total API keys configured for this profile (1 when a single key/env is used). */
+  keyCount?: number;
 }
 
 export interface ChatOptions {

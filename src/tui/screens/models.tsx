@@ -145,9 +145,10 @@ export function ModelsScreen({
         onCycleScreen(key.shift ? -1 : 1);
         return;
       }
-      if (key.upArrow || input === 'k') setSelected((value) => Math.max(0, value - 1));
-      else if (key.downArrow || input === 'j') {
-        setSelected((value) => Math.min(Math.max(0, models.length - 1), value + 1));
+      if (key.upArrow || input === 'k') {
+        setSelected((value) => (models.length === 0 ? 0 : (value - 1 + models.length) % models.length));
+      } else if (key.downArrow || input === 'j') {
+        setSelected((value) => (models.length === 0 ? 0 : (value + 1) % models.length));
       } else if (input === '/') setSearchMode(true);
       else if (input === 'f') {
         setFreeOnly((value) => !value);

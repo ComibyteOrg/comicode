@@ -6,6 +6,8 @@ import type { ProjectInspector } from '../project/inspector.js';
 import { isSecretFile } from '../safety/secrets.js';
 import { isBinaryBuffer } from '../safety/files.js';
 import { createHash } from 'node:crypto';
+import { formatSkillsSection, type AgentSkill } from './skills.js';
+import { AGENT_MODES, type AgentMode } from './modes.js';
 
 export type ContextCache = CheckpointState['contextCache'];
 
@@ -20,6 +22,9 @@ export interface ContextBuildInput {
   summary?: string;
   resumeNote?: string;
   projectSummary?: string;
+  skills?: AgentSkill[];
+  mode?: AgentMode;
+  effortHint?: string;
 }
 
 export interface BuiltContext {
@@ -252,6 +257,15 @@ export class ContextBuilder {
           .join(', ')}`,
       );
     }
+    const skillsSection = formatSkillsSection(input.skills ?? []);
+    if (skillsSection) lines.push(`\n${skillsSection}`);
+    const modeAddendum = input.mode ? AGENT_MODES[input.mode].promptAddendum : '';
+    if (modeAddendum) lines.push(`\n${modeAddendum}`);
+    if (input.effortHint) lines.push(`\n${input.effortHint}`);
+    lines.push(
+      '\n# Task breakdown\nFor any request involving multiple files, layers, or steps (e.g. fullstack work), first call update_plan with a concrete decomposition — separate subtasks for each layer/component plus verification — then execute the steps in order, keeping the plan statuses accurate.',
+    );
+
     lines.push(
       '\n# Context guidance\nTool results can be truncated. Use search/read tools for exact current content. Do not assume a file still matches something you saw many turns ago.',
     );
