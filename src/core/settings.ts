@@ -101,11 +101,11 @@ export const SettingsSchema = z.object({
       /** Color theme name — see THEMES in src/tui/theme.ts. */
       theme: z.string().default('obsidian'),
       /**
-       * Mouse reporting for wheel-scroll/click. Off by default because mouse
-       * capture prevents the terminal's native highlight/copy in most
-       * terminals. Turn it on if wheel scrolling matters more than selection.
+       * Mouse reporting for wheel-scroll/click. On by default; while enabled
+       * the terminal captures the mouse, so use Shift+drag (or ctrl+y select
+       * mode) to highlight and copy text.
        */
-      mouseScroll: z.boolean().default(false),
+      mouseScroll: z.boolean().default(true),
     })
     .prefault({}),
   routing: RoutingPolicySchema.prefault({}),

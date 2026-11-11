@@ -266,6 +266,22 @@ export function SettingsDialog({
       onNext: () => cycleAccent(1),
       onPrev: () => cycleAccent(-1),
     },
+    {
+      id: 'mouseScroll',
+      label: 'Mouse wheel scroll',
+      description:
+        'Scroll the transcript with the mouse wheel. While on, hold Shift+drag or press ctrl+y to highlight and copy text.',
+      value: toggleLabel(settings.ui.mouseScroll, 'On', 'Off'),
+      type: 'toggle',
+      onNext: () =>
+        update((s) => {
+          s.ui.mouseScroll = !s.ui.mouseScroll;
+        }),
+      onPrev: () =>
+        update((s) => {
+          s.ui.mouseScroll = !s.ui.mouseScroll;
+        }),
+    },
   ];
 
   useInput((input, key) => {

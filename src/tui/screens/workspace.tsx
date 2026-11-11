@@ -392,6 +392,7 @@ export function Workspace({
   // Mouse capture is opt-in because it blocks the terminal's native
   // highlight/copy. It is also released while a dialog is open and in select
   // mode. Enable wheel support with settings ui.mouseScroll=true.
+  const mouseScrollEnabled = context.store.getSettings().ui.mouseScroll === true;
   useEffect(() => {
     if (selectionMode) {
       // Release immediately, even if a previous effect has not cleaned up yet.
@@ -402,14 +403,14 @@ export function Workspace({
     // Always clear stale mouse modes first — a crashed previous session can
     // leave reporting enabled, which silently breaks native text selection.
     disableMouseTracking();
-    if (context.store.getSettings().ui.mouseScroll !== true) return;
+    if (!mouseScrollEnabled) return;
     return enableMouseWheel((direction) => {
       if (!active) return;
       setScrollOffset((value) =>
         Math.max(0, Math.min(maxOffsetRef.current, value - direction * 3)),
       );
     });
-  }, [active, context, selectionMode]);
+  }, [active, context, selectionMode, mouseScrollEnabled]);
 
   const respondConfirm = useCallback((decision: ConfirmDecision) => {
     const resolve = confirmResolve.current;

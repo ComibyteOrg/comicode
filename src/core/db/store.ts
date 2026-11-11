@@ -207,7 +207,24 @@ export class Store {
   constructor(readonly path: string) {
     this.db = new Db(path);
     this.applyNativeSelectionDefault();
+    this.applyMouseScrollDefault();
     this.reclassifyModelAccess();
+  }
+
+  /**
+   * The first selection-default migration forced mouseScroll off as a
+   * workaround for stale mouse-capture modes, which are now cleared properly
+   * on startup. Re-enable wheel scrolling once; users who prefer native
+   * selection can turn it back off in settings.
+   */
+  private applyMouseScrollDefault(): void {
+    if (this.db.metaGet('ui.mouse_scroll_default_v2')) return;
+    const settings = this.getSettings();
+    if (!settings.ui.mouseScroll) {
+      settings.ui.mouseScroll = true;
+      this.saveSettings(settings);
+    }
+    this.db.metaSet('ui.mouse_scroll_default_v2', '1');
   }
 
   /**
