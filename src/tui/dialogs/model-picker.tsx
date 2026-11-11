@@ -150,13 +150,29 @@ export function ModelPicker({
           model.supportsVision ? 'vision' : null,
           model.supportsStreaming ? 'stream' : null,
         ].filter(Boolean);
+        const accessBadge =
+          access === 'free-confirmed' || access === 'user-free'
+            ? 'free'
+            : access === 'free-tier'
+              ? 'free tier'
+              : isPaidAccess(access)
+                ? 'paid'
+                : access === 'unknown'
+                  ? 'unknown'
+                  : null;
         return {
           key: model.id,
           label: `${isSelected ? `${glyph.dot} ` : ''}${model.displayName || model.modelId}`,
           group,
-          leadingBadge: free ? 'free' : undefined,
+          leadingBadge: accessBadge ?? undefined,
           leadingBadgeColor:
-            access === 'free-confirmed' || access === 'user-free' ? theme.success : theme.accent,
+            accessBadge === 'free'
+              ? theme.success
+              : accessBadge === 'paid'
+                ? theme.warning
+                : accessBadge === 'free tier'
+                  ? theme.accent
+                  : theme.muted,
           badge: free
             ? model.available
               ? undefined

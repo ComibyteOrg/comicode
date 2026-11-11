@@ -24,7 +24,6 @@ import { shortcutMatches } from './shortcuts/manager.js';
 import { nextAgentMode, type AgentMode } from '../core/agent/modes.js';
 import { VERSION } from '../version.js';
 import { glyph, setActiveTheme, theme } from './theme.js';
-import { disableMouseTracking } from './mouse.js';
 
 export type DialogId =
   | 'palette'
@@ -100,13 +99,6 @@ function App({ context }: { context: AppContext }): React.ReactElement {
         : 'Wheel scrolling restored.',
     );
   }, [notify, selectionMode]);
-
-  // A previous crashed/killed session can leave mouse reporting modes enabled,
-  // which silently breaks the terminal's native highlight/copy. Clear them on
-  // startup; wheel/click support re-enables only what it needs while active.
-  useEffect(() => {
-    disableMouseTracking();
-  }, []);
 
   useEffect(() => {
     if (!toast) return;

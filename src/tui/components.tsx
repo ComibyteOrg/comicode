@@ -510,9 +510,14 @@ export function PromptInput({
     (input, key) => {
       if (isMouseSequence(input) || isSuppressedInput()) return;
       const enter = isEnter(input, key);
+      // While recalling prompt history the suggestion popup stays closed so
+      // arrow keys keep walking history instead of getting trapped in the
+      // completion list. Editing the recalled text (backspace/type) clears
+      // historyIndex and suggestions return normally.
       const isSuggestionOpen =
         visibleSuggestions.length > 0 &&
         !suggestionDismissed &&
+        historyIndex === null &&
         (suggestionActive || value.startsWith('/') || mentionMode);
 
       if (key.escape) {
@@ -555,7 +560,7 @@ export function PromptInput({
       }
 
       if (key.upArrow || key.downArrow) {
-        if (visibleSuggestions.length > 0) {
+        if (isSuggestionOpen) {
           setSuggestionDismissed(false);
           setSuggestionActive(true);
           setSuggestionIndex((current) => {
@@ -687,6 +692,7 @@ export function PromptInput({
       {focus &&
       visibleSuggestions.length > 0 &&
       !suggestionDismissed &&
+      historyIndex === null &&
       (suggestionActive || value.startsWith('/') || mentionMode) ? (
         <Box
           flexDirection="column"
