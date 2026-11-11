@@ -148,6 +148,19 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: 'verify_ui',
+    description:
+      'Verify a UI in a real headless browser (requires Playwright). Navigates to an http(s) or file:// URL, captures a screenshot into .comicode/shots/, and reports console errors, page errors, and failed requests. Use after building web UI to actually check the result.',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'URL to open, e.g. http://localhost:3000 or file:///abs/path.html.' },
+        wait_ms: { type: 'integer', description: 'Extra settle time after load (default 1000, max 30000).' },
+      },
+      required: ['url'],
+    },
+  },
+  {
     name: 'git_status',
     description: 'Show git branch, working-tree status, and untracked files. Read-only.',
     parameters: { type: 'object', properties: {}, required: [] },

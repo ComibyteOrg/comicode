@@ -86,6 +86,10 @@ const planSchema = z.object({
 });
 const completeSchema = z.object({ summary: z.string().min(1).max(8000) });
 const skillSchema = z.object({ name: z.string().min(1).max(200) });
+const verifyUiSchema = z.object({
+  url: z.string().min(1).max(2000),
+  wait_ms: z.number().int().min(0).max(30_000).optional(),
+});
 
 export interface ToolExecutorOptions {
   root: string;
@@ -167,7 +171,11 @@ export class ToolExecutor {
   /** True when a persisted "always allow" grant covers this request. */
   private grantMatches(request: ConfirmationRequest): boolean {
     const grants = this.permissionGrants();
-    if (request.kind === 'command' || request.kind === 'dangerous-command') {
+    if (
+      request.kind === 'command' ||
+      request.kind === 'dangerous-command' ||
+      request.kind === 'ui-verify'
+    ) {
       const command = request.command ?? '';
       if (!command) return false;
       return grants.allowCommands.some((grant) =>
@@ -276,6 +284,8 @@ export class ToolExecutor {
           return await this.runPreset('lint', call.arguments);
         case 'run_build':
           return await this.runPreset('build', call.arguments);
+        case 'verify_ui':
+          return await this.verifyUiTool(call.arguments);
         case 'git_status':
           return await this.gitStatus();
         case 'git_diff':
@@ -593,6 +603,49 @@ export class ToolExecutor {
       cwd: parsed.data.cwd,
       timeoutMs: parsed.data.timeout_ms,
     });
+  }
+
+  private async verifyUiTool(args: unknown): Promise<ToolResult> {
+    const parsed = this.parse(verifyUiSchema, args);
+    if (!parsed.ok) return parsed.result;
+    const url = parsed.data.url;
+    if (!/^(https?|file):\/\//i.test(url)) {
+      return {
+        ok: false,
+        content: 'verify_ui only supports http://, https://, or file:// URLs.',
+      };
+    }
+    const approved = await this.approve(
+      {
+        kind: 'ui-verify',
+        title: `Verify UI: ${url}`,
+        description:
+          'Launch a headless browser, capture a screenshot, and report console errors and failed requests.',
+        command: `verify_ui ${url}`,
+      },
+      this.commandsAuto(),
+    );
+    if (!approved) return { ok: false, content: 'UI verification was not approved.' };
+    const { verifyPage } = await import('../../ui/browser-verify.js');
+    const relative = '.comicode/shots';
+    const result = await verifyPage(url, {
+      waitMs: parsed.data.wait_ms ?? 1000,
+      outDir: join(this.options.root, relative),
+      timeoutMs: 30_000,
+    });
+    if (!result.ok) return { ok: false, content: result.message };
+    const lines = [
+      result.message,
+      result.title ? `Title: ${result.title}` : null,
+      result.screenshotPath ? `Screenshot: ${join(relative, result.screenshotPath.split(/[\\/]/).pop() ?? '')}` : null,
+      result.consoleErrors.length
+        ? `Console errors:\n${result.consoleErrors.map((e) => `- ${e}`).join('\n')}`
+        : 'Console errors: none',
+      result.failedRequests.length
+        ? `Failed requests:\n${result.failedRequests.map((r) => `- ${r}`).join('\n')}`
+        : 'Failed requests: none',
+    ].filter(Boolean);
+    return { ok: true, content: lines.join('\n') };
   }
 
   private async runPreset(kind: 'test' | 'lint' | 'build', args: unknown): Promise<ToolResult> {

@@ -967,7 +967,8 @@ export class CodingAgent {
       if (
         (call.name === 'run_tests' ||
           call.name === 'run_lint' ||
-          call.name === 'run_build') &&
+          call.name === 'run_build' ||
+          call.name === 'verify_ui') &&
         result.ok
       ) {
         this.verificationRan = true;

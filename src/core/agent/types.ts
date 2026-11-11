@@ -15,7 +15,8 @@ export interface ConfirmationRequest {
     | 'dangerous-command'
     | 'secret-read'
     | 'task-delete'
-    | 'provider-switch';
+    | 'provider-switch'
+    | 'ui-verify';
   title: string;
   description: string;
   path?: string;

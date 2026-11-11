@@ -11,6 +11,7 @@ const ALWAYS_KINDS = new Set([
   'command',
   'dangerous-command',
   'provider-switch',
+  'ui-verify',
 ]);
 
 interface ConfirmOption {
