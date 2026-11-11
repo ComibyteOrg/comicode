@@ -621,7 +621,9 @@ export async function runTui(): Promise<void> {
   let instance: ReturnType<typeof render> | null = null;
   try {
     instance = render(<App context={context} />, {
-      alternateScreen: true,
+      // Render inline (not the alternate screen) so conhost/Command Prompt
+      // and other terminals keep native text selection and scrollback.
+      alternateScreen: false,
       exitOnCtrlC: false,
       incrementalRendering: false,
       maxFps: 30,

@@ -106,7 +106,7 @@ export const SettingsSchema = z.object({
        * (pgup/pgdn, ctrl+↑/↓) always works. Enable it in settings if wheel
        * scrolling matters more — then use Shift+drag or ctrl+y to copy.
        */
-      mouseScroll: z.boolean().default(false),
+      mouseScroll: z.boolean().default(true),
     })
     .prefault({}),
   routing: RoutingPolicySchema.prefault({}),

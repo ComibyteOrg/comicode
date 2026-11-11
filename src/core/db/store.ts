@@ -209,7 +209,22 @@ export class Store {
     this.applyNativeSelectionDefault();
     this.applyMouseScrollDefault();
     this.applyMouseScrollDefaultV3();
+    this.applyMouseScrollDefaultV4();
     this.reclassifyModelAccess();
+  }
+
+  /**
+   * v3 turned wheel scroll off by default, but users want it on; copy remains
+   * available via ctrl+y select mode and Shift+drag where supported.
+   */
+  private applyMouseScrollDefaultV4(): void {
+    if (this.db.metaGet('ui.mouse_scroll_default_v4')) return;
+    const settings = this.getSettings();
+    if (!settings.ui.mouseScroll) {
+      settings.ui.mouseScroll = true;
+      this.saveSettings(settings);
+    }
+    this.db.metaSet('ui.mouse_scroll_default_v4', '1');
   }
 
   /**
