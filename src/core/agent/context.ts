@@ -184,7 +184,9 @@ export function pruneHistory(
 export class ContextBuilder {
   build(input: ContextBuildInput): BuiltContext {
     const { task, model, settings, inspector, relevantFiles, cache } = input;
-    const contextWindow = model.contextWindow ?? 128_000;
+    // Models without a published window get a conservative 32k assumption —
+    // assuming 128k sends prompts that small-window models reject as too large.
+    const contextWindow = model.contextWindow ?? 32_000;
     const ratio = settings.agent.contextBudgetRatio;
     const maxPromptChars = Math.max(
       12_000,

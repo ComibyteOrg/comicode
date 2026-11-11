@@ -508,8 +508,34 @@ export function Workspace({
         addEntry({ kind: 'paused', title: 'paused', text: reason });
       },
       onTaskComplete: (summary) => {
-        if (summary)
-          addEntry({ kind: 'summary', title: 'completed', text: clipLines(summary, 10, 3000) });
+        if (!summary) return;
+        // Skip the completion card when it just repeats the assistant's last
+        // message — otherwise a simple "hi" renders two identical responses.
+        const norm = (value: string): string =>
+          value.toLowerCase().replace(/\s+/g, ' ').trim();
+        const summaryNorm = norm(summary);
+        setEntries((previous) => {
+          const lastAssistant = [...previous]
+            .reverse()
+            .find((entry) => entry.kind === 'assistant');
+          const assistantNorm = lastAssistant ? norm(lastAssistant.text) : '';
+          const duplicate =
+            assistantNorm.length > 0 &&
+            summaryNorm.length > 0 &&
+            (summaryNorm.includes(assistantNorm) ||
+              assistantNorm.includes(summaryNorm) ||
+              summaryNorm.slice(0, 160) === assistantNorm.slice(0, 160));
+          if (duplicate) return previous;
+          return [
+            ...previous,
+            {
+              id: nextId.current++,
+              kind: 'summary',
+              title: 'completed',
+              text: clipLines(summary, 10, 3000),
+            },
+          ];
+        });
       },
     };
   }, [addEntry, removeEntry]);

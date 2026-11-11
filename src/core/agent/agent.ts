@@ -841,8 +841,16 @@ export class CodingAgent {
     // one we keep the full effort budget instead of silently falling back to a
     // minimum 4096-token cap (which made xhigh behave like low effort).
     const modelMax = candidate.model.maxOutputTokens;
-    const maxOutput =
-      modelMax !== null && modelMax > 0 ? Math.min(outputCap, modelMax) : Math.max(512, outputCap);
+    // Output can never exceed half the context window — requesting more makes
+    // providers reject the call as too large, especially on small models.
+    const windowCap = candidate.model.contextWindow
+      ? Math.max(512, Math.floor(candidate.model.contextWindow / 2))
+      : 8192;
+    const maxOutput = Math.min(
+      modelMax !== null && modelMax > 0 ? modelMax : Number.MAX_SAFE_INTEGER,
+      outputCap,
+      windowCap,
+    );
     return adapter.chat(
       context,
       {
