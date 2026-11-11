@@ -1,10 +1,46 @@
 import { mkdirSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 
 export interface UiVerifyOptions {
   waitMs?: number;
   outDir: string;
   timeoutMs?: number;
+  /** Project root used to resolve a project-local Playwright install. */
+  resolveFrom?: string;
+}
+
+/**
+ * Locate Playwright: first ComiCode's own install (dev/global), then the
+ * user's project via createRequire so a globally-installed CLI can still use
+ * a project's devDependency.
+ */
+async function loadChromium(resolveFrom?: string): Promise<any | null> {
+  // Prefer the slim playwright-core; fall back to full playwright for projects
+  // that installed it. Both are resolved next to ComiCode first, then inside
+  // the user's project so a global CLI can reuse a project devDependency.
+  for (const name of ['playwright-core', 'playwright']) {
+    try {
+      const mod = (await import(name)) as { chromium?: any };
+      if (mod.chromium) return mod.chromium;
+    } catch {
+      // Not installed next to ComiCode — try the project below.
+    }
+    if (resolveFrom) {
+      try {
+        const require = createRequire(join(resolveFrom, 'package.json'));
+        const mod = require(name) as {
+          chromium?: any;
+          default?: { chromium?: any };
+        };
+        const chromium = mod.chromium ?? mod.default?.chromium;
+        if (chromium) return chromium;
+      } catch {
+        // No project-local install of this package either.
+      }
+    }
+  }
+  return null;
 }
 
 export interface UiVerifyResult {
@@ -23,15 +59,13 @@ export interface UiVerifyResult {
  * pretending a screenshot happened.
  */
 export async function verifyPage(url: string, options: UiVerifyOptions): Promise<UiVerifyResult> {
-  let chromium: any;
-  try {
-    ({ chromium } = await import('playwright'));
-  } catch {
+  const chromium = await loadChromium(options.resolveFrom);
+  if (!chromium) {
     return {
       ok: false,
       message:
         'Playwright is not installed, so no browser verification ran. ' +
-        'Install it (`npm i -D playwright && npx playwright install chromium`) ' +
+        'Install it in this project (`npm i -D playwright && npx playwright install chromium`) ' +
         'or set agent.uiVerifyCommand to your own screenshot/a11y script.',
       consoleErrors: [],
       failedRequests: [],
@@ -41,13 +75,26 @@ export async function verifyPage(url: string, options: UiVerifyOptions): Promise
   const timeoutMs = options.timeoutMs ?? 30_000;
   const consoleErrors: string[] = [];
   const failedRequests: string[] = [];
-  let browser: any;
-  try {
-    browser = await chromium.launch({ headless: true });
-  } catch (error) {
+  // Try bundled/installed Chromium first, then system Edge/Chrome so users
+  // need zero browser downloads on machines that already have a browser.
+  let browser: any = null;
+  let lastLaunchError: unknown = null;
+  for (const launchOptions of [
+    { headless: true },
+    { headless: true, channel: 'msedge' },
+    { headless: true, channel: 'chrome' },
+  ]) {
+    try {
+      browser = await chromium.launch(launchOptions);
+      break;
+    } catch (error) {
+      lastLaunchError = error;
+    }
+  }
+  if (!browser) {
     return {
       ok: false,
-      message: `Could not launch a browser: ${error instanceof Error ? error.message : String(error)}. Run \`npx playwright install chromium\` first.`,
+      message: `Could not launch a browser: ${lastLaunchError instanceof Error ? lastLaunchError.message : String(lastLaunchError)}. Install browsers with \`npx playwright install chromium\` or set agent.uiVerifyCommand.`,
       consoleErrors: [],
       failedRequests: [],
     };

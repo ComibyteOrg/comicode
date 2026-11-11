@@ -632,6 +632,7 @@ export class ToolExecutor {
       waitMs: parsed.data.wait_ms ?? 1000,
       outDir: join(this.options.root, relative),
       timeoutMs: 30_000,
+      resolveFrom: this.options.root,
     });
     if (!result.ok) return { ok: false, content: result.message };
     const lines = [
