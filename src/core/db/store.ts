@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { Db, safeJsonParse } from './database.js';
 import { parseSettings, type AppSettings } from '../settings.js';
+import { classifyDiscoveredAccess } from '../providers/catalog.js';
+import { getProviderDefinition } from '../providers/definitions.js';
 import type {
   AgentMessage,
   AccessClassification,
@@ -205,6 +207,63 @@ export class Store {
   constructor(readonly path: string) {
     this.db = new Db(path);
     this.applyNativeSelectionDefault();
+    this.reclassifyModelAccess();
+  }
+
+  /**
+   * One-time migration: model access labels stored by older builds used
+   * host-level heuristics that marked every model on a free-tier host as
+   * "free-confirmed". Recompute access from the same classifier used at
+   * discovery time so paid models stop showing as free. Rows with an explicit
+   * user classification are left untouched.
+   */
+  private reclassifyModelAccess(): void {
+    if (this.db.metaGet('models.access_reclassified_v1')) return;
+    const rows = this.db.all<{
+      id: string;
+      provider_id: string;
+      profile_id: string | null;
+      model_id: string;
+      input_price_per_million: number | null;
+      output_price_per_million: number | null;
+    }>(
+      `SELECT id, provider_id, profile_id, model_id, input_price_per_million,
+              output_price_per_million
+       FROM models WHERE user_classification IS NULL`,
+    );
+    const profileUrls = new Map<string, string>();
+    for (const row of rows) {
+      const providerId = row.provider_id as ProviderKind;
+      let baseUrl = getProviderDefinition(providerId).defaultBaseUrl;
+      if (row.profile_id) {
+        if (!profileUrls.has(row.profile_id)) {
+          const profile = this.db.get<{ base_url: string }>(
+            'SELECT base_url FROM provider_profiles WHERE id = ?',
+            row.profile_id,
+          );
+          profileUrls.set(row.profile_id, profile?.base_url ?? '');
+        }
+        baseUrl = profileUrls.get(row.profile_id) || baseUrl;
+      }
+      const classified = classifyDiscoveredAccess(
+        providerId,
+        {
+          modelId: row.model_id,
+          displayName: row.model_id,
+          inputPricePerMillion: row.input_price_per_million,
+          outputPricePerMillion: row.output_price_per_million,
+        },
+        { baseUrl },
+      );
+      this.db.run(
+        'UPDATE models SET access = ?, access_source = ?, access_notes = ? WHERE id = ?',
+        classified.access,
+        classified.source,
+        classified.notes,
+        row.id,
+      );
+    }
+    this.db.metaSet('models.access_reclassified_v1', '1');
   }
 
   /**
@@ -529,16 +588,25 @@ export class Store {
     );
   }
 
-  markProviderModelsStale(providerId: string, exceptIds: string[] = []): void {
+  markProviderModelsStale(
+    providerId: string,
+    exceptIds: string[] = [],
+    profileScope = '',
+  ): void {
     const placeholders = exceptIds.map(() => '?').join(',');
+    const scopeClause = 'AND profile_id = ?';
+    const params = [providerId, ...exceptIds, profileScope];
     if (exceptIds.length === 0) {
-      this.db.run('UPDATE models SET available = 0 WHERE provider_id = ?', providerId);
+      this.db.run(
+        `UPDATE models SET available = 0 WHERE provider_id = ? ${scopeClause}`,
+        providerId,
+        profileScope,
+      );
       return;
     }
     this.db.run(
-      `UPDATE models SET available = 0 WHERE provider_id = ? AND model_id NOT IN (${placeholders})`,
-      providerId,
-      ...exceptIds,
+      `UPDATE models SET available = 0 WHERE provider_id = ? AND model_id NOT IN (${placeholders}) ${scopeClause}`,
+      ...params,
     );
   }
 

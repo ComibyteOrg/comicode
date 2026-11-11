@@ -49,7 +49,7 @@ export function ModelPicker({
   const [selected, setSelected] = useState(0);
   const [freeOnly, setFreeOnly] = useState(false);
   const [toolsOnly, setToolsOnly] = useState(false);
-  const [availableOnly, setAvailableOnly] = useState(false);
+  const [availableOnly, setAvailableOnly] = useState(true);
   const [providerFilter, setProviderFilter] = useState<ProviderKind | null>(null);
   const [manualMode, setManualMode] = useState(false);
   const [manualValue, setManualValue] = useState('');
@@ -377,6 +377,7 @@ export function ModelPicker({
         'enter select',
         'ctrl+f free',
         'ctrl+t tools',
+        'ctrl+a available',
         'ctrl+p provider',
         'ctrl+r refresh',
         'ctrl+e manual',

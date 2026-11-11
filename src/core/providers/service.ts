@@ -141,6 +141,15 @@ export async function refreshProfileModels(
     );
     const scopedProfileId = profile.providerId === 'custom' ? profile.id : null;
     store.upsertModels(profile.providerId, enriched, scopedProfileId);
+    // Models missing from a successful discovery are stale (renamed,
+    // decommissioned, or region-locked). Mark them unavailable so pickers and
+    // routing stop offering them; a later refresh that sees them again
+    // restores availability via upsert.
+    store.markProviderModelsStale(
+      profile.providerId,
+      enriched.map((model) => model.modelId),
+      scopedProfileId ?? '',
+    );
     const latencyMs = Date.now() - started;
     store.updateProfile(profile.id, {
       modelsRefreshedAt: new Date().toISOString(),
