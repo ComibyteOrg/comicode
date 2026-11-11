@@ -1,6 +1,11 @@
 /**
- * Wheel-only mouse support. Enables SGR mouse reporting (press/release +
- * wheel, no motion/drag events) and parses wheel sequences from stdin.
+ * Optional wheel-only mouse support. Enables SGR mouse reporting (press/release
+ * + wheel, no motion/drag events) and parses wheel sequences from stdin.
+ *
+ * Mouse reporting is OFF by default. While it is enabled the terminal sends
+ * drag events to the app instead of highlighting text, so native selection
+ * only works while holding Shift (terminal-dependent). Keep it off when text
+ * selection matters more than wheel scrolling.
  *
  * The sequences still reach Ink's keypress parser, so consumers must guard
  * their input handlers with `isMouseSequence` / `isSuppressedInput`.
@@ -8,6 +13,12 @@
 
 // eslint-disable-next-line no-control-regex
 const SGR_MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
+
+// Button press/release (1000), button-drag (1002), any-motion (1003),
+// UTF-8 coords (1005), SGR coords (1006), urxvt coords (1015). Disabling all
+// of them also cleans up modes left behind by a previous crashed process.
+const DISABLE_MOUSE = '\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l';
+const ENABLE_WHEEL = '\x1b[?1000h\x1b[?1006h';
 
 let listening = false;
 let suppressUntil = 0;
@@ -30,6 +41,15 @@ export function isMouseSequence(input: string): boolean {
 /** True briefly after any mouse event, to swallow split escape fragments. */
 export function isSuppressedInput(): boolean {
   return Date.now() < suppressUntil;
+}
+
+/**
+ * Release every mouse reporting mode so the terminal regains native
+ * highlight/copy. Safe to call even when wheel support was never enabled.
+ */
+export function disableMouseTracking(): void {
+  if (!process.stdout.isTTY) return;
+  process.stdout.write(DISABLE_MOUSE);
 }
 
 /**
@@ -63,7 +83,8 @@ export function enableMouseWheel(
       }
     };
     process.stdin.on('data', onData);
-    process.stdout.write('\x1b[?1000h\x1b[?1006h');
+    // Clear stale modes first, then enable only wheel/button reporting.
+    process.stdout.write(`${DISABLE_MOUSE}${ENABLE_WHEEL}`);
   }
   return () => {
     wheelHandler = null;
@@ -71,6 +92,6 @@ export function enableMouseWheel(
     listening = false;
     if (onData) process.stdin.off('data', onData);
     onData = null;
-    process.stdout.write('\x1b[?1000l\x1b[?1006l');
+    disableMouseTracking();
   };
 }

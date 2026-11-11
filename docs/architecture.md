@@ -74,7 +74,9 @@ When a candidate fails, `handleFailure()`:
 - excludes the candidate for the rest of the run;
 - returns to the loop, which selects the next candidate or pauses.
 
-Explicit selections bypass the paid/unknown policy gate, but are still subject to active limits and capability checks that cannot be satisfied.
+Explicit selections bypass the paid/unknown policy gate and a persisted cooldown on the first attempt, but capability checks still apply. A real failure records a fresh limit and excludes the candidate for the rest of the run.
+
+Fallback order is free-first: within a provider, free models are tried before paid ones. Multiple API keys on a profile rotate on quota/auth failures; when every key fails for a model, the next model starts from key 1. After about five failures on a profile, that profile is excluded and the agent asks before crossing to another provider. An approved provider is remembered for the run. Each cross-model/provider change appends a compact handoff note (previous route, task state, completed/pending steps, changed files) to the transcript so the next model continues from the last checkpoint.
 
 ## Provider adapters
 

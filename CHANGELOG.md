@@ -64,3 +64,26 @@ semantic versioning.
 - Ink 8, React 19, Zod 4, and Vitest 5. Production dependency audit is clean.
 - Removed the unused `ink-text-input` dependency in favor of a controlled prompt
   component with predictable key handling.
+
+### Fixed
+
+- Stale quota/limit rows are cleared when a profile is refreshed, reconnected,
+  or its credentials are saved. An explicitly selected model also gets one
+  attempt past a persisted cooldown instead of showing a false "quota reached"
+  state.
+- `xhigh` and other effort profiles now use the model's published output limit
+  or the full effort cap instead of silently falling back to a 4096-token
+  budget.
+- Free-model discovery now classifies Gemini/Groq profiles and local or
+  free-tier custom endpoints, recognizes `:free`/zero-priced models, and
+  refreshes access metadata on re-discovery. The picker groups by provider,
+  sorts free first, and keeps the `free` badge visible on the selected row.
+- Fallback tries free models on the same provider before paid ones, rotates
+  every API key (including resetting to key 1 for the next model), and moves
+  across providers only after about five same-provider failures. A provider
+  switch asks once, remembers approval, and appends a context handoff note.
+- The transcript scrolls by terminal line with a clamped offset and line
+  window scrollbar. `ctrl+y` enters select/copy mode, releasing mouse capture
+  so text can be highlighted anywhere; `esc` or `ctrl+y` exits.
+- The header model control always reads `Change model` instead of duplicating
+  the selected model name.

@@ -150,7 +150,7 @@ async function authSet(
     for (const entry of keys) registerSecret(entry);
     await getCredentialStore().setSecret(credentialIdForProfile(profile.id), keysToSecret(keys));
     store.updateProfile(profile.id, { apiKeyEnv: null, lastError: null, lastErrorAt: null });
-    store.clearLimit(profile.id, '*');
+    store.clearLimitsForProfile(profile.id);
     console.log(
       `${success('✔')} Stored ${keys.length} API key${keys.length === 1 ? '' : 's'} for ${profile.name}.`,
     );
@@ -525,8 +525,7 @@ export function registerSystemCommands(program: Command): void {
             if (!response.ok) continue;
             reachable = true;
             const body = (await response.json()) as
-              | { tag_name?: string }
-              | Array<{ name?: string }>;
+              { tag_name?: string } | Array<{ name?: string }>;
             const tag = Array.isArray(body) ? body[0]?.name : body.tag_name;
             if (tag) {
               latest = tag.replace(/^v/, '');
@@ -542,9 +541,7 @@ export function registerSystemCommands(program: Command): void {
         return;
       }
       if (!latest) {
-        console.log(
-          dim(`No published releases found yet — ${VERSION} is as new as it gets.`),
-        );
+        console.log(dim(`No published releases found yet — ${VERSION} is as new as it gets.`));
         return;
       }
       if (compareVersions(VERSION, latest) >= 0) {
@@ -575,9 +572,7 @@ export function registerSystemCommands(program: Command): void {
       if (installed) {
         console.log(success(`Updated to ${latest}. Restart ComiCode to use the new version.`));
       } else {
-        console.log(
-          danger(`Update failed. Run manually: npm install -g github:${repo}`),
-        );
+        console.log(danger(`Update failed. Run manually: npm install -g github:${repo}`));
       }
     });
 }

@@ -11,6 +11,9 @@ export interface SelectorItem {
   group?: string;
   badge?: string;
   badgeColor?: string;
+  /** Marker rendered before the label (for example a free/paid status). */
+  leadingBadge?: string;
+  leadingBadgeColor?: string;
   disabled?: boolean;
   disabledReason?: string;
 }
@@ -139,13 +142,40 @@ export function Selector({
   const modalWidth = Math.max(36, Math.min(columns - 4, 72));
   const modalHeight = Math.max(8, Math.min(rows - 4, 20));
   const height = Math.max(4, maxVisible ?? (floating ? modalHeight - 9 : rows - 12));
-  const start = Math.max(
-    0,
-    Math.min(selectedRow - Math.floor(height / 2), Math.max(0, displayRows.length - height)),
-  );
-  const visible = displayRows.slice(start, start + height);
+
+  // Window by terminal lines, not row count: items with a detail line occupy
+  // two rows, and the "N more" indicators each take one. Without this the
+  // selected item can be pushed below the visible area and appear cut off.
+  const rowCost = (row: Row): number =>
+    row.kind === 'group' ? 1 : row.item.detail ? 2 : 1;
+  const costs = displayRows.map(rowCost);
+  let start = selectedRow;
+  let used = costs[selectedRow] ?? 1;
+  while (start > 0 && used + (costs[start - 1] ?? 0) <= height) {
+    start -= 1;
+    used += costs[start] ?? 0;
+  }
+  let end = selectedRow;
+  while (end + 1 < displayRows.length && used + (costs[end + 1] ?? 0) <= height) {
+    end += 1;
+    used += costs[end] ?? 0;
+  }
+  // Reclaim space above if the downward pass left budget unused.
+  while (start > 0 && used + (costs[start - 1] ?? 0) <= height) {
+    start -= 1;
+    used += costs[start] ?? 0;
+  }
+  // Account for the overflow indicators so total lines never exceed height.
+  while (
+    end > selectedRow &&
+    used + (start > 0 ? 1 : 0) + (end + 1 < displayRows.length ? 1 : 0) > height
+  ) {
+    used -= costs[end] ?? 0;
+    end -= 1;
+  }
+  const visible = displayRows.slice(start, end + 1);
   const remainingAbove = start;
-  const remainingBelow = Math.max(0, displayRows.length - (start + visible.length));
+  const remainingBelow = Math.max(0, displayRows.length - (end + 1));
 
   const content = (
     <Box
@@ -218,14 +248,25 @@ export function Selector({
                       wrap="truncate"
                     >
                       {active ? ` ${glyph.active} ` : '   '}
-                      {row.item.label}
+                      {row.item.leadingBadge ? (
+                        <Text
+                          bold
+                          color={
+                            active ? theme.black : (row.item.leadingBadgeColor ?? theme.success)
+                          }
+                        >
+                          {row.item.leadingBadge}{' '}
+                        </Text>
+                      ) : null}
+                      <Text bold={active}>{row.item.label}</Text>
+                      {row.item.badge ? (
+                        <Text color={active ? theme.black : (row.item.badgeColor ?? theme.muted)}>
+                          {'  '}
+                          {row.item.badge}
+                        </Text>
+                      ) : null}
                       {'  '}
                     </Text>
-                    {row.item.badge ? (
-                      <Text color={active ? theme.black : (row.item.badgeColor ?? theme.muted)}>
-                        {row.item.badge}
-                      </Text>
-                    ) : null}
                   </Box>
                   {row.item.detail ? (
                     <Text color={active ? theme.muted : theme.faint} wrap="truncate">

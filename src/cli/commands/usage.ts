@@ -112,7 +112,7 @@ async function limits(
         console.log(`${success('✔')} Cleared limit for ${profile.name}/${options.model}.`);
       } else {
         const existing = store.listLimits(true).filter((limit) => limit.profileId === profile.id);
-        for (const limit of existing) store.clearLimit(profile.id, limit.modelId);
+        store.clearLimitsForProfile(profile.id);
         console.log(
           `${success('✔')} Cleared ${existing.length} limit${existing.length === 1 ? '' : 's'} for ${profile.name}.`,
         );

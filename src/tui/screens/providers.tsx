@@ -426,6 +426,8 @@ export function ProvidersScreen({
         if (draft.apiKeyEnv.trim()) {
           await getCredentialStore().deleteSecret(credentialId);
         }
+        // A new/updated credential invalidates old quota/auth cooldowns.
+        context.store.clearLimitsForProfile(profile.id);
         if (!context.store.getSelectedProfileId()) context.store.setSelectedProfileId(profile.id);
         setSelected(
           Math.max(
@@ -552,7 +554,9 @@ export function ProvidersScreen({
           return;
         }
         if (key.upArrow || input === 'k') {
-          setSelected((value) => (profiles.length === 0 ? 0 : (value - 1 + profiles.length) % profiles.length));
+          setSelected((value) =>
+            profiles.length === 0 ? 0 : (value - 1 + profiles.length) % profiles.length,
+          );
         } else if (key.downArrow || input === 'j') {
           setSelected((value) => (profiles.length === 0 ? 0 : (value + 1) % profiles.length));
         } else if (input === 'a') startAdd();
@@ -597,7 +601,9 @@ export function ProvidersScreen({
       }
       if (mode.kind === 'wizard' && mode.step === 'kind') {
         if (key.upArrow || input === 'k') {
-          setKindIndex((value) => (kinds.length === 0 ? 0 : (value - 1 + kinds.length) % kinds.length));
+          setKindIndex((value) =>
+            kinds.length === 0 ? 0 : (value - 1 + kinds.length) % kinds.length,
+          );
         } else if (key.downArrow || input === 'j') {
           setKindIndex((value) => (kinds.length === 0 ? 0 : (value + 1) % kinds.length));
         } else if (isEnter(input, key)) {
@@ -612,9 +618,15 @@ export function ProvidersScreen({
       }
       if (mode.kind === 'wizard' && mode.step === 'access') {
         if (key.upArrow || input === 'k') {
-          setAccessIndex((value) => (ACCESS_OPTIONS.length === 0 ? 0 : (value - 1 + ACCESS_OPTIONS.length) % ACCESS_OPTIONS.length));
+          setAccessIndex((value) =>
+            ACCESS_OPTIONS.length === 0
+              ? 0
+              : (value - 1 + ACCESS_OPTIONS.length) % ACCESS_OPTIONS.length,
+          );
         } else if (key.downArrow || input === 'j') {
-          setAccessIndex((value) => (ACCESS_OPTIONS.length === 0 ? 0 : (value + 1) % ACCESS_OPTIONS.length));
+          setAccessIndex((value) =>
+            ACCESS_OPTIONS.length === 0 ? 0 : (value + 1) % ACCESS_OPTIONS.length,
+          );
         } else if (isEnter(input, key)) {
           const access = ACCESS_OPTIONS[accessIndex] ?? 'unknown';
           setMode({ kind: 'wizard', draft: { ...mode.draft, access }, step: 'effort' });
@@ -696,8 +708,7 @@ export function ProvidersScreen({
                     </Text>
                     {option.badge ? (
                       <Text color={activeRow ? theme.accent : theme.success}>
-                        {'  '}
-                        [{option.badge}]
+                        {'  '}[{option.badge}]
                       </Text>
                     ) : null}
                   </Box>
@@ -947,7 +958,16 @@ export function ProvidersScreen({
       embedded={embedded}
       title="Providers"
       subtitle={`${profiles.length} configured`}
-      footer={['a add', 'enter details', 'e edit', 't test', 'r refresh', 'space toggle', 'd delete', 'esc close']}
+      footer={[
+        'a add',
+        'enter details',
+        'e edit',
+        't test',
+        'r refresh',
+        'space toggle',
+        'd delete',
+        'esc close',
+      ]}
     >
       {error ? <Text color={theme.danger}>{error}</Text> : null}
       {profiles.length === 0 ? (
@@ -1014,9 +1034,7 @@ export function ProvidersScreen({
           </Text>
         </Box>
       )}
-      <Hint>
-        {`↑/↓ move${navHint} ${glyph.bullet} ${backHint}`}
-      </Hint>
+      <Hint>{`↑/↓ move${navHint} ${glyph.bullet} ${backHint}`}</Hint>
     </ProvidersFrame>
   );
 }

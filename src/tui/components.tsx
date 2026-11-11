@@ -31,7 +31,7 @@ interface WrappedLine {
 }
 
 /** Greedy word-wrap that prefers breaking at whitespace; keeps char offsets. */
-function wrapText(text: string, width: number): WrappedLine[] {
+export function wrapText(text: string, width: number): WrappedLine[] {
   const chars = Array.from(text);
   const lines: WrappedLine[] = [];
   let i = 0;
@@ -114,7 +114,6 @@ export function Header({
   version,
   cwd,
   profileName,
-  modelName,
   status,
   allowPaid,
   taskId,
@@ -127,7 +126,6 @@ export function Header({
   version: string;
   cwd: string;
   profileName: string | null;
-  modelName: string | null;
   status: AgentStatus;
   allowPaid: boolean;
   taskId: string | null;
@@ -184,12 +182,8 @@ export function Header({
           {/* Model control */}
           <Text dimColor={dimmed}>
             <Text color={theme.faint}>ctrl+m </Text>
-            <Text
-              color={modelName ? theme.accent : theme.warning}
-              bold
-              backgroundColor={theme.border}
-            >
-              {modelName ? ` ${glyph.dot} ${modelName} ` : ' Select Model '}
+            <Text color={theme.accent} bold backgroundColor={theme.border}>
+              {' Change model '}
             </Text>
           </Text>
 
@@ -202,7 +196,11 @@ export function Header({
               backgroundColor={theme.border}
             >
               {' '}
-              {agentMode === 'build' ? glyph.tool : agentMode === 'plan' ? glyph.pause : glyph.ring}{' '}
+              {agentMode === 'build'
+                ? glyph.tool
+                : agentMode === 'plan'
+                  ? glyph.pause
+                  : glyph.ring}{' '}
               {agentMode}{' '}
             </Text>
           </Text>

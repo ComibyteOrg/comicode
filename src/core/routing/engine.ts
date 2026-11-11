@@ -237,6 +237,21 @@ export function buildRoutingOutcome(request: RoutingRequest): RoutingOutcome {
     return `Temporarily unavailable (${active.category}); reset time unknown.`;
   };
 
+  // Prefer free models within a provider before spending paid quota, then fall
+  // back to capability/coding suitability for models in the same access tier.
+  const compareModels =
+    (profile: ProviderProfile) =>
+    (a: ModelInfo, b: ModelInfo): number => {
+      const accessDiff =
+        accessBucket(effectiveAccess(b, profile.accessClassification), request.policy.preferFree) -
+        accessBucket(effectiveAccess(a, profile.accessClassification), request.policy.preferFree);
+      if (accessDiff !== 0) return accessDiff;
+      return (
+        modelScore(b, request.taskType, request.policy.preferCoding) -
+        modelScore(a, request.taskType, request.policy.preferCoding)
+      );
+    };
+
   const meta: CandidateMeta[] = [];
   const seen = new Set<string>();
 
@@ -257,7 +272,7 @@ export function buildRoutingOutcome(request: RoutingRequest): RoutingOutcome {
       });
       return;
     }
-    const limit = limitReason(profile.id, model.modelId);
+    const limit = options.explicit ? null : limitReason(profile.id, model.modelId);
     if (limit) {
       blocked.push({ profileId: profile.id, modelId: model.modelId, reason: limit });
       return;
@@ -345,11 +360,7 @@ export function buildRoutingOutcome(request: RoutingRequest): RoutingOutcome {
               (model.profileId === null || model.profileId === profile.id) &&
               model.modelId !== currentModelId,
           )
-          .sort(
-            (a, b) =>
-              modelScore(b, request.taskType, request.policy.preferCoding) -
-              modelScore(a, request.taskType, request.policy.preferCoding),
-          );
+          .sort(compareModels(profile));
         for (const model of models) {
           addCandidate(profile, model, {
             explicit: false,
@@ -377,11 +388,7 @@ export function buildRoutingOutcome(request: RoutingRequest): RoutingOutcome {
             (model.profileId === null || model.profileId === profile.id) &&
             model.modelId !== profile.defaultModel,
         )
-        .sort(
-          (a, b) =>
-            modelScore(b, request.taskType, request.policy.preferCoding) -
-            modelScore(a, request.taskType, request.policy.preferCoding),
-        );
+        .sort(compareModels(profile));
       for (const model of models) {
         addCandidate(profile, model, {
           explicit: false,
@@ -430,11 +437,7 @@ export function buildRoutingOutcome(request: RoutingRequest): RoutingOutcome {
           (model.profileId === null || model.profileId === profile.id) &&
           model.modelId !== profile.defaultModel,
       )
-      .sort(
-        (a, b) =>
-          modelScore(b, request.taskType, request.policy.preferCoding) -
-          modelScore(a, request.taskType, request.policy.preferCoding),
-      );
+      .sort(compareModels(profile));
     for (const model of models) {
       addCandidate(profile, model, {
         explicit: false,

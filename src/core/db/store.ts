@@ -204,6 +204,25 @@ export class Store {
 
   constructor(readonly path: string) {
     this.db = new Db(path);
+    this.applyNativeSelectionDefault();
+  }
+
+  /**
+   * Older builds enabled mouse capture by default, which blocked native text
+   * selection. Force it off once per database; users can re-enable it from
+   * settings afterwards.
+   */
+  private applyNativeSelectionDefault(): void {
+    if (this.db.metaGet('ui.native_selection_default')) return;
+    const row = this.db.get<{ json: string }>('SELECT json FROM settings WHERE id = 1');
+    if (row) {
+      const settings = this.getSettings();
+      if (settings.ui.mouseScroll) {
+        settings.ui.mouseScroll = false;
+        this.saveSettings(settings);
+      }
+    }
+    this.db.metaSet('ui.native_selection_default', '1');
   }
 
   close(): void {
@@ -396,6 +415,9 @@ export class Store {
             reasoning_suitability = excluded.reasoning_suitability,
             input_price_per_million = COALESCE(excluded.input_price_per_million, models.input_price_per_million),
             output_price_per_million = COALESCE(excluded.output_price_per_million, models.output_price_per_million),
+            access = excluded.access,
+            access_source = excluded.access_source,
+            access_notes = excluded.access_notes,
             available = 1,
             last_checked_at = excluded.last_checked_at,
             metadata_json = excluded.metadata_json`,
@@ -539,8 +561,15 @@ export class Store {
     return value ? value : null;
   }
 
+  /** When the user last picked a model (ISO timestamp), or null. */
+  getSelectedModelChangedAt(): string | null {
+    const value = this.db.metaGet('ui.selected_model_at');
+    return value ? value : null;
+  }
+
   setSelectedModelId(id: string | null): void {
     this.db.metaSet('ui.selected_model_id', id ?? '');
+    this.db.metaSet('ui.selected_model_at', id ? nowIso() : '');
   }
 
   // ------------------------------------------------------------------- tasks
@@ -1021,6 +1050,16 @@ export class Store {
     );
   }
 
+  /**
+   * Remove every stored limit for a profile, including model-scoped cooldowns.
+   * A successful connection test or catalog refresh proves the credentials and
+   * endpoint are reachable, so stale model limits must not quarantine the
+   * profile on the next run.
+   */
+  clearLimitsForProfile(profileId: string): number {
+    return this.db.run('DELETE FROM provider_limits WHERE profile_id = ?', profileId).changes;
+  }
+
   clearExpiredLimits(nowMs = Date.now()): number {
     const rows = this.db.all<Row>('SELECT * FROM provider_limits');
     let removed = 0;
@@ -1196,7 +1235,7 @@ export class Store {
       this.db.run('DELETE FROM provider_profiles');
       this.db.run('DELETE FROM settings');
       this.db.run(
-        "DELETE FROM meta WHERE key IN ('ui.selected_profile_id','ui.selected_model_id')",
+        "DELETE FROM meta WHERE key IN ('ui.selected_profile_id','ui.selected_model_id','ui.selected_model_at')",
       );
     });
   }

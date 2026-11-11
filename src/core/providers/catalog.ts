@@ -162,9 +162,58 @@ function isLikelyVision(modelId: string): boolean {
   return /vision|gemini|gpt-4o|gpt-4\.1|claude|llava|pixtral|qwen.*vl/i.test(modelId);
 }
 
+export interface AccessHints {
+  /** Endpoint URL, used to recognise local and known free-tier hosts. */
+  baseUrl?: string | null;
+  /** Profile name, used only for explanatory notes. */
+  profileName?: string | null;
+}
+
+/** Hosts that are local or published as free-tier developer endpoints. */
+const FREE_HOST_PATTERNS: RegExp[] = [
+  /^(?:localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[::1\])$/i,
+  /(?:^|\.)models\.github\.ai$/i,
+  /(?:^|\.)huggingface\.co$/i,
+  /(?:^|\.)api-inference\.modelscope\.cn$/i,
+  /(?:^|\.)modelscope\.cn$/i,
+  /(?:^|\.)ai\.gitee\.com$/i,
+  /(?:^|\.)siliconflow\.cn$/i,
+  /(?:^|\.)open\.bigmodel\.cn$/i,
+  /(?:^|\.)cloudflare\.com$/i,
+  /(?:^|\.)cerebras\.ai$/i,
+  /(?:^|\.)integrate\.api\.nvidia\.com$/i,
+  /(?:^|\.)generativelanguage\.googleapis\.com$/i,
+  /(?:^|\.)api\.groq\.com$/i,
+];
+
+/** Hosts where every model is billed by the provider. */
+const PAID_HOST_PATTERNS: RegExp[] = [
+  /(?:^|\.)api\.openai\.com$/i,
+  /(?:^|\.)api\.deepseek\.com$/i,
+  /(?:^|\.)api\.mistral\.ai$/i,
+  /(?:^|\.)api\.x\.ai$/i,
+  /(?:^|\.)api\.fireworks\.ai$/i,
+  /(?:^|\.)api\.anthropic\.com$/i,
+];
+
+function hostnameOf(baseUrl: string | null | undefined): string | null {
+  if (!baseUrl) return null;
+  try {
+    return new URL(baseUrl).hostname;
+  } catch {
+    return null;
+  }
+}
+
+/** Models explicitly published as zero-cost, independent of provider. */
+function isExplicitlyFreeModel(modelId: string): boolean {
+  return /:free$/i.test(modelId) || /(?:^|[/:-])free(?:$|[/:-])/i.test(modelId);
+}
+
 export function classifyDiscoveredAccess(
   providerId: ProviderKind,
   model: DiscoveredModel,
+  hints: AccessHints = {},
 ): { access: AccessClassification; source: string; notes: string | null } {
   const inputPrice = model.inputPricePerMillion;
   const outputPrice = model.outputPricePerMillion;
@@ -176,24 +225,39 @@ export function classifyDiscoveredAccess(
     inputPrice === 0 &&
     outputPrice === 0;
 
+  if (isExplicitlyFreeModel(model.modelId) || isZeroPriced) {
+    return {
+      access: 'free-confirmed',
+      source: 'provider-model-catalog',
+      notes:
+        'The provider catalog lists this variant at zero prompt/completion price or marks it as free. Limits and availability can change.',
+    };
+  }
+
+  // Positive per-token pricing always wins over provider-level heuristics.
+  // A provider can offer a free tier while still billing for individual
+  // models, so never label a priced model as free.
+  if ((inputPrice ?? 0) > 0 || (outputPrice ?? 0) > 0) {
+    return {
+      access: 'paid',
+      source:
+        providerId === 'openrouter' ? 'openrouter-model-catalog' : 'provider-model-catalog',
+      notes: 'The provider publishes non-zero per-token pricing for this model.',
+    };
+  }
+
   if (providerId === 'openrouter') {
-    if (/:free$/i.test(model.modelId) || isZeroPriced) {
-      return {
-        access: 'free-confirmed',
-        source: 'openrouter-model-catalog',
-        notes:
-          'OpenRouter listed this variant at zero prompt/completion price when the catalog was refreshed. Limits and availability can change.',
-      };
-    }
-    if ((inputPrice ?? 0) > 0 || (outputPrice ?? 0) > 0) {
-      return {
-        access: 'paid',
-        source: 'openrouter-model-catalog',
-        notes: 'OpenRouter publishes non-zero pricing for this model.',
-      };
-    }
     return { access: 'unknown', source: 'openrouter-model-catalog', notes: null };
   }
+
+  // Google AI Studio and Groq both expose a free developer tier for some chat
+  // models, but not every listed model is covered by it. Unknown models stay
+  // "unknown" unless curated metadata or pricing proves otherwise; otherwise
+  // paid-only models would look free.
+  if (providerId === 'gemini' || providerId === 'groq') {
+    return { access: 'unknown', source: 'provider-model-list', notes: null };
+  }
+
   if (providerId === 'openai') {
     return {
       access: 'paid',
@@ -201,6 +265,36 @@ export function classifyDiscoveredAccess(
       notes: 'OpenAI API usage is billed by OpenAI. Check your account billing settings.',
     };
   }
+
+  const host = hostnameOf(hints.baseUrl);
+  if (host) {
+    if (FREE_HOST_PATTERNS.some((pattern) => pattern.test(host))) {
+      const local = /^(?:localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[::1\])$/i.test(host);
+      if (local) {
+        return {
+          access: 'free-confirmed',
+          source: 'endpoint-documentation',
+          notes: 'Local/self-hosted endpoint — there is no per-token provider bill.',
+        };
+      }
+      // A host that advertises a free developer tier does NOT make every model
+      // on it free — providers like Groq and Google also bill for premium
+      // models. Report the tier honestly instead of confirming free access.
+      return {
+        access: 'free-tier',
+        source: 'endpoint-documentation',
+        notes: `This endpoint host (${host}) publishes a free developer tier, but some models may still be billed. Verify per-model pricing.`,
+      };
+    }
+    if (PAID_HOST_PATTERNS.some((pattern) => pattern.test(host))) {
+      return {
+        access: 'paid',
+        source: 'endpoint-documentation',
+        notes: `This endpoint host (${host}) bills API usage directly.`,
+      };
+    }
+  }
+
   return { access: 'unknown', source: 'provider-model-list', notes: null };
 }
 
@@ -208,9 +302,10 @@ export function classifyDiscoveredAccess(
 export function enrichDiscoveredModel(
   providerId: ProviderKind,
   discovered: DiscoveredModel,
+  hints: AccessHints = {},
 ): DiscoveredModel {
   const known = KNOWN_MODELS[`${providerId}:${discovered.modelId}`];
-  const access = classifyDiscoveredAccess(providerId, discovered);
+  const access = classifyDiscoveredAccess(providerId, discovered, hints);
   return {
     ...discovered,
     displayName: known?.displayName ?? discovered.displayName ?? discovered.modelId,
@@ -298,7 +393,10 @@ export function effectiveAccess(
 ): AccessClassification {
   if (model.userClassification) return model.userClassification;
   if (model.access !== 'unknown') return model.access;
-  if (profileAccess && profileAccess !== 'unknown') return profileAccess;
+  // A "free-tier" profile means the provider offers a free tier, not that
+  // every model on the account is free. Only an explicit user classification
+  // propagates to models whose own access is unknown.
+  if (profileAccess === 'user-free' || profileAccess === 'user-paid') return profileAccess;
   return 'unknown';
 }
 

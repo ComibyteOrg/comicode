@@ -33,7 +33,7 @@ export const RoutingPolicySchema = z.object({
   /** Allow fallback to models with unknown pricing/access. */
   allowUnknownAccess: z.boolean().default(true),
   /** Maximum fallback candidates considered per routing pass. */
-  maxFallbacks: z.number().int().min(1).max(20).default(6),
+  maxFallbacks: z.number().int().min(1).max(20).default(4),
   /** Maximum retry attempts against a single candidate (excluding retry-after waits). */
   maxRetriesPerCandidate: z.number().int().min(0).max(5).default(1),
   /** Base delay for exponential backoff, in milliseconds. */
@@ -49,10 +49,10 @@ export const RoutingPolicySchema = z.object({
 });
 
 export const AgentSettingsSchema = z.object({
-  maxSteps: z.number().int().min(1).max(200).default(40),
+  maxSteps: z.number().int().min(1).max(200).default(30),
   /** Fraction of the model context window that may be used for prompt context. */
-  contextBudgetRatio: z.number().min(0.2).max(0.9).default(0.6),
-  maxToolOutputChars: z.number().int().min(1000).max(200_000).default(14_000),
+  contextBudgetRatio: z.number().min(0.2).max(0.9).default(0.45),
+  maxToolOutputChars: z.number().int().min(1000).max(200_000).default(12_000),
   autoApproveReadOnly: z.boolean().default(true),
   autoApproveFileEdits: z.boolean().default(false),
   autoApproveCommands: z.boolean().default(false),
@@ -100,8 +100,12 @@ export const SettingsSchema = z.object({
       shortcuts: z.record(z.string(), z.string()).default({}),
       /** Color theme name — see THEMES in src/tui/theme.ts. */
       theme: z.string().default('obsidian'),
-      /** Mouse reporting for wheel-scroll/click. Disable to restore native terminal selection. */
-      mouseScroll: z.boolean().default(true),
+      /**
+       * Mouse reporting for wheel-scroll/click. Off by default because mouse
+       * capture prevents the terminal's native highlight/copy in most
+       * terminals. Turn it on if wheel scrolling matters more than selection.
+       */
+      mouseScroll: z.boolean().default(false),
     })
     .prefault({}),
   routing: RoutingPolicySchema.prefault({}),

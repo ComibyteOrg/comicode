@@ -16,6 +16,7 @@ import { loadSkills, type AgentSkill } from './skills.js';
 import { AGENT_MODES, classifyAgentMode, type AgentMode } from './modes.js';
 import { ProjectInspector, type ProjectSnapshot } from '../project/inspector.js';
 import { Router } from '../routing/router.js';
+import { candidateKey } from '../routing/engine.js';
 import { ToolExecutor } from './tools/executor.js';
 import { ContextBuilder, estimateTokens, type ContextCache, type BuiltContext } from './context.js';
 import { Collaborator, planFromCollaborator } from './collaboration.js';
@@ -53,37 +54,37 @@ interface EffortProfile {
  */
 const EFFORT_PROFILES: Record<string, EffortProfile> = {
   low: {
-    maxSteps: 12,
+    maxSteps: 10,
     contextBudgetRatio: 0.35,
-    maxToolOutputChars: 6_000,
-    historyLimit: 150,
+    maxToolOutputChars: 5_000,
+    historyLimit: 120,
     maxOutputTokens: 2_048,
     tokenHint:
       'Token discipline: minimum possible response. Answer in the fewest words that fully satisfy the request. No preamble, no recap, no explanations unless asked. Still use tools when needed.',
   },
   medium: {
-    maxSteps: 25,
-    contextBudgetRatio: 0.5,
-    maxToolOutputChars: 9_000,
-    historyLimit: 250,
-    maxOutputTokens: 4_096,
+    maxSteps: 20,
+    contextBudgetRatio: 0.45,
+    maxToolOutputChars: 8_000,
+    historyLimit: 200,
+    maxOutputTokens: 3_072,
     tokenHint:
       'Token discipline: be concise. Skip preamble and unnecessary explanation; get to the result.',
   },
   high: {
-    maxSteps: 70,
-    contextBudgetRatio: 0.7,
-    maxToolOutputChars: 16_000,
-    historyLimit: 500,
-    maxOutputTokens: 8_192,
+    maxSteps: 50,
+    contextBudgetRatio: 0.6,
+    maxToolOutputChars: 14_000,
+    historyLimit: 350,
+    maxOutputTokens: 6_144,
     tokenHint: null,
   },
   xhigh: {
-    maxSteps: 120,
-    contextBudgetRatio: 0.85,
-    maxToolOutputChars: 24_000,
-    historyLimit: 800,
-    maxOutputTokens: 16_384,
+    maxSteps: 80,
+    contextBudgetRatio: 0.75,
+    maxToolOutputChars: 20_000,
+    historyLimit: 500,
+    maxOutputTokens: 12_288,
     tokenHint: null,
   },
 };
@@ -161,7 +162,7 @@ export class CodingAgent {
   private excludedProfiles = new Set<string>();
   private profileFailures = new Map<string, number>();
   private switchConsent = new Set<string>();
-  private baselineProfileId: string | null = null;
+  private baselineProviderId: string | null = null;
   private hadFailure = false;
   private lastFailureInfo: string | null = null;
   private keyCursor = new Map<string, number>();
@@ -188,6 +189,9 @@ export class CodingAgent {
     this.task = task;
     this.hooks = options.hooks ?? {};
     this.authority = options.authority ?? DEFAULT_AUTHORITY;
+    // A model the user picked after this task last ran must be attempted
+    // before any saved task model or fallback (including on resume).
+    this.applySavedModelSelection();
     const baseSettings = options.settings ?? options.store.getSettings();
     this.effort = effortProfileFor(options.store, task.currentProfileId);
     this.settings = this.effort
@@ -214,8 +218,7 @@ export class CodingAgent {
     this.contextFactory =
       options.contextFactory ?? ((profile, keyIndex) => createProfileContext(profile, keyIndex));
     const requestedMode = options.mode ?? 'build';
-    this.mode =
-      requestedMode === 'auto' ? classifyAgentMode(task.summary ?? '') : requestedMode;
+    this.mode = requestedMode === 'auto' ? classifyAgentMode(task.summary ?? '') : requestedMode;
     if (requestedMode === 'auto' && this.mode !== 'auto') {
       this.hooks.onNotice?.(`Auto mode selected ${this.mode} for this task.`);
     }
@@ -237,6 +240,72 @@ export class CodingAgent {
       onNotice: (message) => this.hooks.onNotice?.(message),
     });
     this.collaborator = new Collaborator(options.store, this.inspector, this.settings, this.hooks);
+  }
+
+  /**
+   * Apply a model the user selected after this task last ran. The selection
+   * timestamp is stored with the task, so a fallback performed *inside* a run
+   * is not undone on the next turn — only a newer explicit pick overrides it.
+   */
+  private applySavedModelSelection(): void {
+    const savedDbId = this.store.getSelectedModelId();
+    const savedAt = this.store.getSelectedModelChangedAt();
+    if (!savedDbId || !savedAt) return;
+    const appliedAt =
+      typeof this.task.metadata.modelSelectionAt === 'string'
+        ? this.task.metadata.modelSelectionAt
+        : '';
+    if (appliedAt && savedAt <= appliedAt) return;
+
+    const saved = this.store.getModelById(savedDbId);
+    if (!saved) {
+      this.hooks.onNotice?.(
+        'Your selected model is no longer in the catalog — keeping the current route.',
+      );
+      return;
+    }
+
+    const profile =
+      (saved.profileId ? this.store.getProfile(saved.profileId) : null) ??
+      (this.store.getSelectedProfileId()
+        ? this.store.getProfile(this.store.getSelectedProfileId()!)
+        : null) ??
+      this.store.listProfiles(saved.providerId).find((entry) => entry.enabled) ??
+      null;
+    const current = this.task.currentProfileId
+      ? this.store.getProfile(this.task.currentProfileId)
+      : null;
+    const targetProfile =
+      profile && profile.providerId === saved.providerId
+        ? profile
+        : current && current.providerId === saved.providerId
+          ? current
+          : null;
+    if (!targetProfile) {
+      this.hooks.onNotice?.(
+        `Your selected model ${saved.modelId} has no enabled provider profile — keeping the current route.`,
+      );
+      return;
+    }
+
+    const changed =
+      this.task.currentProfileId !== targetProfile.id ||
+      this.task.currentModelId !== saved.modelId;
+    this.task = this.store.updateTask(this.task.id, {
+      currentProfileId: targetProfile.id,
+      currentModelId: saved.modelId,
+      metadata: { ...this.task.metadata, modelSelectionAt: savedAt },
+    });
+    if (changed) {
+      // A newer explicit pick must actually be attempted: drop any cached
+      // fallback candidate and release this model from the run's exclude set
+      // so the router can select it again even if it failed earlier.
+      this.candidate = null;
+      this.exclude.delete(candidateKey(targetProfile.id, saved.modelId));
+      this.hooks.onNotice?.(
+        `Trying your selected model first: ${targetProfile.name} · ${saved.modelId}.`,
+      );
+    }
   }
 
   async run(options: AgentRunOptions = {}): Promise<AgentResult> {
@@ -276,7 +345,7 @@ export class CodingAgent {
           if (outcome === 'stop') {
             return this.halt(
               'paused',
-              'Stopped after 5 consecutive provider failures. Progress and checkpoints are saved — check provider quota, then resume.',
+              'Stopped after repeated consecutive provider failures. Progress and checkpoints are saved — check provider quota, then resume.',
             );
           }
           this.checkpoint('after-failure');
@@ -440,11 +509,11 @@ export class CodingAgent {
       }
       noteParts.push(`Current project state:\n${projectState}`);
       if (this.contextSummary)
-        noteParts.push(`Earlier summary:\n${this.contextSummary.slice(0, 5000)}`);
+        noteParts.push(`Earlier summary:\n${this.contextSummary.slice(0, 3000)}`);
 
       this.store.appendMessage(this.task.id, {
         role: 'user',
-        content: `[ComiCode resume context]\n${noteParts.join('\n\n').slice(0, 16_000)}`,
+        content: `[ComiCode resume context]\n${noteParts.join('\n\n').slice(0, 10_000)}`,
       });
       this.exclude.clear();
       this.retryCounts.clear();
@@ -452,7 +521,7 @@ export class CodingAgent {
       this.excludedProfiles.clear();
       this.profileFailures.clear();
       this.switchConsent.clear();
-      this.baselineProfileId = null;
+      this.baselineProviderId = null;
       this.hadFailure = false;
       this.lastFailureInfo = null;
       this.keyCursor.clear();
@@ -622,9 +691,9 @@ export class CodingAgent {
       const candidate = result.decision.candidate;
       const needsConsent =
         this.hadFailure &&
-        this.baselineProfileId !== null &&
-        candidate.profile.id !== this.baselineProfileId &&
-        !this.switchConsent.has(candidate.profile.id);
+        this.baselineProviderId !== null &&
+        candidate.profile.providerId !== this.baselineProviderId &&
+        !this.switchConsent.has(candidate.profile.providerId);
       if (needsConsent && this.hooks.confirm) {
         const decision = await this.hooks.confirm({
           kind: 'provider-switch',
@@ -635,18 +704,33 @@ export class CodingAgent {
           path: `${candidate.profile.name} · ${candidate.model.modelId}`,
         });
         if (decision === 'deny') {
-          this.excludedProfiles.add(candidate.profile.id);
+          // Skip every profile of the denied provider so another account of the
+          // same provider does not immediately trigger the same prompt.
+          for (const profile of this.store.listProfiles()) {
+            if (profile.providerId === candidate.profile.providerId) {
+              this.excludedProfiles.add(profile.id);
+            }
+          }
           this.hooks.onNotice?.(
             `Skipped ${candidate.profile.name} — continuing with remaining providers.`,
           );
           continue;
         }
-        if (decision === 'always') this.switchConsent.add(candidate.profile.id);
+        // Remember an approved provider for the rest of this run so a provider
+        // that keeps being selected is not re-confirmed on every fallback.
+        this.switchConsent.add(candidate.profile.providerId);
       }
       const previousProfile = this.task.currentProfileId;
       const previousModel = this.task.currentModelId;
+      if (
+        previousProfile &&
+        previousModel &&
+        (previousProfile !== candidate.profile.id || previousModel !== candidate.model.modelId)
+      ) {
+        this.appendHandoff(previousProfile, previousModel, candidate);
+      }
       this.candidate = candidate;
-      this.baselineProfileId = candidate.profile.id;
+      this.baselineProviderId = candidate.profile.providerId;
       this.router.record(result.decision, {
         taskId: this.task.id,
         previousProfileId: previousProfile,
@@ -661,6 +745,51 @@ export class CodingAgent {
     }
   }
 
+  /**
+   * Persist a compact handoff note when routing continues on a different
+   * model/profile. The note lives in conversation history, so the next model
+   * knows why it is here and which work is already finished.
+   */
+  private appendHandoff(
+    previousProfileId: string,
+    previousModelId: string,
+    next: RouteCandidate,
+  ): void {
+    const previous = this.store.getProfile(previousProfileId);
+    const previousLabel = `${previous?.name ?? previousProfileId} · ${previousModelId}`;
+    const reason = this.lastFailureInfo ? ` (${this.lastFailureInfo.slice(0, 200)})` : '';
+    const parts = [
+      `[Provider handoff] ${previousLabel} stopped${reason}. Continuing with ${next.profile.name} · ${next.model.modelId}.`,
+      'The task, plan, checkpoints, and tool history are preserved. Review the current state and continue from the last completed step. Do not restart work that is already done.',
+    ];
+    if (this.task.completedSteps.length) {
+      parts.push(
+        `Completed steps:\n${this.task.completedSteps
+          .slice(-12)
+          .map((step) => `- ${step}`)
+          .join('\n')}`,
+      );
+    }
+    if (this.task.pendingSteps.length) {
+      parts.push(
+        `Pending steps:\n${this.task.pendingSteps
+          .slice(0, 12)
+          .map((step) => `- ${step}`)
+          .join('\n')}`,
+      );
+    }
+    if (this.task.changedFiles.length) {
+      parts.push(`Changed files: ${this.task.changedFiles.slice(0, 30).join(', ')}`);
+    }
+    this.store.appendMessage(this.task.id, {
+      role: 'system',
+      content: parts.join('\n\n').slice(0, 3_500),
+    });
+    this.hooks.onNotice?.(
+      `Handed off ${previousLabel} → ${next.profile.name} · ${next.model.modelId}; context preserved.`,
+    );
+  }
+
   private buildContext(candidate: RouteCandidate): BuiltContext {
     const settings: AppSettings = this.contextSlim
       ? {
@@ -671,7 +800,7 @@ export class CodingAgent {
           },
         }
       : this.settings;
-    const historyLimit = this.effort?.historyLimit ?? 400;
+    const historyLimit = this.effort?.historyLimit ?? 200;
     const history =
       this.compactionCutoff > 0
         ? this.store.loadMessagesAfter(this.task.id, this.compactionCutoff, historyLimit)
@@ -707,8 +836,13 @@ export class CodingAgent {
     this.keyCounts.set(profileId, context.keyCount ?? 1);
     context.signal = signal;
     const adapter = this.adapterFactory(candidate.profile);
-    const outputCap = this.effort?.maxOutputTokens ?? 8192;
-    const maxOutput = Math.min(outputCap, candidate.model.maxOutputTokens ?? 4096);
+    const outputCap = this.effort?.maxOutputTokens ?? 4096;
+    // Prefer the model's published output limit. When discovery does not expose
+    // one we keep the full effort budget instead of silently falling back to a
+    // minimum 4096-token cap (which made xhigh behave like low effort).
+    const modelMax = candidate.model.maxOutputTokens;
+    const maxOutput =
+      modelMax !== null && modelMax > 0 ? Math.min(outputCap, modelMax) : Math.max(512, outputCap);
     return adapter.chat(
       context,
       {
@@ -735,9 +869,15 @@ export class CodingAgent {
     if (classified.category === 'cancelled' || signal?.aborted) return 'cancel';
 
     this.consecutiveFailures += 1;
-    if (this.consecutiveFailures > 5) {
+    // Same-provider attempts are allowed to exhaust their free models first
+    // (about five failures), then routing moves to other providers. The hard
+    // stop is only a last-resort guard against an endless failover loop, so it
+    // scales with the number of connected providers instead of firing at five.
+    const enabledProfiles = this.store.listProfiles().filter((profile) => profile.enabled).length;
+    const failureCap = Math.max(8, enabledProfiles * 6);
+    if (this.consecutiveFailures > failureCap) {
       this.hooks.onNotice?.(
-        'Stopping after 5 consecutive provider failures. Progress is saved; resume after checking quota.',
+        `Stopping after ${failureCap} consecutive provider failures. Progress is saved; resume after checking quota.`,
       );
       return 'stop';
     }
@@ -794,6 +934,14 @@ export class CodingAgent {
           `${candidate.profile.name}: ${classified.category} on key ${current + 1}/${count} — trying key ${current + 2}/${count}.`,
         );
         return 'retry';
+      }
+      // Every key in the pool failed for this model. Start the next model from
+      // key 1 again so a per-key quota does not hide a working combination.
+      this.keyCursor.set(profileId, 0);
+      if (count > 1) {
+        this.hooks.onNotice?.(
+          `${candidate.profile.name}: all ${count} API keys returned ${classified.category} for ${candidate.model.modelId} — trying another model.`,
+        );
       }
     }
 

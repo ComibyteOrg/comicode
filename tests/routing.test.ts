@@ -154,7 +154,39 @@ describe('routing engine', () => {
     expect(crossIndex).toBeGreaterThan(sameIndex);
   });
 
+  it('tries free same-provider models before paid ones', () => {
+    const freeModel = model(googleA, 'free-coder', {
+      access: 'free-tier',
+      codingSuitability: 2,
+    });
+    const paidModel = model(googleA, 'paid-coder', {
+      access: 'paid',
+      codingSuitability: 5,
+    });
+    const outcome = route({
+      profiles: [googleA, groq],
+      models: [freeModel, paidModel, llama],
+      currentProfileId: googleA.id,
+      currentModelId: 'gemini-2.5-flash',
+      excludeKeys: [candidateKey(googleA.id, 'gemini-2.5-flash')],
+      policy: { allowPaid: true },
+    });
+    expect(outcome.decision?.candidate.model.modelId).toBe('free-coder');
+  });
+
   it('honors an active provider limit and falls through to the next profile', () => {
+    const outcome = route({
+      profiles: [googleA, googleB, groq],
+      models: [geminiFlash, geminiPro, llama],
+      limits: [limit(googleA.id, 'gemini-2.5-flash')],
+    });
+    expect(outcome.decision?.candidate.profile.id).toBe(googleB.id);
+    expect(outcome.blocked.some((entry) => entry.profileId === googleA.id)).toBe(true);
+  });
+
+  it('lets an explicit selection retry once past a persisted cooldown', () => {
+    // Limits can be stale after a quota reset; the user's explicit model gets
+    // one attempt. A real failure then excludes it and routing falls back.
     const outcome = route({
       profiles: [googleA, googleB, groq],
       models: [geminiFlash, geminiPro, llama],
@@ -162,8 +194,8 @@ describe('routing engine', () => {
       currentModelId: 'gemini-2.5-flash',
       limits: [limit(googleA.id, 'gemini-2.5-flash')],
     });
-    expect(outcome.decision?.candidate.profile.id).toBe(googleB.id);
-    expect(outcome.blocked.some((entry) => entry.profileId === googleA.id)).toBe(true);
+    expect(outcome.decision?.candidate.profile.id).toBe(googleA.id);
+    expect(outcome.chain[0]?.explicit).toBe(true);
   });
 
   it('blocks paid fallbacks by default but honors an explicit paid selection', () => {

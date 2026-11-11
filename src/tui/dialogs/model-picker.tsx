@@ -100,13 +100,33 @@ export function ModelPicker({
       if (access === 'unknown') return 1;
       return 2;
     };
+    // Keep provider headings contiguous. Within a provider, free models appear
+    // first, then the most capable models, so the picker reads as grouped
+    // provider sections rather than an interleaved global ranking.
+    const groupOf = (model: ModelInfo): string => {
+      const owner = owningProfileForModel(profiles, model);
+      return model.providerId === 'custom' && owner
+        ? owner.name
+        : providerDisplayName(model.providerId);
+    };
     return entries.sort(
       (left, right) =>
+        groupOf(left).localeCompare(groupOf(right)) ||
         accessRank(left) - accessRank(right) ||
         right.codingSuitability - left.codingSuitability ||
         left.modelId.localeCompare(right.modelId),
     );
-  }, [context, profiles, providerFilter, availableOnly, toolsOnly, freeOnly, allowPaid, query, version]);
+  }, [
+    context,
+    profiles,
+    providerFilter,
+    availableOnly,
+    toolsOnly,
+    freeOnly,
+    allowPaid,
+    query,
+    version,
+  ]);
 
   useEffect(() => {
     setSelected((value) => Math.min(value, Math.max(0, models.length - 1)));
@@ -119,7 +139,12 @@ export function ModelPicker({
       models.map((model) => {
         const profile = owningProfileForModel(profiles, model);
         const access = effectiveAccess(model, profile?.accessClassification ?? null);
+        const free = isFreeAccess(access);
         const isSelected = model.id === currentSelectedKey;
+        const group =
+          model.providerId === 'custom' && profile
+            ? profile.name
+            : providerDisplayName(model.providerId);
         const capabilities = [
           model.supportsTools ? 'tools' : 'no tools',
           model.supportsVision ? 'vision' : null,
@@ -128,10 +153,17 @@ export function ModelPicker({
         return {
           key: model.id,
           label: `${isSelected ? `${glyph.dot} ` : ''}${model.displayName || model.modelId}`,
-          group: providerDisplayName(model.providerId),
-          badge: `${ACCESS_LABELS[access]}${model.available ? '' : ' · unavailable'}`,
+          group,
+          leadingBadge: free ? 'free' : undefined,
+          leadingBadgeColor:
+            access === 'free-confirmed' || access === 'user-free' ? theme.success : theme.accent,
+          badge: free
+            ? model.available
+              ? undefined
+              : 'unavailable'
+            : `${ACCESS_LABELS[access]}${model.available ? '' : ' · unavailable'}`,
           badgeColor: accessColor(access),
-          detail: `${providerDisplayName(model.providerId)} ${glyph.bullet} ${profile?.name ?? 'no profile'} ${glyph.bullet} id ${model.modelId} ${glyph.bullet} ${contextLabel(model)} ${glyph.bullet} ${capabilities.join('/')} ${glyph.bullet} ${model.available ? 'available' : 'not verified'}${isSelected ? ` ${glyph.bullet} selected` : ''}`,
+          detail: `${group} ${glyph.bullet} ${profile?.name ?? 'no profile'} ${glyph.bullet} id ${model.modelId} ${glyph.bullet} ${contextLabel(model)} ${glyph.bullet} ${capabilities.join('/')} ${glyph.bullet} ${model.available ? 'available' : 'not verified'}${isSelected ? ` ${glyph.bullet} selected` : ''}`,
           disabled: access === 'unavailable',
           disabledReason: 'This model is classified as unavailable.',
         };

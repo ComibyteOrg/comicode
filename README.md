@@ -76,8 +76,10 @@ comicode models list --free
 - While it works you can keep typing — messages queue and run in order.
 - Approvals appear as a small picker in the input area: arrows + Enter, or
   click. `y`/`a`/`n` shortcuts still work.
-- Scroll the transcript with the mouse wheel, `PgUp`/`PgDn`, or `ctrl+j`
-  to jump between your questions.
+- Scroll the transcript by terminal line with the mouse wheel, `PgUp`/`PgDn`,
+  or `ctrl+j` to jump between your questions.
+- Press `ctrl+y` to release mouse capture and select/copy any visible text with
+  your terminal. `esc` or `ctrl+y` returns to wheel scrolling.
 
 ![Agent mode selection](docs/screenshots/screen-3.png)
 
@@ -99,10 +101,14 @@ comicode resume <task-id>
 ComiCode doesn't stop at the first quota error:
 
 1. Rotates through **multiple API keys** on the same profile (add several
-   comma-separated keys when connecting).
-2. Tries other **models on the same provider**.
-3. Offers to switch **providers** — it asks before using a different one.
-4. Pauses with progress saved if everything is exhausted — resume anytime.
+   comma-separated keys when connecting), then starts the next model from key 1.
+2. Tries other **free models on the same provider** before paid ones. After
+   about five same-provider failures it considers another provider.
+3. Offers to switch **providers** — it asks before using a different one and
+   remembers your answer for the rest of the run.
+4. Hands off a compact context note (task state, completed/pending steps, and
+   changed files) so the next model continues instead of restarting.
+5. Pauses with progress saved if everything is exhausted — resume anytime.
 
 Paid models are never used silently; enable them per-run with
 `--allow-paid` or `/allow-paid on`.
@@ -140,18 +146,18 @@ More examples (custom gateways, auth headers, manual model IDs):
 
 ## Common commands
 
-| Command | What it does |
-| --- | --- |
-| `comicode` | Open the interactive workspace |
-| `comicode run "<task>"` | Run a task once, non-interactively |
-| `comicode resume <id>` | Resume a paused/interrupted task |
-| `comicode providers ...` | Add, edit, test, enable/disable profiles |
-| `comicode models ...` | List, refresh, select, classify models |
-| `comicode tasks` / `history` / `usage` | Inspect tasks, transcripts, token usage |
-| `comicode settings ...` | Routing, agent, and UI settings |
-| `comicode doctor` | Diagnose Node, storage, credentials, providers |
-| `comicode update [--check]` | Install the latest release |
-| `comicode data ...` | Storage stats, cleanup, full data deletion |
+| Command                                | What it does                                   |
+| -------------------------------------- | ---------------------------------------------- |
+| `comicode`                             | Open the interactive workspace                 |
+| `comicode run "<task>"`                | Run a task once, non-interactively             |
+| `comicode resume <id>`                 | Resume a paused/interrupted task               |
+| `comicode providers ...`               | Add, edit, test, enable/disable profiles       |
+| `comicode models ...`                  | List, refresh, select, classify models         |
+| `comicode tasks` / `history` / `usage` | Inspect tasks, transcripts, token usage        |
+| `comicode settings ...`                | Routing, agent, and UI settings                |
+| `comicode doctor`                      | Diagnose Node, storage, credentials, providers |
+| `comicode update [--check]`            | Install the latest release                     |
+| `comicode data ...`                    | Storage stats, cleanup, full data deletion     |
 
 Most commands accept `--json`. Run `comicode <command> --help` for flags.
 Inside the TUI, `/help` lists everything.
@@ -167,11 +173,11 @@ comicode update           # install it globally
 
 Everything lives outside your repos:
 
-| Platform | Location |
-| --- | --- |
-| Windows | `%APPDATA%\comicode` |
-| macOS | `~/Library/Application Support/comicode` |
-| Linux | `~/.config/comicode` |
+| Platform | Location                                 |
+| -------- | ---------------------------------------- |
+| Windows  | `%APPDATA%\comicode`                     |
+| macOS    | `~/Library/Application Support/comicode` |
+| Linux    | `~/.config/comicode`                     |
 
 Contains `comicode.db` (SQLite: tasks, history, settings, usage), encrypted
 credentials, and logs. `comicode data delete-all` wipes it completely.

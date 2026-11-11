@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { CodingAgent, DEFAULT_AUTHORITY } from '../src/core/agent/agent.js';
+import type { ConfirmationRequest } from '../src/core/agent/types.js';
 import type { AdapterContext, ProviderAdapter } from '../src/core/providers/adapter.js';
 import { ProviderError } from '../src/core/providers/errors.js';
 import { openStore, type Store } from '../src/core/db/store.js';
@@ -344,6 +345,135 @@ describe('agent quota failover and resume', () => {
     expect(notices.some((n) => n.includes('trying key 3/3'))).toBe(true);
     // The task stayed on the same profile the whole time — no provider switch.
     expect(store.getTask(task.id)?.currentProfileId).toBe(pooled.id);
+  });
+});
+
+describe('provider switching consent and handoff', () => {
+  it('asks before a cross-provider switch and hands off the task context', async () => {
+    const store = openStore(':memory:');
+    cleanup.push(() => store.db.close());
+    const projectPath = tempProject();
+
+    const google = createProfile(store, {
+      providerId: 'gemini',
+      name: 'Google A',
+      defaultModel: 'gemini-2.5-flash',
+    });
+    createProfile(store, {
+      providerId: 'groq',
+      name: 'Groq free',
+      defaultModel: 'llama-3.3-70b-versatile',
+    });
+    store.upsertModels('gemini', [discovered('gemini-2.5-flash')]);
+    store.upsertModels('groq', [discovered('llama-3.3-70b-versatile')]);
+
+    const task = store.createTask({
+      projectPath,
+      projectName: 'agent-test',
+      userRequest: 'Finish the task.',
+      currentProfileId: google.id,
+      currentModelId: 'gemini-2.5-flash',
+    });
+
+    const prompts: ConfirmationRequest[] = [];
+    let handoffInPrompt: string | null = null;
+    const agent = new CodingAgent({
+      store,
+      taskId: task.id,
+      authority: DEFAULT_AUTHORITY,
+      adapterFactory: (profile) => ({
+        kind: profile.providerId,
+        supportsStreaming: true,
+        async chat(_context: AdapterContext, request): Promise<ChatResponse> {
+          if (profile.id === google.id) throw quotaError(profile.providerId);
+          const handoff = request.messages.find(
+            (message) =>
+              message.role === 'system' && message.content.includes('[Provider handoff]'),
+          );
+          handoffInPrompt = handoff?.content ?? null;
+          return completionResponse();
+        },
+        async listModels(): Promise<DiscoveredModel[]> {
+          return [];
+        },
+        async testConnection() {
+          return { ok: true, latencyMs: 1, message: 'fake', modelCount: 0 };
+        },
+      }),
+      contextFactory: fakeContextFactory,
+      hooks: {
+        confirm: async (request) => {
+          prompts.push(request);
+          return 'allow';
+        },
+      },
+    });
+
+    const result = await agent.run();
+    expect(result.status).toBe('completed');
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]?.kind).toBe('provider-switch');
+    expect(prompts[0]?.path).toContain('Groq free');
+
+    // The handoff note is in the outgoing context, so the new provider knows
+    // which model stopped and that completed work must not be repeated.
+    expect(handoffInPrompt).toContain('Google A');
+    expect(handoffInPrompt).toContain('gemini-2.5-flash');
+    expect(handoffInPrompt).toContain('Groq free');
+    expect(handoffInPrompt).toContain('Do not restart work');
+    const stored = store.loadMessages(task.id);
+    expect(stored.some((message) => message.content.includes('[Provider handoff]'))).toBe(true);
+  });
+
+  it('does not ask permission when another account uses the same provider', async () => {
+    const store = openStore(':memory:');
+    cleanup.push(() => store.db.close());
+    const projectPath = tempProject();
+
+    const googleA = createProfile(store, {
+      providerId: 'gemini',
+      name: 'Google A',
+      defaultModel: 'gemini-2.5-flash',
+    });
+    const googleB = createProfile(store, {
+      providerId: 'gemini',
+      name: 'Google B',
+      defaultModel: 'gemini-2.5-pro',
+    });
+    store.upsertModels('gemini', [discovered('gemini-2.5-flash'), discovered('gemini-2.5-pro')]);
+
+    const task = store.createTask({
+      projectPath,
+      projectName: 'agent-test',
+      userRequest: 'Finish the task.',
+      currentProfileId: googleA.id,
+      currentModelId: 'gemini-2.5-flash',
+    });
+
+    let prompts = 0;
+    const agent = new CodingAgent({
+      store,
+      taskId: task.id,
+      authority: DEFAULT_AUTHORITY,
+      adapterFactory: fakeAdapterFactory({
+        onChat: (profile) => {
+          if (profile.id === googleA.id) throw quotaError(profile.providerId);
+          return completionResponse();
+        },
+      }),
+      contextFactory: fakeContextFactory,
+      hooks: {
+        confirm: async () => {
+          prompts += 1;
+          return 'allow';
+        },
+      },
+    });
+
+    const result = await agent.run();
+    expect(result.status).toBe('completed');
+    expect(store.getTask(task.id)?.currentProfileId).toBe(googleB.id);
+    expect(prompts).toBe(0);
   });
 });
 

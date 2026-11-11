@@ -72,8 +72,7 @@ export async function resolveProfileCredential(
       registerSecret(value);
       return { apiKey: value, source: 'environment', keyIndex: 0, keyCount: 1 };
     }
-    if (config.allowNoAuth)
-      return { apiKey: '', source: 'none', keyIndex: 0, keyCount: 1 };
+    if (config.allowNoAuth) return { apiKey: '', source: 'none', keyIndex: 0, keyCount: 1 };
     throw new ProviderError({
       providerId: profile.providerId,
       category: 'invalid_api_key',
@@ -90,8 +89,7 @@ export async function resolveProfileCredential(
     registerSecret(apiKey);
     return { apiKey, source: 'credential-store', keyIndex: index, keyCount: pool.length };
   }
-  if (config.allowNoAuth)
-    return { apiKey: '', source: 'none', keyIndex: 0, keyCount: 1 };
+  if (config.allowNoAuth) return { apiKey: '', source: 'none', keyIndex: 0, keyCount: 1 };
   throw new ProviderError({
     providerId: profile.providerId,
     category: 'invalid_api_key',
@@ -135,7 +133,12 @@ export async function refreshProfileModels(
   const adapter = createAdapter(profile);
   try {
     const discovered = await adapter.listModels(context);
-    const enriched = discovered.map((model) => enrichDiscoveredModel(profile.providerId, model));
+    const enriched = discovered.map((model) =>
+      enrichDiscoveredModel(profile.providerId, model, {
+        baseUrl: profile.baseUrl,
+        profileName: profile.name,
+      }),
+    );
     const scopedProfileId = profile.providerId === 'custom' ? profile.id : null;
     store.upsertModels(profile.providerId, enriched, scopedProfileId);
     const latencyMs = Date.now() - started;
@@ -146,7 +149,10 @@ export async function refreshProfileModels(
       lastError: null,
     });
     store.recordHealth({ profileId: profile.id, ok: true, latencyMs });
-    store.clearLimit(profile.id, '*');
+    // A successful discovery proves the credentials and endpoint work. Clear
+    // model-scoped cooldowns as well as the wildcard row so stale quota/rate
+    // limits cannot make every model look exhausted after reconnecting.
+    store.clearLimitsForProfile(profile.id);
     return { models: enriched, discovered: enriched.length, latencyMs };
   } catch (error) {
     const classified = classifyThrown(error, profile.providerId);
@@ -188,6 +194,9 @@ export async function testProfileConnection(
       if (result.ok) {
         store.recordProfileSuccess(profile.id);
         store.updateProfile(profile.id, { lastError: null, lastErrorAt: null });
+        // A passing test means the provider is reachable again; drop any
+        // leftover model-specific or wildcard cooldowns immediately.
+        store.clearLimitsForProfile(profile.id);
       } else {
         const safe = redactSecrets(result.message);
         store.recordProfileError(profile.id, safe);
@@ -242,7 +251,10 @@ export async function addManualModel(
     supportsStreaming: true,
     metadata: { manual: true },
   };
-  const enriched = enrichDiscoveredModel(profile.providerId, discovered);
+  const enriched = enrichDiscoveredModel(profile.providerId, discovered, {
+    baseUrl: profile.baseUrl,
+    profileName: profile.name,
+  });
   const scopedProfileId = profile.providerId === 'custom' ? profile.id : null;
   store.upsertModels(profile.providerId, [enriched], scopedProfileId);
   store.updateProfile(profile.id, { lastCheckedAt: new Date().toISOString() });

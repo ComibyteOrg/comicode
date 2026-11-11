@@ -212,7 +212,7 @@ comicode models classify my-model user-free
 comicode models classify my-model auto
 ```
 
-Explicitly selected models are honored even when paid or unknown, but capability requirements and active limits still apply.
+Explicitly selected models are honored even when paid or unknown. A persisted cooldown is bypassed for the first attempt so a stale limit cannot block a connected provider; capability requirements still apply, and a real failure records a new limit. Discovery classifies Gemini/Groq profiles as `free-tier`, recognizes local/free-tier endpoint hosts, and treats `:free` or zero-priced models as `free-confirmed`. The model picker groups rows by provider and keeps a leading `free` badge visible even on the selected row.
 
 ## Error handling contract
 

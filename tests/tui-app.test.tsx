@@ -168,6 +168,17 @@ describe('TUI application', () => {
     expect(frame()).toContain('Build mode');
   });
 
+  it('toggles select/copy mode so terminal text can be highlighted', async () => {
+    await closeDialogs();
+    stdout.clear();
+    await send(String.fromCharCode(25));
+    expect(frame()).toContain('SELECT MODE');
+    expect(frame()).toContain('drag to highlight');
+    stdout.clear();
+    await send(ESC);
+    expect(frame()).not.toContain('SELECT MODE');
+  });
+
   it('requires a second ctrl+c before quitting', async () => {
     await closeDialogs();
     stdout.clear();

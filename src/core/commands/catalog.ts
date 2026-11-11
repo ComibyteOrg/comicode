@@ -240,9 +240,18 @@ export const COMMAND_SPECS: CommandSpec[] = [
   },
   {
     id: 'copy',
-    summary: 'Copy last output to clipboard',
-    description: 'Copy the most recent assistant or tool output to the system clipboard.',
-    usage: '/copy',
+    summary: 'Copy output to clipboard',
+    description:
+      'Copy the most recent assistant or tool output, or the full transcript with /copy all, to the system clipboard.',
+    usage: '/copy [all]',
+    arguments: [
+      {
+        name: 'scope',
+        description: 'omit for the last output, or "all" for the full transcript',
+        required: false,
+        values: ['all'],
+      },
+    ],
     category: 'context',
     surfaces: ['slash'],
   },

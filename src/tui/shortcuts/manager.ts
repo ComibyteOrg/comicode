@@ -134,9 +134,18 @@ export const SHORTCUTS: ShortcutDefinition[] = [
     id: 'scroll',
     label: 'Scroll transcript',
     keys: ['pageup', 'pagedown'],
-    description: 'Move through conversation history.',
+    description: 'Move through conversation history one screen at a time.',
     scope: 'workspace',
     customizable: false,
+  },
+  {
+    id: 'select',
+    label: 'Text selection / copy',
+    keys: ['ctrl+y'],
+    description:
+      'Release mouse capture so you can highlight and copy text anywhere; esc returns to wheel scrolling.',
+    scope: 'global',
+    customizable: true,
   },
   {
     id: 'confirm',

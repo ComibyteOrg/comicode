@@ -61,8 +61,14 @@ Operating rules:
 
 You are not a chatbot that only suggests code. You are expected to inspect, edit, and verify the project with tools.`;
 
-const CONTENT_LIMIT_PER_FILE = 7000;
-const MAX_CONTEXT_FILES = 10;
+const CONTENT_LIMIT_PER_FILE = 4500;
+const MAX_CONTEXT_FILES = 6;
+/**
+ * Hard ceiling on the prompt text (roughly 35k tokens) regardless of how large
+ * the model's advertised window is. Sending the full window on every step is
+ * the fastest way to burn quota; tools can always read more on demand.
+ */
+const MAX_PROMPT_CHARS = 120_000;
 
 function fileExcerpt(
   path: string,
@@ -180,7 +186,10 @@ export class ContextBuilder {
     const { task, model, settings, inspector, relevantFiles, cache } = input;
     const contextWindow = model.contextWindow ?? 128_000;
     const ratio = settings.agent.contextBudgetRatio;
-    const maxPromptChars = Math.max(12_000, Math.floor(contextWindow * ratio * 4));
+    const maxPromptChars = Math.max(
+      12_000,
+      Math.min(MAX_PROMPT_CHARS, Math.floor(contextWindow * ratio * 4)),
+    );
     const reserveForHistory = Math.floor(maxPromptChars * 0.5);
     const contextBudget = Math.max(6000, maxPromptChars - reserveForHistory - 5000);
 
@@ -190,13 +199,13 @@ export class ContextBuilder {
       (
         input.projectSummary ??
         'Project summary unavailable. Use list_files and read_file to inspect the project.'
-      ).slice(0, 12_000),
+      ).slice(0, 6_000),
     );
     lines.push('\n# Task state');
     lines.push(`Task ID: ${task.id}`);
     lines.push(`Project: ${task.projectName} (${task.projectPath})`);
     lines.push(`Phase: ${task.phase} | Status: ${task.status}`);
-    lines.push(`User request:\n${task.userRequest.slice(0, 4000)}`);
+    lines.push(`User request:\n${task.userRequest.slice(0, 2000)}`);
     if (task.plan) {
       lines.push(`Plan: ${task.plan.summary}`);
       for (const step of task.plan.steps) lines.push(`- [${step.status}] ${step.title}`);
@@ -210,8 +219,8 @@ export class ContextBuilder {
     if (task.changedFiles.length) {
       lines.push(`Changed files so far: ${task.changedFiles.join(', ')}`);
     }
-    if (input.summary) lines.push(`Earlier work summary:\n${input.summary.slice(0, 3000)}`);
-    if (input.resumeNote) lines.push(`Resume context:\n${input.resumeNote.slice(0, 5000)}`);
+    if (input.summary) lines.push(`Earlier work summary:\n${input.summary.slice(0, 2000)}`);
+    if (input.resumeNote) lines.push(`Resume context:\n${input.resumeNote.slice(0, 3000)}`);
 
     lines.push('\n# Relevant files');
     const included: string[] = [];
@@ -272,7 +281,7 @@ export class ContextBuilder {
 
     const contextText = lines.join('\n').slice(0, contextBudget + 6000);
 
-    const historyBudget = Math.max(6000, Math.floor(maxPromptChars * 0.45));
+    const historyBudget = Math.max(6000, Math.floor(maxPromptChars * 0.32));
     const pruned = pruneHistory(input.history, historyBudget);
     const summary = [task.summary, pruned.summary].filter(Boolean).join('\n\n');
     const messages: AgentMessage[] = [

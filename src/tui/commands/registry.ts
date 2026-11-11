@@ -29,6 +29,8 @@ export interface CommandContext {
   navigateToScreen: (screen: ScreenId) => void;
   setTaskId: (taskId: string | null) => void;
   getActiveTaskId: () => string | null;
+  /** Full transcript as plain text, for /copy all. */
+  getTranscriptText?: () => string;
   clearTranscript: () => void;
   addNotice: (title: string, text: string) => void;
   showOutput?: (title: string, text: string) => void;
@@ -466,7 +468,23 @@ class CommandRegistry {
       ctx.refreshData();
     });
 
-    this.register(findSpec('copy'), async (_args, ctx) => {
+    this.register(findSpec('copy'), async (args, ctx) => {
+      const mode = (args[0] ?? '').toLowerCase();
+      if (mode === 'all' || mode === 'transcript') {
+        const transcript = ctx.getTranscriptText?.().trim();
+        if (!transcript) {
+          ctx.addNotice('copy', 'The transcript is empty.');
+          return;
+        }
+        const { copyToClipboard } = await import('../../core/clipboard.js');
+        const ok = await copyToClipboard(transcript.slice(0, 500_000));
+        ctx.notify(
+          ok
+            ? `Copied the full transcript (${transcript.length} chars) to clipboard.`
+            : 'Clipboard unavailable. Use ctrl+y and your terminal copy shortcut.',
+        );
+        return;
+      }
       const taskId = ctx.getActiveTaskId();
       const messages = taskId ? ctx.context.store.loadMessages(taskId, 60) : [];
       const last = [...messages]
@@ -474,7 +492,7 @@ class CommandRegistry {
         .find((message) => message.role === 'assistant' || message.role === 'tool');
       const text = last?.content?.trim();
       if (!text) {
-        ctx.addNotice('copy', 'Nothing to copy yet.');
+        ctx.addNotice('copy', 'Nothing to copy yet. Use /copy all for the transcript.');
         return;
       }
       const { copyToClipboard } = await import('../../core/clipboard.js');

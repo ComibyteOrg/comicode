@@ -5,13 +5,7 @@ import { openAppContext } from '../core/app.js';
 import type { TaskRecord } from '../core/types.js';
 import { refreshProfileModels } from '../core/providers/service.js';
 import { gitBranch } from '../core/git/repository.js';
-import {
-  Footer,
-  Header,
-  PromptInput,
-  useLayout,
-  type AgentStatus,
-} from './components.js';
+import { Footer, Header, PromptInput, useLayout, type AgentStatus } from './components.js';
 import { Workspace, type ResumeRequest } from './screens/workspace.js';
 import { ProvidersDialog } from './dialogs/providers-dialog.js';
 import { ModelPicker } from './dialogs/model-picker.js';
@@ -30,6 +24,7 @@ import { shortcutMatches } from './shortcuts/manager.js';
 import { nextAgentMode, type AgentMode } from '../core/agent/modes.js';
 import { VERSION } from '../version.js';
 import { glyph, setActiveTheme, theme } from './theme.js';
+import { disableMouseTracking } from './mouse.js';
 
 export type DialogId =
   | 'palette'
@@ -68,9 +63,8 @@ function App({ context }: { context: AppContext }): React.ReactElement {
   const [paletteIndex, setPaletteIndex] = useState(0);
   const [branch, setBranch] = useState<string | null>(null);
   const [agentMode, setAgentMode] = useState<AgentMode>('auto');
-  const [outputContent, setOutputContent] = useState<{ title: string; text: string } | null>(
-    null,
-  );
+  const [outputContent, setOutputContent] = useState<{ title: string; text: string } | null>(null);
+  const [selectionMode, setSelectionMode] = useState(false);
   const quitArmedAt = useRef(0);
   const activeDialog = dialogStack.length > 0 ? dialogStack[dialogStack.length - 1]! : null;
   const isDialogOpen = activeDialog !== null;
@@ -97,6 +91,23 @@ function App({ context }: { context: AppContext }): React.ReactElement {
     setTick((value) => value + 1);
   }, []);
 
+  const toggleSelectionMode = useCallback(() => {
+    const next = !selectionMode;
+    setSelectionMode(next);
+    notify(
+      next
+        ? 'Select mode on — drag to highlight text and copy anywhere. Esc or ctrl+y returns to wheel scrolling.'
+        : 'Wheel scrolling restored.',
+    );
+  }, [notify, selectionMode]);
+
+  // A previous crashed/killed session can leave mouse reporting modes enabled,
+  // which silently breaks the terminal's native highlight/copy. Clear them on
+  // startup; wheel/click support re-enables only what it needs while active.
+  useEffect(() => {
+    disableMouseTracking();
+  }, []);
+
   useEffect(() => {
     if (!toast) return;
     const timer = setTimeout(() => setToast(null), 5000);
@@ -113,10 +124,13 @@ function App({ context }: { context: AppContext }): React.ReactElement {
     };
   }, [context.cwd, tick]);
 
-  const openTask = useCallback((taskId: string, resume: boolean) => {
-    setResumeRequest({ taskId, nonce: Date.now(), resume });
-    closeAllDialogs();
-  }, [closeAllDialogs]);
+  const openTask = useCallback(
+    (taskId: string, resume: boolean) => {
+      setResumeRequest({ taskId, nonce: Date.now(), resume });
+      closeAllDialogs();
+    },
+    [closeAllDialogs],
+  );
 
   const quit = useCallback(() => {
     exit();
@@ -265,10 +279,17 @@ function App({ context }: { context: AppContext }): React.ReactElement {
   }, [filteredActions.length]);
 
   useInput((input, key) => {
-    // While a modal is open it owns the keyboard; nothing leaks into the chat.
+    const shortcutOverrides = context.store.getSettings().ui.shortcuts;
+    // Selection mode works even while a dialog is open: release mouse capture
+    // so the terminal can highlight/copy any visible text.
+    if (shortcutMatches('select', input, key, shortcutOverrides)) {
+      toggleSelectionMode();
+      return;
+    }
+
+    // While a modal is open it owns the keyboard; nothing else leaks into the chat.
     if (isDialogOpen) return;
 
-    const shortcutOverrides = context.store.getSettings().ui.shortcuts;
     if (shortcutMatches('quit', input, key, shortcutOverrides)) {
       if (status === 'running') {
         notify('Pause the run with esc before quitting.');
@@ -356,10 +377,6 @@ function App({ context }: { context: AppContext }): React.ReactElement {
     profiles.find((profile) => profile.id === context.store.getSelectedProfileId()) ??
     profiles.find((profile) => profile.enabled) ??
     null;
-  const selectedModelKey = context.store.getSelectedModelId();
-  const selectedModel = selectedModelKey
-    ? (context.store.listModels().find((model) => model.id === selectedModelKey) ?? null)
-    : null;
   const allowPaid = context.store.getSettings().routing.allowPaid;
 
   const hints = isDialogOpen
@@ -372,6 +389,7 @@ function App({ context }: { context: AppContext }): React.ReactElement {
         'ctrl+k palette',
         'ctrl+m model',
         'ctrl+b providers',
+        'ctrl+y select/copy',
         'ctrl+c×2 quit',
       ];
 
@@ -392,7 +410,6 @@ function App({ context }: { context: AppContext }): React.ReactElement {
         version={VERSION}
         cwd={context.cwd}
         profileName={selectedProfile?.name ?? null}
-        modelName={selectedModel?.modelId ?? selectedProfile?.defaultModel ?? null}
         status={status}
         allowPaid={allowPaid}
         taskId={resumeRequest?.taskId ?? null}
@@ -422,6 +439,8 @@ function App({ context }: { context: AppContext }): React.ReactElement {
           agentMode={agentMode}
           onAgentMode={setAgentMode}
           onShowOutput={showOutput}
+          selectionMode={selectionMode}
+          onToggleSelection={toggleSelectionMode}
         />
       </Box>
 
@@ -503,9 +522,7 @@ function App({ context }: { context: AppContext }): React.ReactElement {
           notify={notify}
           refreshData={refreshData}
           onStatusChange={setStatus}
-          onRequestConnect={() =>
-            setDialogStack((stack) => [...stack.slice(0, -1), 'connect'])
-          }
+          onRequestConnect={() => setDialogStack((stack) => [...stack.slice(0, -1), 'connect'])}
         />
       ) : null}
 
@@ -524,7 +541,11 @@ function App({ context }: { context: AppContext }): React.ReactElement {
       ) : null}
 
       {activeDialog === 'diff' ? (
-        <DiffDialog context={context} taskId={resumeRequest?.taskId ?? null} onClose={closeDialog} />
+        <DiffDialog
+          context={context}
+          taskId={resumeRequest?.taskId ?? null}
+          onClose={closeDialog}
+        />
       ) : null}
 
       {activeDialog === 'undo' ? (
@@ -566,11 +587,7 @@ function App({ context }: { context: AppContext }): React.ReactElement {
       {activeDialog === 'shortcuts' ? <ShortcutsDialog onClose={closeDialog} /> : null}
 
       {activeDialog === 'output' && outputContent ? (
-        <OutputDialog
-          title={outputContent.title}
-          text={outputContent.text}
-          onClose={closeDialog}
-        />
+        <OutputDialog title={outputContent.title} text={outputContent.text} onClose={closeDialog} />
       ) : null}
 
       {activeDialog === 'effort' ? (

@@ -12,7 +12,8 @@ import { ModelsScreen } from '../src/tui/screens/models.js';
 import { HistoryScreen } from '../src/tui/screens/history.js';
 import { UsageScreen } from '../src/tui/screens/usage.js';
 import { SettingsScreen } from '../src/tui/screens/settings.js';
-import { FakeStdout, flush, makeStdin, screenWidths } from './helpers/tui.js';
+import { Workspace } from '../src/tui/screens/workspace.js';
+import { FakeStdout, flush, makeStdin, screenWidths, stripAnsi } from './helpers/tui.js';
 
 const noop = (): void => {};
 
@@ -27,6 +28,7 @@ describe('TUI layout', () => {
   const originalDb = process.env.COMICODE_DB_PATH;
   let home: string;
   let context: AppContext;
+  let scrollTaskId: string;
 
   beforeAll(() => {
     home = mkdtempSync(join(tmpdir(), 'comicode-layout-'));
@@ -100,6 +102,21 @@ describe('TUI layout', () => {
       userClassification: 'user-free',
       metadata: {},
     });
+
+    const scrollTask = context.store.createTask({
+      projectPath: context.cwd,
+      projectName: 'Comicode',
+      userRequest: 'Show a long transcript and scroll it by line.',
+      currentProfileId: gemini.id,
+      currentModelId: 'gemini-2.5-pro',
+    });
+    scrollTaskId = scrollTask.id;
+    for (let index = 0; index < 24; index += 1) {
+      context.store.appendMessage(scrollTask.id, {
+        role: 'assistant',
+        content: `Step ${index + 1}: ${'wrapped transcript line '.repeat(12)}`,
+      });
+    }
 
     for (const [index, status] of ['completed', 'paused', 'failed'].entries()) {
       const task = context.store.createTask({
@@ -219,6 +236,58 @@ describe('TUI layout', () => {
       }
     });
   }
+
+  it('scrolls a long transcript by line inside 80x24', async () => {
+    const stdin = makeStdin();
+    const stdout = new FakeStdout(80, 24);
+    const instance = render(
+      <Box height={24} width={80} flexDirection="column" paddingX={1}>
+        <Workspace
+          context={context}
+          active
+          onStatusChange={noop}
+          onNavigate={noop}
+          onCycleScreen={noop}
+          onQuit={noop}
+          resumeRequest={{ taskId: scrollTaskId, nonce: 1, resume: false }}
+          notify={noop}
+          refreshData={noop}
+        />
+      </Box>,
+      {
+        stdin,
+        stdout,
+        debug: false,
+        exitOnCtrlC: false,
+        patchConsole: false,
+        interactive: true,
+      },
+    );
+    const earlierCount = (text: string): number => {
+      const match = /(\d+) earlier/.exec(stripAnsi(text));
+      return match ? Number(match[1]) : 0;
+    };
+
+    await flush(250);
+    const initial = stripAnsi(stdout.output);
+    expect(initial).toContain('Loaded task');
+    expect(earlierCount(initial)).toBeGreaterThan(0);
+
+    stdout.clear();
+    stdin.write(`${String.fromCharCode(27)}[5~`);
+    await flush(250);
+    const scrolledUp = stripAnsi(stdout.output);
+    expect(scrolledUp).toMatch(/earlier/);
+    expect(scrolledUp).toContain('pgup');
+    // 24 rows → 6-line viewport → page keys move 4 lines, not whole entries.
+    expect(earlierCount(initial) - earlierCount(scrolledUp)).toBe(4);
+
+    stdout.clear();
+    stdin.write(`${String.fromCharCode(27)}[6~`);
+    await flush(250);
+    expect(earlierCount(stdout.output)).toBe(earlierCount(initial));
+    instance.unmount();
+  });
 
   it('keeps the full app shell inside 80x24', async () => {
     const stdin = makeStdin();

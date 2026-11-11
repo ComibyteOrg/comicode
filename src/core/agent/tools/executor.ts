@@ -393,9 +393,13 @@ export class ToolExecutor {
     start = Math.max(1, start);
     end = Math.min(total, end);
     text = lines.slice(start - 1, end).join('\n');
+    const maxChars = Math.max(4_000, this.options.settings.agent.maxToolOutputChars);
     return {
       ok: true,
-      content: `# ${relative} (lines ${start}-${end} of ${total})\n${text}`,
+      content: truncateForModel(
+        `# ${relative} (lines ${start}-${end} of ${total})\n${text}`,
+        maxChars,
+      ),
       metadata: { path: relative, totalLines: total, start, end },
     };
   }

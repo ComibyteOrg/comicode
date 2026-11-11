@@ -8,7 +8,9 @@ import { DEFAULT_SETTINGS } from '../src/core/settings.js';
 import type { AgentAuthority } from '../src/core/types.js';
 
 const cleanup: Array<() => void> = [];
-afterEach(() => { while (cleanup.length) cleanup.pop()?.(); });
+afterEach(() => {
+  while (cleanup.length) cleanup.pop()?.();
+});
 
 const AUTHORITY: AgentAuthority = {
   allowFileWrites: false,
@@ -69,5 +71,7 @@ describe('verify_ui tool', () => {
     } else {
       expect(result.content).toMatch(/Playwright|browser|playwright install/i);
     }
-  });
+  }, // Browser launch can be slow on loaded CI/Windows hosts; the tool itself
+  // allows up to 30s for navigation.
+  90_000);
 });

@@ -13,6 +13,7 @@ import {
   PromptInput,
   Spinner,
   useLayout,
+  wrapText,
   type AgentStatus,
   type ScreenId,
 } from '../components.js';
@@ -21,7 +22,7 @@ import { ModalWindow } from '../dialogs/modal.js';
 import { glyph, theme } from '../theme.js';
 import { commandRegistry, type CommandContext } from '../commands/registry.js';
 import { listProjectFiles } from '../../core/safety/files.js';
-import { enableMouseWheel, isMouseSequence, isSuppressedInput } from '../mouse.js';
+import { disableMouseTracking, enableMouseWheel, isMouseSequence, isSuppressedInput } from '../mouse.js';
 
 interface Entry {
   id: number;
@@ -75,6 +76,9 @@ interface WorkspaceProps {
   agentMode?: AgentMode;
   onAgentMode?: (mode: AgentMode) => void;
   onShowOutput?: (title: string, text: string) => void;
+  /** Release mouse capture so the terminal can highlight and copy text. */
+  selectionMode?: boolean;
+  onToggleSelection?: () => void;
 }
 
 function taskToEntries(context: AppContext, task: TaskRecord): Entry[] {
@@ -86,7 +90,11 @@ function taskToEntries(context: AppContext, task: TaskRecord): Entry[] {
       entries.push({ id: ++id, kind: 'user', text: clipLines(message.content, 3, 500) });
     } else if (message.role === 'assistant') {
       if (message.content.trim()) {
-        entries.push({ id: ++id, kind: 'assistant', text: clipLines(message.content, 100, 20_000) });
+        entries.push({
+          id: ++id,
+          kind: 'assistant',
+          text: clipLines(message.content, 100, 20_000),
+        });
       }
       for (const call of message.toolCalls ?? []) {
         entries.push({
@@ -229,7 +237,9 @@ function clipAnswer(text: string, headLines = 14, tailLines = 30): string {
   const lines = body.split('\n');
   if (lines.length <= headLines + tailLines + 2) return body;
   const hidden = lines.length - headLines - tailLines;
-  return [...lines.slice(0, headLines), `[+${hidden} lines]`, ...lines.slice(-tailLines)].join('\n');
+  return [...lines.slice(0, headLines), `[+${hidden} lines]`, ...lines.slice(-tailLines)].join(
+    '\n',
+  );
 }
 
 function entryDisplay(entry: Entry): string {
@@ -240,18 +250,71 @@ function entryDisplay(entry: Entry): string {
   return clipLines(entry.text, role.lines, role.chars);
 }
 
-function EntryCard({ entry, dimmed }: { entry: Entry; dimmed?: boolean }): React.ReactElement {
+/** Plain-text rendering of the transcript for clipboard export. */
+function transcriptText(entries: Entry[]): string {
+  return entries
+    .map((entry) => {
+      const role = roleFor(entry);
+      return `${role.marker} ${role.label}\n${entryDisplay(entry)}`;
+    })
+    .join('\n\n');
+}
+
+/**
+ * Wrap a multi-line transcript body while preserving the source line breaks.
+ * The result is also used to measure entry height, so the scroll viewport can
+ * move by terminal lines instead of jumping whole entries.
+ */
+function wrapBodyLines(text: string, width: number): string[] {
+  const lines: string[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    if (raw.length === 0) {
+      lines.push('');
+      continue;
+    }
+    for (const wrapped of wrapText(raw, width)) lines.push(wrapped.text);
+  }
+  return lines.length > 0 ? lines : [''];
+}
+
+function EntryCard({
+  entry,
+  dimmed,
+  bodyLines,
+  fromLine = 0,
+  toLine,
+  showHeader = true,
+  showMargin = true,
+}: {
+  entry: Entry;
+  dimmed?: boolean;
+  bodyLines?: string[];
+  fromLine?: number;
+  toLine?: number;
+  showHeader?: boolean;
+  showMargin?: boolean;
+}): React.ReactElement {
   const role = roleFor(entry);
+  const lines = bodyLines ?? wrapBodyLines(entryDisplay(entry), 80);
+  const end = Math.max(0, Math.min(lines.length, toLine ?? lines.length));
+  const start = Math.max(0, Math.min(end, fromLine));
+  const visible = lines.slice(start, end);
   return (
-    <Box flexDirection="column" marginBottom={1} flexShrink={0}>
-      <Text color={role.color} bold dimColor={dimmed}>
-        {role.marker} {role.label}
-      </Text>
-      <Box paddingLeft={2}>
-        <Text color={role.bodyColor} wrap="wrap" dimColor={dimmed}>
-          {entryDisplay(entry)}
+    <Box flexDirection="column" marginBottom={showMargin ? 1 : 0} flexShrink={0}>
+      {showHeader ? (
+        <Text color={role.color} bold dimColor={dimmed}>
+          {role.marker} {role.label}
         </Text>
-      </Box>
+      ) : null}
+      {visible.length > 0 ? (
+        <Box paddingLeft={2} flexDirection="column">
+          {visible.map((line, index) => (
+            <Text key={`${start + index}`} color={role.bodyColor} wrap="truncate" dimColor={dimmed}>
+              {line.length > 0 ? line : ' '}
+            </Text>
+          ))}
+        </Box>
+      ) : null}
     </Box>
   );
 }
@@ -271,8 +334,10 @@ export function Workspace({
   agentMode = 'build',
   onAgentMode,
   onShowOutput,
+  selectionMode = false,
+  onToggleSelection,
 }: WorkspaceProps): React.ReactElement {
-  const { rows } = useLayout();
+  const { rows, columns } = useLayout();
   const [entries, setEntries] = useState<Entry[]>([]);
   const [input, setInput] = useState('');
   const [queue, setQueue] = useState<string[]>([]);
@@ -297,6 +362,7 @@ export function Workspace({
   const confirmResolve = useRef<((decision: ConfirmDecision) => void) | null>(null);
   const adoptedNonce = useRef(0);
   const streamingId = useRef<number | null>(null);
+  const maxOffsetRef = useRef(0);
 
   const updateStatus = useCallback(
     (next: AgentStatus) => {
@@ -317,22 +383,33 @@ export function Workspace({
   }, []);
 
   useEffect(() => {
-    if (!running) return;
+    if (!running || selectionMode) return;
     const timer = setInterval(() => setFrame((value) => value + 1), 120);
     return () => clearInterval(timer);
-  }, [running]);
+  }, [running, selectionMode]);
 
   // Mouse wheel scrolls the transcript (wheel-up = older, wheel-down = newer).
-  // Disable via settings ui.mouseScroll=false to restore native copy/select.
+  // Mouse capture is opt-in because it blocks the terminal's native
+  // highlight/copy. It is also released while a dialog is open and in select
+  // mode. Enable wheel support with settings ui.mouseScroll=true.
   useEffect(() => {
-    if (context.store.getSettings().ui.mouseScroll === false) return;
+    if (selectionMode) {
+      // Release immediately, even if a previous effect has not cleaned up yet.
+      disableMouseTracking();
+      return;
+    }
+    if (!active) return;
+    // Always clear stale mouse modes first — a crashed previous session can
+    // leave reporting enabled, which silently breaks native text selection.
+    disableMouseTracking();
+    if (context.store.getSettings().ui.mouseScroll !== true) return;
     return enableMouseWheel((direction) => {
       if (!active) return;
       setScrollOffset((value) =>
-        Math.max(0, Math.min(Math.max(0, entries.length - 1), value - direction * 3)),
+        Math.max(0, Math.min(maxOffsetRef.current, value - direction * 3)),
       );
     });
-  }, [entries.length, active]);
+  }, [active, context, selectionMode]);
 
   const respondConfirm = useCallback((decision: ConfirmDecision) => {
     const resolve = confirmResolve.current;
@@ -615,7 +692,9 @@ export function Workspace({
       return fileIndex
         .filter((path) => {
           const lower = path.toLowerCase();
-          return lower.includes(needle) || (path.split('/').pop() ?? '').toLowerCase().includes(needle);
+          return (
+            lower.includes(needle) || (path.split('/').pop() ?? '').toLowerCase().includes(needle)
+          );
         })
         .slice(0, 8)
         .map((path) => ({
@@ -652,6 +731,7 @@ export function Workspace({
           }
         },
         getActiveTaskId: () => taskId,
+        getTranscriptText: () => transcriptText(entries),
         clearTranscript: () => {
           setEntries([]);
           setScrollOffset(0);
@@ -739,26 +819,77 @@ export function Workspace({
     else void startRequest(next!);
   }, [running, queue, handleCommand, startRequest]);
 
+  // ---------------------------------------------------------------- viewport
+  // Measure the transcript in terminal lines. Scrolling then moves by lines,
+  // so wheel/page keys feel continuous even when individual answers are tall.
+  const bodyWidth = Math.max(24, columns - 8);
+  const entryLayouts = useMemo(() => {
+    let line = 0;
+    return entries.map((entry) => {
+      const lines = wrapBodyLines(entryDisplay(entry), bodyWidth);
+      const height = 1 + lines.length + 1; // header + body + margin
+      const layout = { entry, lines, start: line, height };
+      line += height;
+      return layout;
+    });
+  }, [entries, bodyWidth]);
+  const totalLines = entryLayouts.reduce((sum, layout) => sum + layout.height, 0);
+  const lineBudget = Math.max(5, rows - 18);
+  const maxOffset = Math.max(0, totalLines - lineBudget);
+  maxOffsetRef.current = maxOffset;
+  const visibleOffset = Math.min(scrollOffset, maxOffset);
+  const viewStart = Math.max(0, totalLines - lineBudget - visibleOffset);
+  const viewEnd = viewStart + lineBudget;
+  const visibleLayouts = entryLayouts
+    .filter((layout) => layout.start < viewEnd && layout.start + layout.height > viewStart)
+    .map((layout) => {
+      const localStart = Math.max(0, viewStart - layout.start);
+      const localEnd = Math.min(layout.height, viewEnd - layout.start);
+      return {
+        ...layout,
+        localStart,
+        localEnd,
+        fromLine: Math.max(0, localStart - 1),
+        toLine: Math.max(0, localEnd - 1),
+      };
+    });
+
+  useEffect(() => {
+    setScrollOffset((value) => Math.min(value, maxOffset));
+  }, [maxOffset]);
+
   useInput(
     (input, key) => {
       if (isMouseSequence(input) || isSuppressedInput()) return;
+      if (selectionMode) {
+        if (key.escape) {
+          onToggleSelection?.();
+          return;
+        }
+        if (key.pageUp) {
+          setScrollOffset((value) => Math.min(maxOffsetRef.current, value + lineBudget - 2));
+          return;
+        }
+        if (key.pageDown) {
+          setScrollOffset((value) => Math.max(0, value - (lineBudget - 2)));
+          return;
+        }
+      }
       if (key.escape && running) {
         abortRef.current?.abort();
         notify('Pausing after the current operation…');
         return;
       }
       if (key.pageUp || (key.ctrl && key.upArrow)) {
-        setScrollOffset((value) => Math.min(Math.max(0, entries.length - 1), value + 12));
+        setScrollOffset((value) => Math.min(maxOffsetRef.current, value + lineBudget - 2));
         return;
       }
       if (key.pageDown || (key.ctrl && key.downArrow)) {
-        setScrollOffset((value) => Math.max(0, value - 12));
+        setScrollOffset((value) => Math.max(0, value - (lineBudget - 2)));
         return;
       }
       if (key.ctrl && input === 'j') {
-        const users = entries.flatMap((entry, index) =>
-          entry.kind === 'user' ? [index] : [],
-        );
+        const users = entries.flatMap((entry, index) => (entry.kind === 'user' ? [index] : []));
         if (users.length > 0) {
           setJumpIndex(users.length - 1);
           setJumpOpen(true);
@@ -771,7 +902,9 @@ export function Workspace({
         else if (key.tab) onCycleScreen(key.shift ? -1 : 1);
       }
     },
-    { isActive: active && !dimmed && !confirmRequest },
+    // Selection mode keeps esc/scroll keys live even while an inline approval
+    // prompt is open, but a modal dialog still owns the keyboard.
+    { isActive: selectionMode ? !dimmed : active && !dimmed && !confirmRequest },
   );
 
   const task = taskId ? context.store.getTask(taskId) : null;
@@ -787,32 +920,18 @@ export function Workspace({
   const effortLabel = selectedProfile?.config?.effort;
   const effortText =
     typeof effortLabel === 'string' && effortLabel.length > 0 ? effortLabel : 'default';
-  // Keep the newest entries visible even when an older entry is very tall
-  // (for example /help). We budget terminal lines rather than entry counts.
-  const lineBudget = Math.max(5, rows - 18);
-  const end = Math.max(0, entries.length - scrollOffset);
-  let start = end;
-  let used = 0;
-  for (let index = end - 1; index >= 0; index -= 1) {
-    const entry = entries[index]!;
-    const height = entryDisplay(entry).split(/\r?\n/).length + 2;
-    if (start < end && used + height > lineBudget) break;
-    used += height;
-    start = index;
-  }
-  const visible = entries.slice(start, end);
 
   // Indices of user prompts, for the ctrl+j jump popup.
-  const jumpTargets = entries.flatMap((entry, index) =>
-    entry.kind === 'user' ? [index] : [],
-  );
+  const jumpTargets = entries.flatMap((entry, index) => (entry.kind === 'user' ? [index] : []));
   const jumpTo = useCallback(
     (entryIndex: number): void => {
-      // Show the question plus a few following entries; pgdn returns to latest.
-      setScrollOffset(Math.max(0, entries.length - entryIndex - 10));
+      // Scroll so the question sits near the top of the viewport.
+      const layout = entryLayouts.find((candidate) => candidate.entry === entries[entryIndex]);
+      const targetStart = layout?.start ?? 0;
+      setScrollOffset(Math.max(0, totalLines - lineBudget - targetStart));
       setJumpOpen(false);
     },
-    [entries.length],
+    [entries, entryLayouts, totalLines, lineBudget],
   );
 
   useInput(
@@ -838,19 +957,18 @@ export function Workspace({
     { isActive: jumpOpen },
   );
 
-  // Scrollbar geometry — approximate the transcript viewport with the line
-  // budget; the thumb tracks how far back the view is scrolled.
+  // Scrollbar geometry — the thumb tracks the visible line window.
   const trackHeight = Math.max(6, lineBudget);
   const thumbHeight =
-    entries.length > visible.length
+    totalLines > lineBudget
       ? Math.max(
           1,
-          Math.min(trackHeight, Math.round((trackHeight * visible.length) / entries.length)),
+          Math.min(trackHeight, Math.round((trackHeight * lineBudget) / Math.max(1, totalLines))),
         )
       : 0;
   const thumbTop =
     thumbHeight > 0
-      ? Math.round(((trackHeight - thumbHeight) * start) / Math.max(1, entries.length - visible.length))
+      ? Math.round(((trackHeight - thumbHeight) * viewStart) / Math.max(1, totalLines - lineBudget))
       : 0;
   const scrollbar =
     thumbHeight > 0 ? (
@@ -927,8 +1045,8 @@ export function Workspace({
         {suggestions.length === 0 ? (
           <Box>
             <Text color={theme.faint} wrap="truncate" dimColor={dimmed}>
-              enter send {glyph.bullet} / commands {glyph.bullet} ctrl+m model {glyph.bullet}{' '}
-              ctrl+b provider {glyph.bullet} ctrl+p palette {glyph.bullet} ctrl+j questions
+              enter send {glyph.bullet} / commands {glyph.bullet} ctrl+m model {glyph.bullet} ctrl+b
+              provider {glyph.bullet} ctrl+p palette {glyph.bullet} ctrl+j questions
             </Text>
           </Box>
         ) : null}
@@ -949,7 +1067,9 @@ export function Workspace({
                 : `${glyph.ring} ${status}`}
         </Text>
         <Text
-          color={agentMode === 'plan' ? theme.info : agentMode === 'debug' ? theme.warning : theme.muted}
+          color={
+            agentMode === 'plan' ? theme.info : agentMode === 'debug' ? theme.warning : theme.muted
+          }
         >
           {'  '}
           {glyph.route} {agentMode}
@@ -1001,31 +1121,43 @@ export function Workspace({
     </Box>
   );
 
+  const selectionBanner = selectionMode ? (
+    <Box flexShrink={0} paddingTop={1}>
+      <Text color={theme.success} wrap="truncate">
+        ⌘ SELECT MODE {glyph.bullet} drag to highlight, then copy with your terminal
+        {glyph.bullet} esc / ctrl+y exits
+      </Text>
+    </Box>
+  ) : null;
+
   if (entries.length === 0) {
     return (
-      <Box flexDirection="column" flexGrow={1} justifyContent="center" paddingX={2}>
-        <Box flexDirection="column" alignItems="center" width="100%">
-          <Box flexDirection="column" alignItems="center" marginBottom={1}>
-            <Text color={theme.accent} bold wrap="truncate">
-              {' ██████╗   ██████╗  ███╗   ███╗ ██╗  ██████╗   ██████╗  ██████╗  ███████╗\n' +
-                '██╔════╝  ██╔═══██╗ ████╗ ████║ ██║ ██╔════╝  ██╔═══██╗ ██╔══██╗ ██╔════╝\n' +
-                '██║       ██║   ██║ ██╔████╔██║ ██║ ██║       ██║   ██║ ██║  ██║ █████╗  \n' +
-                '██║       ██║   ██║ ██║╚██╔╝██║ ██║ ██║       ██║   ██║ ██║  ██║ ██╔══╝  \n' +
-                '╚██████╗  ╚██████╔╝ ██║ ╚═╝ ██║ ██║ ╚██████╗  ╚██████╔╝ ██████╔╝ ███████╗\n' +
-                ' ╚═════╝   ╚═════╝  ╚═╝     ╚═╝ ╚═╝  ╚═════╝   ╚═════╝  ╚═════╝  ╚══════╝'}
-            </Text>
-            <Text color={theme.faint} dimColor={dimmed}>
-              {glyph.route} what should we build?
-            </Text>
-            <Text color={theme.faint} dimColor={dimmed}>
-              try: “fix a bug” {glyph.bullet} “build a feature” {glyph.bullet} “explain this code”
-            </Text>
-          </Box>
-          <Box flexDirection="column" width="100%" maxWidth={84}>
-            {composerArea}
-          </Box>
-          <Box flexDirection="column" width="100%" maxWidth={84}>
-            {statusFooter}
+      <Box flexDirection="column" flexGrow={1} paddingX={2}>
+        {selectionBanner}
+        <Box flexDirection="column" flexGrow={1} justifyContent="center">
+          <Box flexDirection="column" alignItems="center" width="100%">
+            <Box flexDirection="column" alignItems="center" marginBottom={1}>
+              <Text color={theme.accent} bold wrap="truncate">
+                {' ██████╗   ██████╗  ███╗   ███╗ ██╗  ██████╗   ██████╗  ██████╗  ███████╗\n' +
+                  '██╔════╝  ██╔═══██╗ ████╗ ████║ ██║ ██╔════╝  ██╔═══██╗ ██╔══██╗ ██╔════╝\n' +
+                  '██║       ██║   ██║ ██╔████╔██║ ██║ ██║       ██║   ██║ ██║  ██║ █████╗  \n' +
+                  '██║       ██║   ██║ ██║╚██╔╝██║ ██║ ██║       ██║   ██║ ██║  ██║ ██╔══╝  \n' +
+                  '╚██████╗  ╚██████╔╝ ██║ ╚═╝ ██║ ██║ ╚██████╗  ╚██████╔╝ ██████╔╝ ███████╗\n' +
+                  ' ╚═════╝   ╚═════╝  ╚═╝     ╚═╝ ╚═╝  ╚═════╝   ╚═════╝  ╚═════╝  ╚══════╝'}
+              </Text>
+              <Text color={theme.faint} dimColor={dimmed}>
+                {glyph.route} what should we build?
+              </Text>
+              <Text color={theme.faint} dimColor={dimmed}>
+                try: “fix a bug” {glyph.bullet} “build a feature” {glyph.bullet} “explain this code”
+              </Text>
+            </Box>
+            <Box flexDirection="column" width="100%" maxWidth={84}>
+              {composerArea}
+            </Box>
+            <Box flexDirection="column" width="100%" maxWidth={84}>
+              {statusFooter}
+            </Box>
           </Box>
         </Box>
       </Box>
@@ -1035,20 +1167,33 @@ export function Workspace({
   return (
     <Box flexDirection="column" flexGrow={1} overflow="hidden">
       <Box flexDirection="row" flexGrow={1} overflow="hidden">
-      <Box flexDirection="column" flexGrow={1} overflow="hidden" paddingTop={1}>
-        {start > 0 ? (
-          <Box flexShrink={0}>
-            <Text color={theme.faint} dimColor={dimmed}>
-              {glyph.arrowUp} {start} earlier {glyph.bullet} pgup to scroll back
-            </Text>
-          </Box>
-        ) : null}
-        {visible.map((entry) => <EntryCard key={entry.id} entry={entry} dimmed={dimmed} />)}
-        {scrollOffset > 0 && visible.length === 0 ? (
-          <Empty>No more transcript above. Press pgdn to return to the latest output.</Empty>
-        ) : null}
-      </Box>
-      {scrollbar}
+        <Box flexDirection="column" flexGrow={1} overflow="hidden" paddingTop={1}>
+          {selectionBanner}
+          {viewStart > 0 ? (
+            <Box flexShrink={0}>
+              <Text color={theme.faint} dimColor={dimmed}>
+                {glyph.arrowUp} {viewStart} earlier {viewStart === 1 ? 'line' : 'lines'}{' '}
+                {glyph.bullet} pgup to scroll back
+              </Text>
+            </Box>
+          ) : null}
+          {visibleLayouts.map((layout) => (
+            <EntryCard
+              key={layout.entry.id}
+              entry={layout.entry}
+              dimmed={dimmed}
+              bodyLines={layout.lines}
+              fromLine={layout.fromLine}
+              toLine={layout.toLine}
+              showHeader={layout.localStart === 0}
+              showMargin={layout.localEnd >= layout.height}
+            />
+          ))}
+          {visibleOffset > 0 && visibleLayouts.length === 0 ? (
+            <Empty>No more transcript above. Press pgdn to return to the latest output.</Empty>
+          ) : null}
+        </Box>
+        {scrollbar}
       </Box>
 
       {plan?.steps?.length ? (
@@ -1093,7 +1238,7 @@ export function Workspace({
               );
             })}
             {jumpTargets.length > jumpShown.length ? (
-              <Text color={theme.faint}>  ⋮ {jumpTargets.length - jumpShown.length} earlier</Text>
+              <Text color={theme.faint}> ⋮ {jumpTargets.length - jumpShown.length} earlier</Text>
             ) : null}
           </Box>
         </ModalWindow>

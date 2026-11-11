@@ -1,9 +1,10 @@
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { randomUUID } from 'node:crypto';
 import type { AppContext } from '../../core/app.js';
 import type { ProviderKind, ProviderProfile } from '../../core/types.js';
 import { providerDisplayName } from '../../core/providers/definitions.js';
+import { effectiveAccess, isFreeAccess } from '../../core/providers/catalog.js';
 import {
   credentialIdForProfile,
   keysToSecret,
@@ -110,6 +111,14 @@ export function ConnectDialog({
   const [defaultModel, setDefaultModel] = useState('');
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [spinFrame, setSpinFrame] = useState(0);
+
+  useEffect(() => {
+    if (!statusMessage) return;
+    const timer = setInterval(() => setSpinFrame((frame) => frame + 1), 120);
+    return () => clearInterval(timer);
+  }, [statusMessage]);
 
   const existingProfiles = useMemo(() => context.store.listProfiles(), [context, step]);
 
@@ -252,6 +261,13 @@ export function ConnectDialog({
       return;
     }
 
+    // Model discovery below is a network call that can take several seconds;
+    // show a spinner so the dialog does not look frozen.
+    if (saving) return;
+    setSaving(true);
+    setStatusMessage('Saving provider and discovering models…');
+    setTestResult(null);
+
     try {
       const profile = context.store.createProfile({
         providerId: selectedProvider.kind,
@@ -259,7 +275,10 @@ export function ConnectDialog({
         baseUrl: baseUrl.trim() || selectedProvider.defaultBaseUrl,
         authType: selectedProvider.requiresKey ? 'api-key' : 'bearer',
         defaultModel: defaultModel.trim() || selectedProvider.defaultModel,
-        accessClassification: 'unknown',
+        accessClassification:
+          selectedProvider.kind === 'gemini' || selectedProvider.kind === 'groq'
+            ? 'free-tier'
+            : 'unknown',
         enabled: true,
         config: {
           apiStyle: selectedProvider.apiStyle,
@@ -272,14 +291,34 @@ export function ConnectDialog({
       if (finalKeys.length > 0) {
         for (const entry of finalKeys) registerSecret(entry);
         const credStore = getCredentialStore();
-        await credStore.setSecret(
-          credentialIdForProfile(profile.id),
-          keysToSecret(finalKeys),
-        );
+        await credStore.setSecret(credentialIdForProfile(profile.id), keysToSecret(finalKeys));
       }
 
-      // Try discovering models in background
-      void refreshProfileModels(context.store, profile).catch(() => {});
+      // Discover models before closing so the picker is populated immediately
+      // after a successful connection. A discovery failure must not undo the
+      // saved profile; the connection test already reported whether it works.
+      try {
+        const result = await refreshProfileModels(context.store, profile);
+        const fresh = context.store.getProfile(profile.id);
+        if (fresh && (!fresh.defaultModel || result.discovered > 0)) {
+          const models = context.store
+            .listModels(fresh.providerId, fresh.providerId === 'custom' ? fresh.id : undefined)
+            .filter((model) => model.available);
+          const ranked = models.sort((left, right) => {
+            const leftFree = isFreeAccess(effectiveAccess(left, fresh.accessClassification));
+            const rightFree = isFreeAccess(effectiveAccess(right, fresh.accessClassification));
+            if (leftFree !== rightFree) return leftFree ? -1 : 1;
+            return right.codingSuitability - left.codingSuitability;
+          });
+          const preferred = ranked[0];
+          if (preferred && !fresh.defaultModel) {
+            context.store.updateProfile(fresh.id, { defaultModel: preferred.modelId });
+          }
+        }
+      } catch {
+        // Models can be refreshed later with ctrl+r in the model picker.
+      }
+      context.store.clearLimitsForProfile(profile.id);
 
       // Set active profile if none or only one exists
       if (!context.store.getSelectedProfileId() || existingProfiles.length === 0) {
@@ -291,10 +330,13 @@ export function ConnectDialog({
       onConnected(profile);
       onClose();
     } catch (err) {
+      setStatusMessage(null);
       setTestResult({
         ok: false,
         message: err instanceof Error ? err.message : String(err),
       });
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -436,7 +478,7 @@ export function ConnectDialog({
         {/* Status / Test feedback */}
         {statusMessage ? (
           <Box marginY={1}>
-            <Spinner frame={0} label={statusMessage} />
+            <Spinner frame={spinFrame} label={statusMessage} />
           </Box>
         ) : null}
 
