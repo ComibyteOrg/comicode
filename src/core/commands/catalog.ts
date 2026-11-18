@@ -100,11 +100,11 @@ export const COMMAND_SPECS: CommandSpec[] = [
   },
   {
     id: 'tasks',
-    summary: 'Manage tasks and sessions',
+    summary: 'Open task history (also /history)',
     description:
-      'Search tasks, inspect progress, resume paused work, rename tasks, delete history, or start a new task.',
-    usage: '/tasks',
-    aliases: ['sessions'],
+      'Browse all past and paused work. Search history, inspect progress, resume a task, rename it, delete entries, or start a new task.',
+    usage: '/history',
+    aliases: ['history', 'sessions'],
     category: 'tasks',
     surfaces: ['slash', 'cli'],
     shortcut: 'ctrl+t',

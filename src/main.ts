@@ -8,6 +8,8 @@ import { registerTaskCommands } from './cli/commands/tasks.js';
 import { registerUsageCommands } from './cli/commands/usage.js';
 import { registerSettingsCommands } from './cli/commands/settings.js';
 import { registerSystemCommands } from './cli/commands/system.js';
+import { registerPluginCommand } from './cli/commands/plugin.js';
+import { registerServeCommand } from './cli/commands/serve.js';
 import {
   createTaskForRequest,
   normalizeTaskType,
@@ -22,11 +24,13 @@ import {
 import { bold, danger, dim } from './cli/output.js';
 import { isInteractive, promptText } from './cli/prompt.js';
 import type { TaskRecord } from './core/types.js';
+import { isAgentMode, type AgentMode } from './core/agent/modes.js';
 
 interface RunFlags extends AuthorityOptions {
   profile?: string;
   model?: string;
   type?: string;
+  mode?: string;
   maxSteps?: string;
   json?: boolean;
   resume?: boolean;
@@ -78,11 +82,20 @@ function reportResult(result: AgentResult): void {
   process.exitCode = resultExitCode(result);
 }
 
+function resolveAgentMode(value: string | undefined): AgentMode | undefined {
+  if (!value) return undefined;
+  if (!isAgentMode(value)) {
+    throw new Error(`Unknown agent mode "${value}". Use build, plan, debug, architect, review, test, docs, design, security, explain, or team.`);
+  }
+  return value;
+}
+
 async function runCommand(parts: string[], flags: RunFlags): Promise<void> {
   const request = parts.join(' ').trim();
   if (!request) {
     throw new Error('Provide a request. Example: comicode run "fix the failing tests"');
   }
+  const mode = resolveAgentMode(flags.mode);
   await withStore(async ({ store, cwd }) => {
     const target = selectedModelReference(store, flags);
     const task = createTaskForRequest(store, cwd, request, {
@@ -91,13 +104,13 @@ async function runCommand(parts: string[], flags: RunFlags): Promise<void> {
       modelId: target.modelId,
     });
     if (flags.json) {
-      reportResult(await runTask(store, task.id, { ...flags, maxSteps: maxSteps(flags.maxSteps) }));
+      reportResult(await runTask(store, task.id, { ...flags, mode, maxSteps: maxSteps(flags.maxSteps) }));
       return;
     }
     console.log('');
     console.log(`${bold('COMICODE')} ${dim(`task ${task.id.slice(0, 8)} · ${cwd}`)}`);
     console.log(dim(`request: ${request}`));
-    reportResult(await runTask(store, task.id, { ...flags, maxSteps: maxSteps(flags.maxSteps) }));
+    reportResult(await runTask(store, task.id, { ...flags, mode, maxSteps: maxSteps(flags.maxSteps) }));
   });
 }
 
@@ -143,6 +156,7 @@ async function resumeCommand(reference: string | undefined, flags: RunFlags): Pr
     reportResult(
       await runTask(store, exact.id, {
         ...flags,
+        mode: undefined,
         resume: true,
         maxSteps: maxSteps(flags.maxSteps),
       }),
@@ -151,6 +165,7 @@ async function resumeCommand(reference: string | undefined, flags: RunFlags): Pr
 }
 
 async function launchChat(flags: RunFlags): Promise<void> {
+  const mode = resolveAgentMode(flags.mode);
   if (!isInteractive()) {
     throw new Error(
       'The chat REPL requires an interactive terminal. Use "comicode run" for scripts.',
@@ -162,7 +177,7 @@ async function launchChat(flags: RunFlags): Promise<void> {
     let task: TaskRecord | null = null;
     console.log('');
     console.log(
-      `${bold('COMICODE')} ${dim('chat · /exit to quit, /new to start a fresh task, /tasks to list')}`,
+      `${bold('COMICODE')} ${dim('chat · /exit to quit, /new to start a fresh task, /history to list past work')}`,
     );
     const request = await promptText('You', { required: true });
     if (!request.trim() || request.trim() === '/exit') return;
@@ -171,7 +186,7 @@ async function launchChat(flags: RunFlags): Promise<void> {
       profileId: target.profileId,
       modelId: target.modelId,
     });
-    let result = await runTask(store, task.id, { ...flags, maxSteps: maxSteps(flags.maxSteps) });
+    let result = await runTask(store, task.id, { ...flags, mode, maxSteps: maxSteps(flags.maxSteps) });
     while (result.status === 'completed') {
       const next = await promptText('You', { allowEmpty: true, defaultValue: '/exit' });
       const trimmed = next.trim();
@@ -183,7 +198,7 @@ async function launchChat(flags: RunFlags): Promise<void> {
           profileId: target.profileId,
           modelId: target.modelId,
         });
-      } else if (trimmed === '/tasks') {
+      } else if (trimmed === '/tasks' || trimmed === '/history') {
         for (const entry of store.listTasks({ projectPath: cwd, limit: 10 })) {
           console.log(
             dim(`  ${entry.id.slice(0, 8)}  ${entry.status}  ${entry.userRequest.slice(0, 60)}`),
@@ -199,7 +214,7 @@ async function launchChat(flags: RunFlags): Promise<void> {
           completedAt: null,
         });
       }
-      result = await runTask(store, task.id, { ...flags, maxSteps: maxSteps(flags.maxSteps) });
+      result = await runTask(store, task.id, { ...flags, mode, maxSteps: maxSteps(flags.maxSteps) });
     }
     if (result.status === 'paused') printResumeHint(result);
   });
@@ -220,6 +235,7 @@ export function buildProgram(): Command {
     .option('-p, --profile <profile>', 'provider profile to start with')
     .option('-m, --model <model>', 'model to start with (explicit selections are honored)')
     .option('-t, --type <type>', 'coding, reasoning, review, vision, or general', 'coding')
+    .option('--mode <mode>', 'agent mode: build, plan, debug, architect, review, test, docs, design, security, explain, team')
     .option('--max-steps <number>', 'maximum agent steps for this run')
     .option('--json', 'emit a single JSON result instead of streaming output')
     .action(async (parts: string[], flags: RunFlags) => {
@@ -232,6 +248,7 @@ export function buildProgram(): Command {
     .option('-p, --profile <profile>', 'provider profile to start with')
     .option('-m, --model <model>', 'model to start with (explicit selections are honored)')
     .option('-t, --type <type>', 'coding, reasoning, review, vision, or general', 'coding')
+    .option('--mode <mode>', 'agent mode: build, plan, debug, architect, review, test, docs, design, security, explain, team')
     .option('--max-steps <number>', 'maximum agent steps for this run')
     .option('--json', 'emit a single JSON result instead of streaming output')
     .action(async (parts: string[], flags: RunFlags) => {
@@ -319,6 +336,7 @@ export function buildProgram(): Command {
     .option('-p, --profile <profile>', 'provider profile to start with')
     .option('-m, --model <model>', 'model to start with')
     .option('-t, --type <type>', 'coding, reasoning, review, vision, or general', 'coding')
+    .option('--mode <mode>', 'agent mode: build, plan, debug, architect, review, test, docs, design, security, explain, team')
     .option('--max-steps <number>', 'maximum agent steps per turn')
     .action(async (flags: RunFlags) => {
       await launchChat(flags);
@@ -334,6 +352,8 @@ export function buildProgram(): Command {
   registerUsageCommands(program);
   registerSettingsCommands(program);
   registerSystemCommands(program);
+  registerPluginCommand(program);
+  registerServeCommand(program);
 
   program
     .command('bench')

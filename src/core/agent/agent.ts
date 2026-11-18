@@ -20,6 +20,13 @@ import { candidateKey } from '../routing/engine.js';
 import { ToolExecutor } from './tools/executor.js';
 import { ContextBuilder, estimateTokens, type ContextCache, type BuiltContext } from './context.js';
 import { Collaborator, planFromCollaborator } from './collaboration.js';
+import {
+  buildHandoffNote,
+  buildStagePrompt,
+  selectTeamRoles,
+  type TeamRole,
+} from './teams.js';
+import { getPluginSkills, loadPlugins } from '../plugins/index.js';
 import { createProfileContext } from '../providers/service.js';
 import { createAdapter } from '../providers/registry.js';
 import type { AdapterContext, ProviderAdapter } from '../providers/adapter.js';
@@ -181,6 +188,9 @@ export class CodingAgent {
   private readonly mode: AgentMode;
   private readonly skills: AgentSkill[];
   private readonly effort: EffortProfile | null;
+  private readonly routingOverrides?: Partial<RoutingPolicy>;
+  /** User messages injected while the loop is running (live follow-ups). */
+  private readonly pendingInjections: string[] = [];
 
   constructor(options: CodingAgentOptions) {
     this.store = options.store;
@@ -213,6 +223,7 @@ export class CodingAgent {
       },
       set: (path, snapshot) => options.store.saveProjectSnapshot(path, snapshot),
     });
+    this.routingOverrides = options.routingOverrides;
     this.router = new Router(options.store, options.routingOverrides);
     this.adapterFactory = options.adapterFactory ?? ((profile) => createAdapter(profile));
     this.contextFactory =
@@ -222,12 +233,17 @@ export class CodingAgent {
     if (requestedMode === 'auto' && this.mode !== 'auto') {
       this.hooks.onNotice?.(`Auto mode selected ${this.mode} for this task.`);
     }
-    this.skills = loadSkills(task.projectPath);
+    const installedPlugins = loadPlugins({
+      cwd: task.projectPath,
+      onWarning: (message) => this.hooks.onNotice?.(message),
+    });
+    this.skills = [...loadSkills(task.projectPath), ...getPluginSkills(installedPlugins)];
     this.executor = new ToolExecutor({
       root: task.projectPath,
       settings: this.settings,
       authority: this.authority,
       inspector: this.inspector,
+      store: options.store,
       confirm: this.hooks.confirm,
       mode: this.mode,
       skills: this.skills,
@@ -308,7 +324,25 @@ export class CodingAgent {
     }
   }
 
+  /**
+   * Inject a follow-up instruction while this agent is already running. The
+   * message is persisted to the task thread, so the NEXT model step sees it
+   * through the normal context builder — no special prompt plumbing needed.
+   */
+  injectMessage(content: string): void {
+    const text = content.trim();
+    if (!text || this.task.status === 'completed') return;
+    this.store.appendMessage(this.task.id, {
+      role: 'user',
+      content: `[Live follow-up] ${text}`,
+    });
+    this.pendingInjections.push(text);
+  }
+
   async run(options: AgentRunOptions = {}): Promise<AgentResult> {
+    // Team mode runs a full virtual organization as a sequence of specialized
+    // stages, each reusing the normal agent loop with its own mode and model.
+    if (this.mode === 'team') return this.runTeam(options);
     const maxSteps = Math.max(1, Math.min(options.maxSteps ?? this.settings.agent.maxSteps, 200));
     try {
       await this.prepare(options);
@@ -322,6 +356,12 @@ export class CodingAgent {
       while (this.steps < maxSteps) {
         if (options.signal?.aborted) {
           return this.halt('paused', 'Cancelled by user. Progress saved.');
+        }
+        if (this.pendingInjections.length > 0) {
+          const latest = this.pendingInjections[this.pendingInjections.length - 1]!;
+          this.pendingInjections.length = 0;
+          this.hooks.onNotice?.(`Live follow-up received — applying it now: ${latest.slice(0, 120)}`);
+          emptyResponses = 0;
         }
         const candidate = await this.ensureCandidate();
         if (!candidate) {
@@ -447,6 +487,178 @@ export class CodingAgent {
       const message = redactSecrets(error instanceof Error ? error.message : String(error));
       return this.halt('failed', `Agent stopped with an unexpected error: ${message}`);
     }
+  }
+
+  // ------------------------------------------------------------------- team
+  /**
+   * Run the virtual software organization. Every stage is a complete
+   * `CodingAgent` run with its own mode and capability-chosen model, on the
+   * SAME task thread — so each member inherits the full transcript, plan,
+   * checkpoints, quota failover and context compaction of its predecessor.
+   */
+  private async runTeam(options: AgentRunOptions): Promise<AgentResult> {
+    const originalRequest = this.task.userRequest || this.task.summary || '';
+    const roles = selectTeamRoles(originalRequest, this.mode);
+    const handoffs: string[] = [];
+    const aggregate = { inputTokens: 0, outputTokens: 0 };
+    let steps = 0;
+    let lastResult: AgentResult | null = null;
+
+    this.hooks.onNotice?.(
+      `ComiCode Company assembled (${roles.length} departments): ${roles.map((role) => role.label).join(' → ')}.`,
+    );
+
+    for (let index = 0; index < roles.length; index += 1) {
+      if (options.signal?.aborted) {
+        return this.halt('paused', 'Cancelled by user. Progress saved.');
+      }
+      const role: TeamRole = roles[index]!;
+
+      // Capability-aware model selection across every connected API.
+      let stageModel: string | null = null;
+      if (role.autoModel) {
+        const picked = this.router.select({
+          taskId: this.task.id,
+          taskType: role.taskType,
+          profileId: null,
+          modelId: null,
+          excludeKeys: [...this.exclude],
+          excludedProfileIds: [...this.excludedProfiles],
+          requirements: {
+            tools: role.mode !== 'explain' && role.mode !== 'plan',
+            vision: role.taskType === 'vision',
+          },
+        });
+        if (picked.decision) {
+          const { profile, model } = picked.decision.candidate;
+          stageModel = `${profile.name}/${model.modelId}`;
+          this.task = this.store.updateTask(this.task.id, {
+            currentProfileId: profile.id,
+            currentModelId: model.modelId,
+            taskType: role.taskType,
+          });
+        }
+      }
+
+      // A previous stage ends with status=completed; reopen the task for this one.
+      this.store.updateTask(this.task.id, {
+        status: 'running',
+        phase: 'inspect',
+        error: null,
+        completedAt: null,
+      });
+      const stagePrompt = buildStagePrompt(role, originalRequest, handoffs);
+      this.store.appendMessage(this.task.id, { role: 'user', content: stagePrompt });
+
+      this.hooks.onStage?.({
+        index: index + 1,
+        total: roles.length,
+        roleId: role.id,
+        label: role.label,
+        department: role.department,
+        icon: role.icon,
+        status: 'start',
+        summary: null,
+        model: stageModel,
+      });
+      this.hooks.onNotice?.(
+        `[${index + 1}/${roles.length}] ${role.icon} ${role.label} · ${role.department}` +
+          (stageModel ? ` · ${stageModel}` : '') +
+          ` — ${role.capabilityHint}`,
+      );
+
+      let stageSummary = '';
+      const isLast = index === roles.length - 1;
+      try {
+        const stageAgent = new CodingAgent({
+          store: this.store,
+          taskId: this.task.id,
+          authority: this.authority,
+          settings: this.settings,
+          mode: role.mode,
+          routingOverrides: this.routingOverrides,
+          adapterFactory: this.adapterFactory,
+          contextFactory: this.contextFactory,
+          hooks: {
+            ...this.hooks,
+            onStage: undefined,
+            onTaskComplete: (summary) => {
+              stageSummary = summary ?? '';
+              if (isLast) this.hooks.onTaskComplete?.(summary);
+            },
+          },
+        });
+        const result = await stageAgent.run(options);
+        lastResult = result;
+        aggregate.inputTokens += result.usage.inputTokens;
+        aggregate.outputTokens += result.usage.outputTokens;
+        steps += result.steps;
+
+        if (result.status !== 'completed') {
+          this.hooks.onStage?.({
+            index: index + 1,
+            total: roles.length,
+            roleId: role.id,
+            label: role.label,
+            department: role.department,
+            icon: role.icon,
+            status: 'error',
+            summary: result.pauseReason ?? result.summary,
+            model: stageModel,
+          });
+          return {
+            ...result,
+            usage: aggregate,
+            steps,
+          };
+        }
+
+        const latest = this.store.getTask(this.task.id);
+        const note = buildHandoffNote(
+          role,
+          stageSummary || result.summary || '',
+          latest?.changedFiles ?? [],
+        );
+        handoffs.push(note);
+        this.store.appendMessage(this.task.id, { role: 'system', content: note });
+        this.hooks.onStage?.({
+          index: index + 1,
+          total: roles.length,
+          roleId: role.id,
+          label: role.label,
+          department: role.department,
+          icon: role.icon,
+          status: 'done',
+          summary: stageSummary || result.summary,
+          model: stageModel,
+        });
+      } catch (error) {
+        const message = redactSecrets(error instanceof Error ? error.message : String(error));
+        logger.warn(`Team stage ${role.id} failed: ${message}`);
+        this.hooks.onStage?.({
+          index: index + 1,
+          total: roles.length,
+          roleId: role.id,
+          label: role.label,
+          department: role.department,
+          icon: role.icon,
+          status: 'error',
+          summary: message,
+          model: stageModel,
+        });
+        return this.halt('failed', `Team stage ${role.label} failed: ${message}`);
+      }
+    }
+
+    return {
+      status: 'completed',
+      taskId: this.task.id,
+      summary: lastResult?.summary ?? null,
+      pauseReason: null,
+      finalResponse: lastResult?.finalResponse ?? null,
+      usage: aggregate,
+      steps,
+    };
   }
 
   // ------------------------------------------------------------------ prepare

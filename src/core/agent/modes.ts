@@ -14,7 +14,9 @@ export type AgentMode =
   | 'docs'
   | 'design'
   | 'security'
-  | 'explain';
+  | 'explain'
+  /** Full virtual software company: research → architecture → engineering → security → QA → review → docs (→ marketing). */
+  | 'team';
 
 export interface AgentModeSpec {
   id: AgentMode;
@@ -180,6 +182,18 @@ You are in DESIGN MODE. Focus on visual quality, layout, and interaction.
 - Keep the existing stack and conventions; improve composition, spacing, typography, and states.
 - Handle loading, empty, error, and responsive states — not just the happy path.
 - Verify with build/lint; if a dev server or screenshot check is possible, use it.`,
+  },
+  team: {
+    id: 'team',
+    label: 'team',
+    description:
+      'Full virtual software company: research, product, architecture, engineering, security, QA, review, docs and marketing — with step-by-step handoffs.',
+    tools: 'all',
+    promptAddendum: `# Agent mode: team
+The ComiCode Company orchestrates specialized departments for this task.
+Each stage is performed by a dedicated team member with its own model, and every
+member receives the exact handoff note from the previous one. Follow whatever
+stage assignment you are given in this conversation.`,
   },
 };
 

@@ -1,7 +1,9 @@
 # Dependencies
 node_modules/
 
-# Build output (dist/ is committed so git-based installs work without devDeps)
+# Build output (root dist/ is committed so git-based installs work without devDeps;
+# web/dist is generated locally from the root install)
+web/dist/
 coverage/
 *.tsbuildinfo
 *.tgz

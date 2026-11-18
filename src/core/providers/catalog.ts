@@ -162,6 +162,41 @@ function isLikelyVision(modelId: string): boolean {
   return /vision|gemini|gpt-4o|gpt-4\.1|claude|llava|pixtral|qwen.*vl/i.test(modelId);
 }
 
+/**
+ * Patterns that identify models with image generation capability.
+ * Keep this broad enough for discovery but let callers distinguish image-only
+ * generators from multimodal chat models that can also emit images.
+ */
+export const IMAGE_MODEL_PATTERNS: RegExp[] = [
+  /imagen/i,
+  /\bdall[- ]?e\b/i,
+  /\bgpt-image\b/i,
+  /image-generation|image_preview|image-preview/i,
+  /\bflux\b/i,
+  /\bstable[- ]?diffusion\b/i,
+  /\bmidjourney\b/i,
+  /recraft/i,
+  /gemini.*image|image.*gemini/i,
+  /flash-image/i,
+];
+
+/** True when the model id/name indicates image generation capability. */
+export function isImageModel(id: string, name?: string): boolean {
+  const haystack = `${id} ${name ?? ''}`.trim();
+  return IMAGE_MODEL_PATTERNS.some((pattern) => pattern.test(haystack));
+}
+
+/**
+ * Image-generation-only models that should not be treated as general chat models.
+ * Some Gemini "image" preview models are multimodal/chat-capable; keep them eligible
+ * for chat discovery unless a stronger signal says otherwise.
+ */
+export function isImageOnlyModel(id: string, name?: string): boolean {
+  const haystack = `${id} ${name ?? ''}`.trim();
+  if (/gemini.*flash.*image|gemini-2\.0-flash.*image-generation/i.test(haystack)) return false;
+  return /(^|[/:])imagen/i.test(haystack) || /\bdall[- ]?e\b/i.test(haystack) || /\bgpt-image-1\b/i.test(haystack);
+}
+
 export interface AccessHints {
   /** Endpoint URL, used to recognise local and known free-tier hosts. */
   baseUrl?: string | null;
@@ -313,6 +348,7 @@ export function enrichDiscoveredModel(
 ): DiscoveredModel {
   const known = KNOWN_MODELS[`${providerId}:${discovered.modelId}`];
   const access = classifyDiscoveredAccess(providerId, discovered, hints);
+  const imageCapable = isImageModel(discovered.modelId, discovered.displayName);
   return {
     ...discovered,
     displayName: known?.displayName ?? discovered.displayName ?? discovered.modelId,
@@ -337,6 +373,10 @@ export function enrichDiscoveredModel(
       access: known?.access ?? access.access,
       accessSource: known?.access ? 'provider-documentation' : access.source,
       accessNotes: known?.accessNotes ?? access.notes,
+      supportsImageGeneration: imageCapable || discovered.metadata?.supportsImageGeneration === true,
+      imageGenerationOnly:
+        (imageCapable && isImageOnlyModel(discovered.modelId, discovered.displayName)) ||
+        discovered.metadata?.imageGenerationOnly === true,
     },
   };
 }

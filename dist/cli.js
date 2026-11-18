@@ -165,7 +165,7 @@ var init_logger = __esm({
 import { spawn } from "child_process";
 function runProcess(command, args, options = {}) {
   const { cwd, env, timeoutMs = 15e3, maxOutputBytes = 256e3, stdin: stdin3, signal } = options;
-  return new Promise((resolve6) => {
+  return new Promise((resolve8) => {
     let settled = false;
     let stdout3 = "";
     let stderr = "";
@@ -175,7 +175,7 @@ function runProcess(command, args, options = {}) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve6({ code, stdout: stdout3, stderr, timedOut, spawnError });
+      resolve8({ code, stdout: stdout3, stderr, timedOut, spawnError });
     };
     let child;
     try {
@@ -188,7 +188,7 @@ function runProcess(command, args, options = {}) {
       });
     } catch (error) {
       spawnError = error instanceof Error ? error.message : String(error);
-      resolve6({ code: null, stdout: "", stderr: "", timedOut: false, spawnError });
+      resolve8({ code: null, stdout: "", stderr: "", timedOut: false, spawnError });
       return;
     }
     const timer = setTimeout(
@@ -1948,6 +1948,15 @@ function inferReasoningSuitability(modelId) {
 function isLikelyVision(modelId) {
   return /vision|gemini|gpt-4o|gpt-4\.1|claude|llava|pixtral|qwen.*vl/i.test(modelId);
 }
+function isImageModel(id, name) {
+  const haystack = `${id} ${name ?? ""}`.trim();
+  return IMAGE_MODEL_PATTERNS.some((pattern) => pattern.test(haystack));
+}
+function isImageOnlyModel(id, name) {
+  const haystack = `${id} ${name ?? ""}`.trim();
+  if (/gemini.*flash.*image|gemini-2\.0-flash.*image-generation/i.test(haystack)) return false;
+  return /(^|[/:])imagen/i.test(haystack) || /\bdall[- ]?e\b/i.test(haystack) || /\bgpt-image-1\b/i.test(haystack);
+}
 function hostnameOf(baseUrl) {
   if (!baseUrl) return null;
   try {
@@ -2025,6 +2034,7 @@ function classifyDiscoveredAccess(providerId, model, hints = {}) {
 function enrichDiscoveredModel(providerId, discovered, hints = {}) {
   const known = KNOWN_MODELS[`${providerId}:${discovered.modelId}`];
   const access = classifyDiscoveredAccess(providerId, discovered, hints);
+  const imageCapable = isImageModel(discovered.modelId, discovered.displayName);
   return {
     ...discovered,
     displayName: known?.displayName ?? discovered.displayName ?? discovered.modelId,
@@ -2041,7 +2051,9 @@ function enrichDiscoveredModel(providerId, discovered, hints = {}) {
       reasoningSuitability: discovered.metadata?.reasoningSuitability ?? known?.reasoningSuitability ?? inferReasoningSuitability(discovered.modelId),
       access: known?.access ?? access.access,
       accessSource: known?.access ? "provider-documentation" : access.source,
-      accessNotes: known?.accessNotes ?? access.notes
+      accessNotes: known?.accessNotes ?? access.notes,
+      supportsImageGeneration: imageCapable || discovered.metadata?.supportsImageGeneration === true,
+      imageGenerationOnly: imageCapable && isImageOnlyModel(discovered.modelId, discovered.displayName) || discovered.metadata?.imageGenerationOnly === true
     }
   };
 }
@@ -2093,7 +2105,7 @@ function isFreeAccess(access) {
 function isPaidAccess(access) {
   return access === "paid" || access === "user-paid";
 }
-var FREE_TIER_NOTE, KNOWN_MODELS, FREE_HOST_PATTERNS, PAID_HOST_PATTERNS, ACCESS_LABELS;
+var FREE_TIER_NOTE, KNOWN_MODELS, IMAGE_MODEL_PATTERNS, FREE_HOST_PATTERNS, PAID_HOST_PATTERNS, ACCESS_LABELS;
 var init_catalog = __esm({
   "src/core/providers/catalog.ts"() {
     "use strict";
@@ -2215,6 +2227,18 @@ var init_catalog = __esm({
         accessNotes: FREE_TIER_NOTE
       }
     };
+    IMAGE_MODEL_PATTERNS = [
+      /imagen/i,
+      /\bdall[- ]?e\b/i,
+      /\bgpt-image\b/i,
+      /image-generation|image_preview|image-preview/i,
+      /\bflux\b/i,
+      /\bstable[- ]?diffusion\b/i,
+      /\bmidjourney\b/i,
+      /recraft/i,
+      /gemini.*image|image.*gemini/i,
+      /flash-image/i
+    ];
     FREE_HOST_PATTERNS = [
       /^(?:localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[::1\])$/i,
       /(?:^|\.)models\.github\.ai$/i,
@@ -3189,8 +3213,8 @@ async function promptText(question, options = {}) {
   });
   try {
     for (; ; ) {
-      const answer = await new Promise((resolve6) => {
-        rl.question(`${bold("?")} ${question}${suffix} `, resolve6);
+      const answer = await new Promise((resolve8) => {
+        rl.question(`${bold("?")} ${question}${suffix} `, resolve8);
       });
       const value = answer.trim() || options.defaultValue || "";
       if (!value && options.allowEmpty) return "";
@@ -3212,7 +3236,7 @@ async function promptSecret(question) {
   const wasRaw = stdin.isRaw;
   stdin.setRawMode?.(true);
   stdin.resume();
-  return new Promise((resolve6, reject) => {
+  return new Promise((resolve8, reject) => {
     let value = "";
     let settled = false;
     const cleanup = () => {
@@ -3225,9 +3249,9 @@ async function promptSecret(question) {
     };
     const finish = () => {
       cleanup();
-      resolve6(value);
+      resolve8(value);
     };
-    const fail = (error) => {
+    const fail2 = (error) => {
       cleanup();
       reject(error);
     };
@@ -3236,7 +3260,7 @@ async function promptSecret(question) {
       for (const char of text) {
         if (char === "") {
           stdout.write(dim(" (cancelled)"));
-          fail(new Error("Cancelled."));
+          fail2(new Error("Cancelled."));
           return;
         }
         if (char === "\r" || char === "\n") {
@@ -5165,6 +5189,17 @@ You are in DESIGN MODE. Focus on visual quality, layout, and interaction.
 - Keep the existing stack and conventions; improve composition, spacing, typography, and states.
 - Handle loading, empty, error, and responsive states \u2014 not just the happy path.
 - Verify with build/lint; if a dev server or screenshot check is possible, use it.`
+      },
+      team: {
+        id: "team",
+        label: "team",
+        description: "Full virtual software company: research, product, architecture, engineering, security, QA, review, docs and marketing \u2014 with step-by-step handoffs.",
+        tools: "all",
+        promptAddendum: `# Agent mode: team
+The ComiCode Company orchestrates specialized departments for this task.
+Each stage is performed by a dedicated team member with its own model, and every
+member receives the exact handoff note from the previous one. Follow whatever
+stage assignment you are given in this conversation.`
       }
     };
     AGENT_MODE_IDS = Object.keys(AGENT_MODES);
@@ -6665,7 +6700,7 @@ function runShell(command, options) {
   const timeoutMs = Math.min(Math.max(options.timeoutMs ?? 12e4, 1e3), 6e5);
   const maxOutputBytes = Math.min(Math.max(options.maxOutputBytes ?? 6e4, 2e3), 5e5);
   const started = Date.now();
-  return new Promise((resolve6) => {
+  return new Promise((resolve8) => {
     let stdout3 = "";
     let stderr = "";
     let timedOut = false;
@@ -6685,7 +6720,7 @@ function runShell(command, options) {
       clearTimeout(timer);
       const out = truncate2(stdout3, maxOutputBytes);
       const err = truncate2(stderr, Math.floor(maxOutputBytes * 0.5));
-      resolve6({
+      resolve8({
         command,
         code,
         stdout: out.text,
@@ -6800,11 +6835,1011 @@ var init_shell = __esm({
   }
 });
 
+// src/core/providers/image.ts
+import { mkdir, writeFile } from "fs/promises";
+import { extname as extname3, join as join7 } from "path";
+function isImageCapableModel(model) {
+  const meta = model.metadata ?? {};
+  if (meta.supportsImageGeneration === true) return true;
+  const id = `${model.modelId} ${model.displayName}`.toLowerCase();
+  return /imagen|dall-e|gpt-image|image-generation|flash-image|gemini.*image|image.*preview|flux|stable-diffusion/.test(
+    id
+  );
+}
+function pickPreferredImageModel(models) {
+  const candidates = models.filter((m) => isImageCapableModel(m));
+  if (candidates.length === 0) return null;
+  const score = (m) => {
+    let s = 0;
+    if (m.available) s += 10;
+    const id = m.modelId.toLowerCase();
+    if (/flash-image|gpt-image|image-generation/.test(id)) s += 5;
+    if (/gemini-2\.5/.test(id)) s += 3;
+    if (/dall-e-3/.test(id)) s += 2;
+    if (/imagen/.test(id)) s += 1;
+    s += Math.min(3, (m.codingSuitability ?? 0) / 2);
+    return s;
+  };
+  return [...candidates].sort((a, b) => score(b) - score(a))[0] ?? null;
+}
+function modelBelongsToProfile(model, profile) {
+  if (model.providerId !== profile.providerId) return false;
+  if (model.profileId) return model.profileId === profile.id;
+  return true;
+}
+async function findImageCapableModel(ctx, preferredProfileId) {
+  const profiles = ctx.store.listProfiles().filter((p) => p.enabled);
+  const allModels = ctx.store.listModels();
+  const resolveByIds = (profileId, modelId) => {
+    if (!profileId && !modelId) return null;
+    const profile = profileId ? profiles.find((p) => p.id === profileId) ?? ctx.store.getProfile(profileId) : null;
+    if (modelId) {
+      const exact = allModels.filter((m) => m.modelId === modelId || m.id === modelId);
+      for (const model of exact) {
+        if (!isImageCapableModel(model)) continue;
+        const owner = profile && modelBelongsToProfile(model, profile) ? profile : owningProfileForModel(profiles, model) ?? (profile ?? null);
+        if (owner && owner.enabled) return { profile: owner, model, profileId: owner.id };
+      }
+    }
+    if (profile && profile.enabled) {
+      const scoped = ctx.store.listModels(profile.providerId, profile.providerId === "custom" ? profile.id : void 0).filter((m) => modelBelongsToProfile(m, profile));
+      const picked = pickPreferredImageModel(scoped);
+      if (picked) return { profile, model: picked, profileId: profile.id };
+    }
+    return null;
+  };
+  const explicit = resolveByIds(preferredProfileId, null);
+  if (explicit) return explicit;
+  const selectedProfileId = ctx.store.getSelectedProfileId();
+  const selectedModelId = ctx.store.getSelectedModelId();
+  if (selectedModelId) {
+    const selectedModel = allModels.find((m) => m.id === selectedModelId || m.modelId === selectedModelId);
+    if (selectedModel && isImageCapableModel(selectedModel)) {
+      const owner = owningProfileForModel(profiles, selectedModel) ?? (selectedProfileId ? profiles.find((p) => p.id === selectedProfileId) ?? null : null);
+      if (owner) return { profile: owner, model: selectedModel, profileId: owner.id };
+    }
+  }
+  const selectedProfile = resolveByIds(selectedProfileId, null);
+  if (selectedProfile) return selectedProfile;
+  const ranked = [];
+  for (const profile of profiles) {
+    const models = ctx.store.listModels(profile.providerId, profile.providerId === "custom" ? profile.id : void 0).filter((m) => modelBelongsToProfile(m, profile));
+    const picked = pickPreferredImageModel(models);
+    if (picked) ranked.push({ profile, model: picked, profileId: profile.id });
+  }
+  ranked.sort((a, b) => Number(b.model.available) - Number(a.model.available));
+  return ranked[0] ?? null;
+}
+function extensionForMime(mime) {
+  const m = mime.toLowerCase();
+  if (m.includes("jpeg") || m.includes("jpg")) return ".jpg";
+  if (m.includes("webp")) return ".webp";
+  if (m.includes("gif")) return ".gif";
+  if (m.includes("bmp")) return ".bmp";
+  return ".png";
+}
+async function saveImageToDisk(cwd, image, index) {
+  const dir = join7(cwd, ".comicode", "images");
+  await mkdir(dir, { recursive: true });
+  const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
+  const ext = extensionForMime(image.mimeType) || extname3(image.url ?? "") || ".png";
+  const file = join7(dir, `${stamp}-${index}${ext}`);
+  const buffer = Buffer.from(image.data, "base64");
+  await writeFile(file, buffer);
+  return file.replace(/\\/g, "/");
+}
+function buildGeminiHeaders(apiKey, extra = {}) {
+  const headers = {
+    "content-type": "application/json",
+    accept: "application/json",
+    ...sanitizeExtraHeaders(extra)
+  };
+  const key = apiKey.trim();
+  if (key) {
+    registerSecret(key);
+    headers["x-goog-api-key"] = key;
+  }
+  return headers;
+}
+async function fetchJsonChecked(url, init, providerId, timeoutMs = 18e4, signal) {
+  let response;
+  try {
+    response = await fetch(url, { ...init, signal: withTimeout(signal, timeoutMs) });
+  } catch (error) {
+    throw classifyThrown(error, providerId);
+  }
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw classifyProviderError({
+      providerId,
+      status: response.status,
+      headers: response.headers,
+      body
+    });
+  }
+  const text = await response.text();
+  if (!text.trim()) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new ProviderError({
+      category: "unknown",
+      providerId,
+      message: `Provider returned non-JSON response: ${text.slice(0, 300)}`,
+      retryable: false
+    });
+  }
+}
+function extractGeminiImages(payload) {
+  const record = asRecord(payload);
+  const candidates = Array.isArray(record?.candidates) ? record.candidates : [];
+  const images = [];
+  for (const candidate of candidates) {
+    const content = asRecord(asRecord(candidate)?.content);
+    const parts = Array.isArray(content?.parts) ? content.parts : [];
+    for (const part of parts) {
+      const p = asRecord(part);
+      if (!p) continue;
+      const inline = asRecord(p.inlineData ?? p.inline_data);
+      if (inline && typeof inline.data === "string") {
+        images.push({
+          data: inline.data,
+          mimeType: typeof inline.mimeType === "string" ? inline.mimeType : typeof inline.mime_type === "string" ? inline.mime_type : "image/png"
+        });
+      }
+    }
+  }
+  const predictions = Array.isArray(record?.predictions) ? record.predictions : [];
+  for (const pred of predictions) {
+    const p = asRecord(pred);
+    if (!p) continue;
+    const data = typeof p.bytesBase64Encoded === "string" ? p.bytesBase64Encoded : typeof p.bytes_base64_encoded === "string" ? p.bytes_base64_encoded : typeof p.image === "string" ? p.image : null;
+    if (data) {
+      images.push({
+        data,
+        mimeType: typeof p.mimeType === "string" ? p.mimeType : typeof p.mime_type === "string" ? p.mime_type : "image/png"
+      });
+    }
+  }
+  return images;
+}
+async function generateWithGemini(profile, apiKey, modelId, input, signal) {
+  const base = normalizeBaseUrl(profile.baseUrl || getProviderDefinition(profile.providerId).defaultBaseUrl);
+  if (!base) {
+    throw new ProviderError({
+      category: "invalid_request",
+      providerId: profile.providerId,
+      message: "No base URL configured for Gemini image generation.",
+      retryable: false
+    });
+  }
+  const config = readEndpointConfig(profile);
+  const stripped = modelId.replace(/^models\//, "");
+  const isImagen = /^imagen/i.test(stripped);
+  const url = isImagen ? `${base}/models/${encodeURIComponent(stripped)}:predict` : `${base}/models/${encodeURIComponent(stripped)}:generateContent`;
+  const body = isImagen ? {
+    instances: [{ prompt: input.prompt }],
+    parameters: {
+      sampleCount: Math.max(1, Math.min(input.n ?? 1, 4)),
+      ...input.size ? { aspectRatio: input.size } : {}
+    }
+  } : {
+    contents: [{ role: "user", parts: [{ text: input.prompt }] }],
+    generationConfig: {
+      responseModalities: ["TEXT", "IMAGE"],
+      ...input.n && input.n > 1 ? { candidateCount: Math.max(1, Math.min(input.n, 4)) } : {}
+    }
+  };
+  const payload = await fetchJsonChecked(
+    url,
+    { method: "POST", headers: buildGeminiHeaders(apiKey, config.extraHeaders), body: JSON.stringify(body) },
+    profile.providerId,
+    18e4,
+    signal
+  );
+  const images = extractGeminiImages(payload);
+  if (images.length === 0) {
+    const preview = JSON.stringify(payload).slice(0, 500);
+    throw new ProviderError({
+      category: "unknown",
+      providerId: profile.providerId,
+      message: `Gemini image response contained no image data. Response preview: ${preview}`,
+      retryable: false
+    });
+  }
+  return images;
+}
+function buildOpenAICompatibleHeaders(profile, apiKey) {
+  const config = readEndpointConfig(profile);
+  const headers = {
+    "content-type": "application/json",
+    accept: "application/json",
+    ...sanitizeExtraHeaders(config.extraHeaders)
+  };
+  const key = apiKey.trim();
+  if (key) {
+    registerSecret(key);
+    const headerName = config.authHeader || "Authorization";
+    const prefix = config.authPrefix ?? "Bearer ";
+    headers[headerName] = `${prefix}${key}`;
+  } else if (!config.allowNoAuth && profile.providerId !== "custom") {
+    throw new ProviderError({
+      category: "invalid_api_key",
+      providerId: profile.providerId,
+      message: `No API key configured for profile "${profile.name}".`,
+      retryable: false
+    });
+  }
+  return headers;
+}
+async function fetchBinaryAsBase64(url) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Failed to download image URL (${response.status})`);
+  const mimeType = response.headers.get("content-type") || "image/png";
+  const arrayBuffer = await response.arrayBuffer();
+  return { data: Buffer.from(arrayBuffer).toString("base64"), mimeType };
+}
+async function generateWithOpenAICompatible(profile, apiKey, modelId, input, signal) {
+  const base = normalizeBaseUrl(profile.baseUrl || getProviderDefinition(profile.providerId).defaultBaseUrl);
+  if (!base) {
+    throw new ProviderError({
+      category: "invalid_request",
+      providerId: profile.providerId,
+      message: "No base URL configured for image generation.",
+      retryable: false
+    });
+  }
+  const url = joinUrl(base, "/images/generations");
+  const body = {
+    model: modelId,
+    prompt: input.prompt,
+    n: Math.max(1, Math.min(input.n ?? 1, 4))
+  };
+  if (input.size) body.size = input.size;
+  body.response_format = "b64_json";
+  const payload = await fetchJsonChecked(
+    url,
+    { method: "POST", headers: buildOpenAICompatibleHeaders(profile, apiKey), body: JSON.stringify(body) },
+    profile.providerId,
+    18e4,
+    signal
+  );
+  const record = asRecord(payload);
+  const data = Array.isArray(record?.data) ? record.data : [];
+  const images = [];
+  for (const entry of data) {
+    const item = asRecord(entry);
+    if (!item) continue;
+    if (typeof item.b64_json === "string" && item.b64_json) {
+      images.push({ data: item.b64_json, mimeType: "image/png" });
+      continue;
+    }
+    if (typeof item.url === "string" && item.url) {
+      try {
+        const downloaded = await fetchBinaryAsBase64(item.url);
+        images.push({ ...downloaded, url: item.url });
+      } catch {
+        images.push({ data: "", mimeType: "image/png", url: item.url });
+      }
+    }
+  }
+  if (images.length === 0) {
+    const preview = JSON.stringify(payload).slice(0, 500);
+    throw new ProviderError({
+      category: "unknown",
+      providerId: profile.providerId,
+      message: `Image generation response contained no image data. Response preview: ${preview}`,
+      retryable: false
+    });
+  }
+  return images;
+}
+async function generateImage(ctx, input) {
+  const prompt = (input.prompt ?? "").trim();
+  if (!prompt) {
+    throw new Error("Image prompt is required.");
+  }
+  let profile = null;
+  let modelId = input.model?.trim() || "";
+  if (input.profileId) profile = ctx.store.getProfile(input.profileId);
+  if (profile && !modelId) {
+    const picked = await findImageCapableModel(ctx, profile.id);
+    if (picked && picked.profile.id === profile.id) modelId = picked.model.modelId;
+  }
+  if (!profile || !modelId) {
+    const candidate = await findImageCapableModel(ctx, input.profileId);
+    if (!candidate) {
+      throw new Error(
+        "No image-capable model/profile found. Connect a provider with an image model (e.g. Gemini image, gpt-image-1, dall-e-3) and refresh models."
+      );
+    }
+    profile = profile ?? candidate.profile;
+    modelId = modelId || candidate.model.modelId;
+  }
+  const credential = await resolveProfileCredential(profile);
+  const apiKey = credential.apiKey;
+  const isGemini = profile.providerId === "gemini" || readEndpointConfig(profile).apiStyle === "gemini";
+  let images;
+  try {
+    images = isGemini ? await generateWithGemini(profile, apiKey, modelId, { ...input, prompt }) : await generateWithOpenAICompatible(profile, apiKey, modelId, { ...input, prompt });
+  } catch (error) {
+    throw classifyThrown(error, profile.providerId);
+  }
+  const savedPaths = [];
+  for (let i = 0; i < images.length; i += 1) {
+    const image = images[i];
+    if (image.data) {
+      try {
+        const saved = await saveImageToDisk(ctx.cwd, image, i + 1);
+        image.path = saved;
+        savedPaths.push(saved);
+      } catch {
+      }
+    } else if (image.url) {
+      savedPaths.push(image.url);
+    }
+  }
+  return {
+    images,
+    model: modelId,
+    profileId: profile.id,
+    savedPaths
+  };
+}
+var init_image = __esm({
+  "src/core/providers/image.ts"() {
+    "use strict";
+    init_definitions();
+    init_adapter();
+    init_errors();
+    init_profile_config();
+    init_service();
+    init_catalog();
+    init_redact();
+  }
+});
+
+// src/core/agent/tools/image-tool.ts
+function buildMinimalContext(input) {
+  if (input.appContext) return input.appContext;
+  if (input.store && input.settings) {
+    return {
+      store: input.store,
+      cwd: input.cwd,
+      settings: input.settings,
+      close: () => {
+      }
+    };
+  }
+  return null;
+}
+async function executeGenerateImageTool(args, context) {
+  const prompt = typeof args?.prompt === "string" ? args.prompt.trim() : "";
+  if (!prompt) {
+    return { ok: false, content: 'generate_image requires a non-empty "prompt" string.' };
+  }
+  const ctx = buildMinimalContext(context);
+  if (!ctx) {
+    return {
+      ok: false,
+      content: "Image generation is not wired with application context yet. Integration must pass AppContext/store+settings to the tool executor so profiles and credentials can be resolved."
+    };
+  }
+  try {
+    const result = await generateImage(ctx, {
+      prompt,
+      size: typeof args?.size === "string" ? args.size : void 0,
+      n: typeof args?.n === "number" && Number.isFinite(args.n) ? Math.max(1, Math.min(Math.floor(args.n), 4)) : void 0
+    });
+    const lines = [
+      `Generated ${result.images.length} image${result.images.length === 1 ? "" : "s"} with ${result.model} (${result.profileId}).`
+    ];
+    if (result.savedPaths.length) {
+      lines.push("Saved files:");
+      for (const p of result.savedPaths) lines.push(`- ${p}`);
+    } else {
+      lines.push("No files were saved to disk; provider returned image data/URLs only.");
+    }
+    return {
+      ok: true,
+      content: lines.join("\n"),
+      metadata: {
+        model: result.model,
+        profileId: result.profileId,
+        savedPaths: result.savedPaths,
+        imageCount: result.images.length
+      }
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, content: `Image generation failed: ${message}` };
+  }
+}
+var GENERATE_IMAGE_TOOL_NAME, generateImageToolDefinition;
+var init_image_tool = __esm({
+  "src/core/agent/tools/image-tool.ts"() {
+    "use strict";
+    init_image();
+    GENERATE_IMAGE_TOOL_NAME = "generate_image";
+    generateImageToolDefinition = {
+      name: GENERATE_IMAGE_TOOL_NAME,
+      description: "Generate an image, logo, illustration, diagram, or screenshot-style visual asset from a text prompt using a configured image-capable provider/model. Saves generated files under .comicode/images and returns their paths. Use this when the user asks you to create, draw, design, or generate an image or visual asset.",
+      parameters: {
+        type: "object",
+        properties: {
+          prompt: {
+            type: "string",
+            description: "Detailed description of the image to generate."
+          },
+          size: {
+            type: "string",
+            description: "Optional size/aspect hint (provider-specific), e.g. 1024x1024, 1024x1536, 1536x1024, or 16:9 for supported Gemini/Imagen models."
+          },
+          n: {
+            type: "integer",
+            description: "Optional number of images to generate (default 1, max 4 when supported)."
+          }
+        },
+        required: ["prompt"]
+      }
+    };
+  }
+});
+
+// src/core/ui/browser-verify.ts
+var browser_verify_exports = {};
+__export(browser_verify_exports, {
+  loadChromium: () => loadChromium,
+  verifyPage: () => verifyPage
+});
+import { mkdirSync as mkdirSync5 } from "fs";
+import { createRequire } from "module";
+import { join as join8 } from "path";
+async function loadChromium(resolveFrom) {
+  for (const name of ["playwright-core", "playwright"]) {
+    try {
+      const mod = await import(name);
+      if (mod.chromium) return mod.chromium;
+    } catch {
+    }
+    if (resolveFrom) {
+      try {
+        const require2 = createRequire(join8(resolveFrom, "package.json"));
+        const mod = require2(name);
+        const chromium = mod.chromium ?? mod.default?.chromium;
+        if (chromium) return chromium;
+      } catch {
+      }
+    }
+  }
+  return null;
+}
+async function verifyPage(url, options) {
+  const chromium = await loadChromium(options.resolveFrom);
+  if (!chromium) {
+    return {
+      ok: false,
+      message: "Playwright is not installed, so no browser verification ran. Install it in this project (`npm i -D playwright && npx playwright install chromium`) or set agent.uiVerifyCommand to your own screenshot/a11y script.",
+      consoleErrors: [],
+      failedRequests: []
+    };
+  }
+  const timeoutMs = options.timeoutMs ?? 3e4;
+  const consoleErrors = [];
+  const failedRequests = [];
+  let browser = null;
+  let lastLaunchError = null;
+  for (const launchOptions of [
+    { headless: true },
+    { headless: true, channel: "msedge" },
+    { headless: true, channel: "chrome" }
+  ]) {
+    try {
+      browser = await chromium.launch(launchOptions);
+      break;
+    } catch (error) {
+      lastLaunchError = error;
+    }
+  }
+  if (!browser) {
+    return {
+      ok: false,
+      message: `Could not launch a browser: ${lastLaunchError instanceof Error ? lastLaunchError.message : String(lastLaunchError)}. Install browsers with \`npx playwright install chromium\` or set agent.uiVerifyCommand.`,
+      consoleErrors: [],
+      failedRequests: []
+    };
+  }
+  try {
+    const page = await browser.newPage();
+    page.on("console", (msg) => {
+      if (msg.type() === "error") consoleErrors.push(String(msg.text()).slice(0, 300));
+    });
+    page.on("pageerror", (error) => {
+      consoleErrors.push(String(error).slice(0, 300));
+    });
+    page.on("requestfailed", (request) => {
+      const failure = request.failure()?.errorText ?? "failed";
+      failedRequests.push(`${request.url()} (${failure})`.slice(0, 300));
+    });
+    page.on("response", (response) => {
+      if (response.status() >= 400) {
+        failedRequests.push(`${response.status()} ${response.url()}`.slice(0, 300));
+      }
+    });
+    await page.goto(url, { waitUntil: "networkidle", timeout: timeoutMs });
+    if (options.waitMs) await page.waitForTimeout(options.waitMs);
+    mkdirSync5(options.outDir, { recursive: true });
+    const screenshotPath = join8(options.outDir, `verify-${Date.now()}.png`);
+    await page.screenshot({ path: screenshotPath, fullPage: false });
+    return {
+      ok: true,
+      message: `Browser verification completed for ${url}. Screenshot saved.`,
+      screenshotPath,
+      title: await page.title().catch(() => null) ?? void 0,
+      consoleErrors: consoleErrors.slice(0, 20),
+      failedRequests: failedRequests.slice(0, 20)
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: `Browser verification failed: ${error instanceof Error ? error.message : String(error)}`,
+      consoleErrors: consoleErrors.slice(0, 20),
+      failedRequests: failedRequests.slice(0, 20)
+    };
+  } finally {
+    await browser.close().catch(() => void 0);
+  }
+}
+var init_browser_verify = __esm({
+  "src/core/ui/browser-verify.ts"() {
+    "use strict";
+  }
+});
+
+// src/core/ui/browser-session.ts
+import { mkdirSync as mkdirSync6 } from "fs";
+import { join as join9 } from "path";
+function cssSelectorFor(element) {
+  if (element.id) return `#${String(element.id).replace(/[^a-zA-Z0-9_-]/g, "\\$&")}`;
+  const parts = [];
+  let node = element;
+  while (node && node.nodeType === 1 && parts.length < 5) {
+    const tag = String(node.tagName ?? "").toLowerCase();
+    if (!tag) break;
+    const parent = node.parentElement;
+    const siblings = parent ? Array.from(parent.children).filter((child) => child.tagName === node.tagName) : [];
+    const index = siblings.length > 1 ? siblings.indexOf(node) + 1 : 0;
+    let part = tag;
+    if (node.id) {
+      part += `#${String(node.id).replace(/[^a-zA-Z0-9_-]/g, "\\$&")}`;
+      parts.unshift(part);
+      break;
+    }
+    const classes = String(node.className ?? "").split(/\s+/).filter(Boolean).slice(0, 2);
+    if (classes.length) part += classes.map((c) => `.${c.replace(/[^a-zA-Z0-9_-]/g, "\\$&")}`).join("");
+    if (index) part += `:nth-of-type(${index})`;
+    parts.unshift(part);
+    node = parent;
+  }
+  return parts.join(" > ");
+}
+async function openWebSession(options) {
+  const session = await BrowserSession.open(options);
+  sessions.set(session.id, session);
+  return session;
+}
+function getWebSession(id) {
+  const key = id ?? [...sessions.keys()].at(-1);
+  const session = key ? sessions.get(key) : null;
+  if (!session) throw new Error("No open browser session. Use open_web first.");
+  return session;
+}
+function listWebSessions() {
+  return [...sessions.values()].map((session) => ({ id: session.id, url: session.url }));
+}
+async function closeWebSession(id) {
+  const key = id ?? [...sessions.keys()].at(-1);
+  const session = key ? sessions.get(key) : null;
+  if (!session) return "No open browser session.";
+  await session.close();
+  if (key) sessions.delete(key);
+  return `Closed browser session ${session.id}.`;
+}
+async function closeAllWebSessions() {
+  for (const session of sessions.values()) await session.close().catch(() => void 0);
+  sessions.clear();
+}
+var SELECTION_BINDING, BrowserSession, sessions;
+var init_browser_session = __esm({
+  "src/core/ui/browser-session.ts"() {
+    "use strict";
+    init_browser_verify();
+    SELECTION_BINDING = "__comicodeReportSelection";
+    BrowserSession = class _BrowserSession {
+      constructor(id, browser, page, url, resolveFrom) {
+        this.id = id;
+        this.browser = browser;
+        this.page = page;
+        this.url = url;
+        this.resolveFrom = resolveFrom;
+      }
+      id;
+      browser;
+      page;
+      url;
+      resolveFrom;
+      selections = [];
+      selectionWaiters = [];
+      static async open(options) {
+        const chromium = await loadChromium(options.resolveFrom);
+        if (!chromium) {
+          throw new Error(
+            "Playwright is not installed. Install it in this project: `npm i -D playwright && npx playwright install chromium`, or use an existing system browser via channel msedge/chrome."
+          );
+        }
+        const timeoutMs = options.timeoutMs ?? 3e4;
+        let browser = null;
+        let lastError = null;
+        for (const launch of [
+          { headless: false, channel: "msedge" },
+          { headless: false, channel: "chrome" },
+          { headless: false },
+          { headless: true, channel: "msedge" },
+          { headless: true, channel: "chrome" },
+          { headless: true }
+        ]) {
+          try {
+            browser = await chromium.launch(launch);
+            break;
+          } catch (error) {
+            lastError = error;
+          }
+        }
+        if (!browser) {
+          throw new Error(
+            `Could not launch a browser: ${lastError instanceof Error ? lastError.message : String(lastError)}. Install with \`npx playwright install chromium\`.`
+          );
+        }
+        const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+        const session = new _BrowserSession(
+          `web-${Date.now().toString(36)}`,
+          browser,
+          page,
+          options.url,
+          options.resolveFrom
+        );
+        await page.exposeBinding(SELECTION_BINDING, (_source, payload) => {
+          try {
+            const selection = JSON.parse(payload);
+            session.selections.push(selection);
+            for (const waiter of session.selectionWaiters.splice(0)) waiter(selection);
+          } catch {
+          }
+        });
+        await page.goto(options.url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+        if (options.waitMs) await page.waitForTimeout(options.waitMs);
+        if (options.enableSelection !== false) await session.installSelectionOverlay();
+        return session;
+      }
+      async installSelectionOverlay() {
+        await this.page.evaluate(() => {
+          const binding = window[SELECTION_BINDING];
+          const report = (selection) => {
+            if (typeof binding === "function") void binding(JSON.stringify(selection));
+          };
+          if (window.__comicodeOverlayInstalled) return;
+          window.__comicodeOverlayInstalled = true;
+          const badge = document.createElement("div");
+          badge.textContent = "ComiCode: click any element to highlight it for the agent \xB7 drag to select text";
+          Object.assign(badge.style, {
+            position: "fixed",
+            bottom: "12px",
+            right: "12px",
+            zIndex: "2147483647",
+            padding: "8px 12px",
+            font: "12px ui-monospace, monospace",
+            color: "#06110d",
+            background: "#7ce8c3",
+            borderRadius: "8px",
+            boxShadow: "0 8px 24px rgba(0,0,0,.35)",
+            pointerEvents: "none"
+          });
+          document.body.appendChild(badge);
+          const outline = (element, color) => {
+            if (!element || !(element instanceof HTMLElement)) return;
+            element.style.outline = `3px solid ${color}`;
+            setTimeout(() => {
+              element.style.outline = "";
+            }, 1800);
+          };
+          document.addEventListener(
+            "click",
+            (event) => {
+              if (!(event.target instanceof Element)) return;
+              const element = event.target;
+              if (element.closest("[data-comicode-overlay]")) return;
+              const rect = element.getBoundingClientRect();
+              outline(element, "#f5c46b");
+              const value = {
+                selector: window.__comicodeSelector?.(element) ?? element.tagName.toLowerCase(),
+                tag: element.tagName.toLowerCase(),
+                text: (element.textContent ?? "").trim().slice(0, 1200),
+                id: element.id || void 0,
+                classes: String(element.className ?? "").split(/\s+/).filter(Boolean).slice(0, 8),
+                box: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+                kind: "element",
+                url: location.href,
+                at: (/* @__PURE__ */ new Date()).toISOString()
+              };
+              report(value);
+            },
+            true
+          );
+          document.addEventListener("mouseup", () => {
+            const text = String(window.getSelection() ?? "").trim();
+            if (!text) return;
+            const range = window.getSelection()?.rangeCount ? window.getSelection().getRangeAt(0) : null;
+            const element = range?.startContainer instanceof Element ? range.startContainer : range?.startContainer.parentElement ?? document.body;
+            report({
+              selector: window.__comicodeSelector?.(element) ?? element.tagName.toLowerCase(),
+              tag: element.tagName.toLowerCase(),
+              text: text.slice(0, 2e3),
+              id: element.id || void 0,
+              classes: String(element.className ?? "").split(/\s+/).filter(Boolean).slice(0, 8),
+              box: element instanceof HTMLElement ? { ...element.getBoundingClientRect().toJSON() } : null,
+              kind: "text",
+              url: location.href,
+              at: (/* @__PURE__ */ new Date()).toISOString()
+            });
+            window.getSelection()?.removeAllRanges();
+          });
+        });
+        await this.page.evaluate((fn) => {
+          window.__comicodeSelector = new Function("element", `return (${fn})(element)`);
+        }, cssSelectorFor.toString());
+      }
+      async info() {
+        const title = await this.page.title().catch(() => "");
+        let domSummary = "";
+        try {
+          domSummary = await this.page.evaluate(() => {
+            const pick = (element) => {
+              const tag = element.tagName.toLowerCase();
+              const name = element.getAttribute("aria-label") ?? element.id ?? "";
+              const text = (element.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 80);
+              return `- <${tag}${name ? ` ${name}` : ""}> ${text}`;
+            };
+            const interesting = Array.from(
+              document.querySelectorAll("h1,h2,h3,button,a,input,textarea,[role=button]")
+            ).slice(0, 60);
+            return `URL: ${location.href}
+Title: ${document.title}
+` + interesting.map(pick).join("\n");
+          });
+        } catch {
+          domSummary = `URL: ${this.url}`;
+        }
+        return {
+          id: this.id,
+          url: this.url,
+          title,
+          screenshotPath: null,
+          domSummary: domSummary.slice(0, 8e3),
+          consoleErrors: []
+        };
+      }
+      async screenshot(outDir) {
+        mkdirSync6(outDir, { recursive: true });
+        const path = join9(outDir, `web-${Date.now()}.png`);
+        await this.page.screenshot({ path, fullPage: false });
+        return path;
+      }
+      async action(action, args) {
+        const selector = String(args.selector ?? "body");
+        switch (action) {
+          case "click":
+            await this.page.click(selector, { timeout: 1e4 });
+            return `Clicked ${selector}.`;
+          case "fill":
+            await this.page.fill(selector, String(args.value ?? ""), { timeout: 1e4 });
+            return `Filled ${selector}.`;
+          case "press":
+            await this.page.press(selector, String(args.key ?? "Enter"), { timeout: 1e4 });
+            return `Pressed ${String(args.key ?? "Enter")} on ${selector}.`;
+          case "scroll":
+            await this.page.evaluate((y) => window.scrollBy(0, y), Number(args.y ?? 400));
+            return `Scrolled.`;
+          case "read":
+            return String(
+              await this.page.evaluate((s) => {
+                const element = document.querySelector(s);
+                return element ? (element.textContent ?? "").trim().slice(0, 8e3) : `No element matches ${s}`;
+              }, selector)
+            );
+          case "html":
+            return String(
+              await this.page.evaluate((s) => {
+                const element = document.querySelector(s);
+                return element ? element.outerHTML.slice(0, 8e3) : `No element matches ${s}`;
+              }, selector)
+            );
+          default:
+            throw new Error(`Unknown web action "${action}". Use click, fill, press, scroll, read, html, screenshot, or select.`);
+        }
+      }
+      async waitForSelection(timeoutMs = 6e4) {
+        const existing = this.selections.shift();
+        if (existing) return existing;
+        if (timeoutMs <= 0) return null;
+        return new Promise((resolveSelection) => {
+          const timer = setTimeout(() => {
+            this.selectionWaiters = this.selectionWaiters.filter((waiter) => waiter !== deliver);
+            resolveSelection(null);
+          }, timeoutMs);
+          const deliver = (selection) => {
+            clearTimeout(timer);
+            resolveSelection(selection);
+          };
+          this.selectionWaiters.push(deliver);
+        });
+      }
+      async close() {
+        await this.browser.close().catch(() => void 0);
+      }
+    };
+    sessions = /* @__PURE__ */ new Map();
+    process.once("exit", () => {
+      void closeAllWebSessions();
+    });
+  }
+});
+
+// src/core/agent/tools/web-tool.ts
+function ok(content) {
+  return { ok: true, content };
+}
+function fail(content) {
+  return { ok: false, content };
+}
+async function executeOpenWebTool(args, context) {
+  const url = String(args.url ?? "").trim();
+  if (!url) return fail("A URL is required.");
+  try {
+    const session = await openWebSession({
+      url,
+      resolveFrom: context.cwd,
+      waitMs: Number(args.waitMs ?? 0),
+      timeoutMs: Number(args.timeoutMs ?? 3e4),
+      enableSelection: args.enableSelection !== false
+    });
+    const info = await session.info();
+    const screenshotPath = await session.screenshot(`${context.cwd}/${WEB_ROOT}`).catch(() => null);
+    const lines = [
+      `Opened ${url} in a browser (session ${session.id}).`,
+      `Title: ${info.title}`,
+      screenshotPath ? `Screenshot: ${screenshotPath}` : "Screenshot: unavailable",
+      "The page has a highlight overlay: the user can click an element or drag to select text.",
+      "DOM summary:",
+      info.domSummary.slice(0, 4e3)
+    ];
+    return ok(lines.join("\n"));
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error));
+  }
+}
+async function executeWebActionTool(args, context) {
+  const action = String(args.action ?? "").trim();
+  try {
+    if (action === "list") {
+      const sessions2 = listWebSessions();
+      return ok(sessions2.length ? sessions2.map((s) => `${s.id}: ${s.url}`).join("\n") : "No open browser sessions.");
+    }
+    const session = getWebSession(args.sessionId ? String(args.sessionId) : void 0);
+    if (action === "select") {
+      const selection = await session.waitForSelection(Number(args.timeoutMs ?? 6e4));
+      if (!selection) {
+        return fail("No highlight was received before the timeout. Ask the user to click the element or drag to select text, then retry.");
+      }
+      return ok(
+        [
+          `User highlighted a ${selection.kind}:`,
+          `Selector: ${selection.selector}`,
+          `Text: ${selection.text.slice(0, 1e3)}`,
+          `Position: ${selection.box ? `${Math.round(selection.box.x)},${Math.round(selection.box.y)} ${Math.round(selection.box.width)}x${Math.round(selection.box.height)}` : "unknown"}`,
+          `Page: ${selection.url}`
+        ].join("\n")
+      );
+    }
+    if (action === "screenshot") {
+      const path = await session.screenshot(`${context.cwd}/${WEB_ROOT}`);
+      return ok(`Screenshot saved: ${path}`);
+    }
+    const result = await session.action(action, args);
+    return ok(result);
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error));
+  }
+}
+async function executeCloseWebTool(args) {
+  try {
+    return ok(await closeWebSession(args.sessionId ? String(args.sessionId) : void 0));
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error));
+  }
+}
+var WEB_ROOT, OPEN_WEB_TOOL_NAME, WEB_ACTION_TOOL_NAME, CLOSE_WEB_TOOL_NAME, openWebToolDefinition, webActionToolDefinition, closeWebToolDefinition, WEB_TOOL_DEFINITIONS;
+var init_web_tool = __esm({
+  "src/core/agent/tools/web-tool.ts"() {
+    "use strict";
+    init_browser_session();
+    WEB_ROOT = ".comicode/shots";
+    OPEN_WEB_TOOL_NAME = "open_web";
+    WEB_ACTION_TOOL_NAME = "web_action";
+    CLOSE_WEB_TOOL_NAME = "close_web";
+    openWebToolDefinition = {
+      name: OPEN_WEB_TOOL_NAME,
+      description: 'Open a web page in a real browser for inspection. Launches a visible browser window, injects a highlight overlay, and returns the page title, a DOM summary and a screenshot path. Use this when the user asks to inspect a website or a locally running web app. After opening, ask the user to click/highlight the part they mean and use web_action with action "select" to receive it.',
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "URL to open (e.g. http://localhost:3000)." },
+          waitMs: { type: "integer", description: "Optional extra wait after load, in milliseconds." },
+          timeoutMs: { type: "integer", description: "Navigation timeout (default 30000)." },
+          enableSelection: {
+            type: "boolean",
+            description: "Let the user highlight elements in the page (default true)."
+          }
+        },
+        required: ["url"]
+      }
+    };
+    webActionToolDefinition = {
+      name: WEB_ACTION_TOOL_NAME,
+      description: 'Interact with an already-open browser session: click, fill, press a key, scroll, read text/HTML, take a screenshot, or wait for the user to highlight something. Use action "select" after telling the user what to highlight \u2014 it returns the exact element selector, text, position and any selected text so you can work on that specific part of the page.',
+      parameters: {
+        type: "object",
+        properties: {
+          action: {
+            type: "string",
+            enum: ["click", "fill", "press", "scroll", "read", "html", "screenshot", "select", "list"],
+            description: "The action to perform."
+          },
+          selector: { type: "string", description: "CSS selector for click/fill/press/read/html." },
+          value: { type: "string", description: "Value for fill." },
+          key: { type: "string", description: "Key for press (default Enter)." },
+          y: { type: "integer", description: "Vertical scroll amount for scroll." },
+          sessionId: { type: "string", description: "Browser session id (uses the latest if omitted)." },
+          timeoutMs: { type: "integer", description: "How long to wait for a user highlight (default 60000)." }
+        },
+        required: ["action"]
+      }
+    };
+    closeWebToolDefinition = {
+      name: CLOSE_WEB_TOOL_NAME,
+      description: "Close an open browser session when finished inspecting a page.",
+      parameters: {
+        type: "object",
+        properties: {
+          sessionId: { type: "string", description: "Session id (closes the latest if omitted)." }
+        },
+        required: []
+      }
+    };
+    WEB_TOOL_DEFINITIONS = [
+      openWebToolDefinition,
+      webActionToolDefinition,
+      closeWebToolDefinition
+    ];
+  }
+});
+
 // src/core/agent/tools/definitions.ts
 var TOOL_DEFINITIONS, TOOL_NAMES;
 var init_definitions2 = __esm({
   "src/core/agent/tools/definitions.ts"() {
     "use strict";
+    init_image_tool();
+    init_web_tool();
     TOOL_DEFINITIONS = [
       {
         name: "list_files",
@@ -7017,6 +8052,8 @@ var init_definitions2 = __esm({
         description: "Show OS, Node version, git state, and detected test/lint/build commands.",
         parameters: { type: "object", properties: {}, required: [] }
       },
+      generateImageToolDefinition,
+      ...WEB_TOOL_DEFINITIONS,
       {
         name: "use_skill",
         description: "Load a skill by name to get detailed instructions for a kind of work (debugging, testing, review, refactoring). Skills are listed in the system context.",
@@ -7033,126 +8070,17 @@ var init_definitions2 = __esm({
   }
 });
 
-// src/core/ui/browser-verify.ts
-var browser_verify_exports = {};
-__export(browser_verify_exports, {
-  verifyPage: () => verifyPage
-});
-import { mkdirSync as mkdirSync5 } from "fs";
-import { createRequire } from "module";
-import { join as join7 } from "path";
-async function loadChromium(resolveFrom) {
-  for (const name of ["playwright-core", "playwright"]) {
-    try {
-      const mod = await import(name);
-      if (mod.chromium) return mod.chromium;
-    } catch {
-    }
-    if (resolveFrom) {
-      try {
-        const require2 = createRequire(join7(resolveFrom, "package.json"));
-        const mod = require2(name);
-        const chromium = mod.chromium ?? mod.default?.chromium;
-        if (chromium) return chromium;
-      } catch {
-      }
-    }
-  }
-  return null;
-}
-async function verifyPage(url, options) {
-  const chromium = await loadChromium(options.resolveFrom);
-  if (!chromium) {
-    return {
-      ok: false,
-      message: "Playwright is not installed, so no browser verification ran. Install it in this project (`npm i -D playwright && npx playwright install chromium`) or set agent.uiVerifyCommand to your own screenshot/a11y script.",
-      consoleErrors: [],
-      failedRequests: []
-    };
-  }
-  const timeoutMs = options.timeoutMs ?? 3e4;
-  const consoleErrors = [];
-  const failedRequests = [];
-  let browser = null;
-  let lastLaunchError = null;
-  for (const launchOptions of [
-    { headless: true },
-    { headless: true, channel: "msedge" },
-    { headless: true, channel: "chrome" }
-  ]) {
-    try {
-      browser = await chromium.launch(launchOptions);
-      break;
-    } catch (error) {
-      lastLaunchError = error;
-    }
-  }
-  if (!browser) {
-    return {
-      ok: false,
-      message: `Could not launch a browser: ${lastLaunchError instanceof Error ? lastLaunchError.message : String(lastLaunchError)}. Install browsers with \`npx playwright install chromium\` or set agent.uiVerifyCommand.`,
-      consoleErrors: [],
-      failedRequests: []
-    };
-  }
-  try {
-    const page = await browser.newPage();
-    page.on("console", (msg) => {
-      if (msg.type() === "error") consoleErrors.push(String(msg.text()).slice(0, 300));
-    });
-    page.on("pageerror", (error) => {
-      consoleErrors.push(String(error).slice(0, 300));
-    });
-    page.on("requestfailed", (request) => {
-      const failure = request.failure()?.errorText ?? "failed";
-      failedRequests.push(`${request.url()} (${failure})`.slice(0, 300));
-    });
-    page.on("response", (response) => {
-      if (response.status() >= 400) {
-        failedRequests.push(`${response.status()} ${response.url()}`.slice(0, 300));
-      }
-    });
-    await page.goto(url, { waitUntil: "networkidle", timeout: timeoutMs });
-    if (options.waitMs) await page.waitForTimeout(options.waitMs);
-    mkdirSync5(options.outDir, { recursive: true });
-    const screenshotPath = join7(options.outDir, `verify-${Date.now()}.png`);
-    await page.screenshot({ path: screenshotPath, fullPage: false });
-    return {
-      ok: true,
-      message: `Browser verification completed for ${url}. Screenshot saved.`,
-      screenshotPath,
-      title: await page.title().catch(() => null) ?? void 0,
-      consoleErrors: consoleErrors.slice(0, 20),
-      failedRequests: failedRequests.slice(0, 20)
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      message: `Browser verification failed: ${error instanceof Error ? error.message : String(error)}`,
-      consoleErrors: consoleErrors.slice(0, 20),
-      failedRequests: failedRequests.slice(0, 20)
-    };
-  } finally {
-    await browser.close().catch(() => void 0);
-  }
-}
-var init_browser_verify = __esm({
-  "src/core/ui/browser-verify.ts"() {
-    "use strict";
-  }
-});
-
 // src/core/agent/tools/executor.ts
 import {
   existsSync as existsSync6,
-  mkdirSync as mkdirSync6,
+  mkdirSync as mkdirSync7,
   readFileSync as readFileSync6,
   renameSync as renameSync3,
   statSync as statSync7,
   unlinkSync as unlinkSync2,
   writeFileSync as writeFileSync2
 } from "fs";
-import { dirname as dirname4, join as join8 } from "path";
+import { dirname as dirname4, join as join10 } from "path";
 import { z as z3 } from "zod";
 function truncateForModel(text, maxChars) {
   if (text.length <= maxChars) return text;
@@ -7168,7 +8096,7 @@ function quoteDiff(diff, maxChars) {
 ... [diff truncated]` : diff;
 }
 function atomicWrite(absolute, content) {
-  mkdirSync6(dirname4(absolute), { recursive: true });
+  mkdirSync7(dirname4(absolute), { recursive: true });
   const temp = `${absolute}.comicode-${process.pid}-${Date.now()}.tmp`;
   writeFileSync2(temp, content, "utf8");
   renameSync3(temp, absolute);
@@ -7184,7 +8112,7 @@ function parseChangedFiles(output) {
   }
   return [...files];
 }
-var MAX_READ_BYTES, MAX_WRITE_BYTES, MAX_SEARCH_FILE_BYTES, pathSchema, readSchema, searchSchema, writeSchema, editSchema, patchSchema, deleteSchema, commandSchema, testsSchema, timeoutSchema, diffSchema, planSchema, completeSchema, skillSchema, verifyUiSchema, ToolExecutor;
+var MAX_READ_BYTES, MAX_WRITE_BYTES, MAX_SEARCH_FILE_BYTES, pathSchema, readSchema, searchSchema, writeSchema, editSchema, patchSchema, deleteSchema, commandSchema, testsSchema, timeoutSchema, diffSchema, planSchema, completeSchema, skillSchema, verifyUiSchema, generateImageSchema, ToolExecutor;
 var init_executor = __esm({
   "src/core/agent/tools/executor.ts"() {
     "use strict";
@@ -7197,6 +8125,8 @@ var init_executor = __esm({
     init_shell();
     init_process();
     init_redact();
+    init_image_tool();
+    init_web_tool();
     init_definitions2();
     MAX_READ_BYTES = 6e5;
     MAX_WRITE_BYTES = 2e6;
@@ -7254,6 +8184,11 @@ var init_executor = __esm({
     verifyUiSchema = z3.object({
       url: z3.string().min(1).max(2e3),
       wait_ms: z3.number().int().min(0).max(3e4).optional()
+    });
+    generateImageSchema = z3.object({
+      prompt: z3.string().min(1).max(4e3),
+      size: z3.string().max(50).optional(),
+      n: z3.number().int().min(1).max(4).optional()
     });
     ToolExecutor = class {
       constructor(options) {
@@ -7380,6 +8315,20 @@ var init_executor = __esm({
               return await this.runPreset("build", call.arguments);
             case "verify_ui":
               return await this.verifyUiTool(call.arguments);
+            case GENERATE_IMAGE_TOOL_NAME:
+              return await this.generateImageTool(call.arguments);
+            case OPEN_WEB_TOOL_NAME:
+              return await executeOpenWebTool(
+                call.arguments ?? {},
+                { cwd: this.options.root }
+              );
+            case WEB_ACTION_TOOL_NAME:
+              return await executeWebActionTool(
+                call.arguments ?? {},
+                { cwd: this.options.root }
+              );
+            case CLOSE_WEB_TOOL_NAME:
+              return await executeCloseWebTool(call.arguments ?? {});
             case "git_status":
               return await this.gitStatus();
             case "git_diff":
@@ -7513,7 +8462,7 @@ ${text}`,
           if (prefix && !file.path.startsWith(`${prefix}/`) && file.path !== prefix) continue;
           if (file.size > MAX_SEARCH_FILE_BYTES) continue;
           try {
-            const buffer = readFileSync6(join8(this.options.root, file.path));
+            const buffer = readFileSync6(join10(this.options.root, file.path));
             if (isBinaryBuffer(buffer)) continue;
             scanned += 1;
             const lines = buffer.toString("utf8").split(/\r?\n/);
@@ -7707,7 +8656,7 @@ ${quoteDiff(diff, 8e3)}`,
         const relative4 = ".comicode/shots";
         const result = await verifyPage2(url, {
           waitMs: parsed.data.wait_ms ?? 1e3,
-          outDir: join8(this.options.root, relative4),
+          outDir: join10(this.options.root, relative4),
           timeoutMs: 3e4,
           resolveFrom: this.options.root
         });
@@ -7715,13 +8664,24 @@ ${quoteDiff(diff, 8e3)}`,
         const lines = [
           result.message,
           result.title ? `Title: ${result.title}` : null,
-          result.screenshotPath ? `Screenshot: ${join8(relative4, result.screenshotPath.split(/[\\/]/).pop() ?? "")}` : null,
+          result.screenshotPath ? `Screenshot: ${join10(relative4, result.screenshotPath.split(/[\\/]/).pop() ?? "")}` : null,
           result.consoleErrors.length ? `Console errors:
 ${result.consoleErrors.map((e) => `- ${e}`).join("\n")}` : "Console errors: none",
           result.failedRequests.length ? `Failed requests:
 ${result.failedRequests.map((r) => `- ${r}`).join("\n")}` : "Failed requests: none"
         ].filter(Boolean);
         return { ok: true, content: lines.join("\n") };
+      }
+      async generateImageTool(args) {
+        const parsed = this.parse(generateImageSchema, args);
+        if (!parsed.ok) return parsed.result;
+        const settings = this.options.getSettings?.() ?? this.options.settings;
+        return executeGenerateImageTool(parsed.data, {
+          appContext: this.options.appContext,
+          store: this.options.store ?? this.options.appContext?.store,
+          settings,
+          cwd: this.options.root
+        });
       }
       async runPreset(kind, args) {
         const parsed = this.parse(kind === "test" ? testsSchema : timeoutSchema, args);
@@ -7914,7 +8874,7 @@ ${skill.content}`,
 
 // src/core/agent/context.ts
 import { readFileSync as readFileSync7 } from "fs";
-import { join as join9 } from "path";
+import { join as join11 } from "path";
 import { createHash as createHash3 } from "crypto";
 function estimateTokens(text) {
   return Math.ceil(text.length / 4);
@@ -7922,7 +8882,7 @@ function estimateTokens(text) {
 function fileExcerpt(path, root, maxChars) {
   if (isSecretFile(path)) return null;
   try {
-    const buffer = readFileSync7(join9(root, path));
+    const buffer = readFileSync7(join11(root, path));
     if (isBinaryBuffer(buffer) || buffer.length > 8e5) return null;
     const full = buffer.toString("utf8");
     const hash = createHash3("sha256").update(buffer).digest("hex");
@@ -8168,7 +9128,7 @@ ${input.effortHint}`);
 
 // src/core/agent/collaboration.ts
 import { readFileSync as readFileSync8, statSync as statSync8 } from "fs";
-import { join as join10 } from "path";
+import { join as join12 } from "path";
 function parseUsageFromText(text) {
   const output = estimateTokens(text);
   return { inputTokens: 0, outputTokens: output, totalTokens: output };
@@ -8500,7 +9460,7 @@ ${status.stdout.slice(0, 4e3)}`);
         for (const file of changedFiles.slice(0, 8)) {
           if (isSecretFile(file) || budget <= 0) continue;
           try {
-            const absolute = join10(this.inspector.root, file);
+            const absolute = join12(this.inspector.root, file);
             if (statSync8(absolute).size > 6e4) continue;
             const content = readFileSync8(absolute, "utf8");
             const clipped = content.slice(0, Math.min(budget, 6e3));
@@ -8513,6 +9473,653 @@ ${clipped}`);
         return parts.join("\n\n") || "No diff available.";
       }
     };
+  }
+});
+
+// src/core/agent/teams.ts
+function selectTeamRoles(text, mode) {
+  const lower = ` ${text.toLowerCase()} `;
+  let ids;
+  if (ORG_WORDS.some((word) => lower.includes(word))) {
+    ids = TEAM_PIPELINES.fullOrganization;
+  } else {
+    let best = "build";
+    let bestScore = 0;
+    for (const entry of PIPELINE_KEYWORDS) {
+      const score = entry.words.reduce((sum, word) => sum + (lower.includes(word) ? 1 : 0), 0);
+      if (score > bestScore) {
+        bestScore = score;
+        best = entry.id;
+      }
+    }
+    if (mode === "security") best = "security";
+    else if (mode === "test") best = "test";
+    else if (mode === "design") best = "design";
+    else if (mode === "docs") best = "docs";
+    else if (mode === "explain") best = "explain";
+    else if (mode === "architect") best = "build";
+    ids = TEAM_PIPELINES[best] ?? TEAM_PIPELINES.build;
+  }
+  return ids.map((id) => TEAM_ROLES[id]);
+}
+function buildHandoffNote(role, summary, changedFiles) {
+  const parts = [
+    `[ComiCode team handoff \u2192 ${role.department} / ${role.label}]`,
+    `Previous stage status:
+${clip(summary, 2e3)}`,
+    "The full transcript, plan, checkpoints and tool history are preserved in this task. Read the current project state before acting. Do NOT redo work already completed."
+  ];
+  if (changedFiles.length) {
+    parts.push(`Files already changed by earlier stages: ${changedFiles.slice(0, 40).join(", ")}`);
+  }
+  return parts.join("\n\n").slice(0, 3500);
+}
+function buildStagePrompt(role, originalRequest, handoffs) {
+  const parts = [
+    `# Team assignment: ${role.label} \u2014 ${role.department}`,
+    role.instructions,
+    "",
+    `## Original user request
+${originalRequest.slice(0, 12e3)}`
+  ];
+  if (handoffs.length) {
+    parts.push("", "## Handoffs from previous team members (read carefully)", handoffs.join("\n\n---\n\n"));
+  }
+  parts.push(
+    "",
+    `You are stage ${role.label}. Stay in your role. Finish this stage with the STAGE_STATUS line.`
+  );
+  return parts.join("\n").slice(0, 4e4);
+}
+function clip(text, max) {
+  const value = text.trim();
+  return value.length <= max ? value : `${value.slice(0, max)}
+\u2026 [truncated]`;
+}
+var TEAM_ROLES, TEAM_PIPELINES, ORG_WORDS, PIPELINE_KEYWORDS;
+var init_teams = __esm({
+  "src/core/agent/teams.ts"() {
+    "use strict";
+    TEAM_ROLES = {
+      research: {
+        id: "research",
+        label: "Research",
+        department: "Research & Discovery",
+        icon: "\u{1F50E}",
+        mode: "explain",
+        taskType: "reasoning",
+        capabilityHint: "strong reasoning + read-only codebase exploration",
+        autoModel: true,
+        instructions: `You are the RESEARCH LEAD of the engineering organization.
+- Investigate the request against the ACTUAL codebase using read-only tools. Do not change files.
+- Identify the real constraints, existing patterns, edge cases, risks and open questions.
+- Produce a short research brief: what exists, what is missing, what must be decided, and the recommended approach.
+- End your response with a single line: STAGE_STATUS: <one sentence on exactly where you stopped and what the next team must do>.`
+      },
+      product: {
+        id: "product",
+        label: "Product",
+        department: "Product & Strategy",
+        icon: "\u{1F9ED}",
+        mode: "plan",
+        taskType: "reasoning",
+        capabilityHint: "planning and requirement decomposition",
+        autoModel: true,
+        instructions: `You are the PRODUCT MANAGER of the organization.
+- Turn the request into clear, testable requirements and acceptance criteria.
+- Define scope, non-goals, priorities and the smallest shippable increment.
+- Use update_plan to record the concrete stepped plan. Do not implement.
+- End with: STAGE_STATUS: <where you stopped and the next team's mandate>.`
+      },
+      architecture: {
+        id: "architecture",
+        label: "Architecture",
+        department: "Engineering / Architecture",
+        icon: "\u{1F3D7}",
+        mode: "architect",
+        taskType: "reasoning",
+        capabilityHint: "system design and high-context reasoning",
+        autoModel: true,
+        instructions: `You are the PRINCIPAL ARCHITECT.
+- Map the current structure, data flow and dependencies from the code itself.
+- Decide the design: modules, data model, API surface, migration and rollout steps. Name trade-offs.
+- Use update_plan for the implementation steps other teams will follow. Do not write code yet.
+- End with: STAGE_STATUS: <decisions made, what remains, and what implementation must do first>.`
+      },
+      design: {
+        id: "design",
+        label: "Design",
+        department: "Design / UX",
+        icon: "\u{1F3A8}",
+        mode: "design",
+        taskType: "vision",
+        capabilityHint: "vision-capable, design-literate model",
+        autoModel: true,
+        instructions: `You are the DESIGN LEAD.
+- For UI work, follow the project's design-system guidance and define tokens, layout, states and accessibility requirements.
+- If the request needs an image, logo, illustration or visual asset, CALL the generate_image tool (a capable image model will be selected from the connected APIs). Save assets under the project and reference their paths.
+- Do not change application logic outside styling/markup.
+- End with: STAGE_STATUS: <design decisions, generated asset paths, and what implementation must do>.`
+      },
+      engineering: {
+        id: "engineering",
+        label: "Engineering",
+        department: "Engineering / Delivery",
+        icon: "\u2699\uFE0F",
+        mode: "build",
+        taskType: "coding",
+        capabilityHint: "top coding model with full tool use",
+        autoModel: true,
+        instructions: `You are the SENIOR ENGINEER responsible for implementation.
+- Implement the plan handed to you. Make small, verifiable changes that match existing conventions.
+- Keep the plan/todos updated with update_plan as you work.
+- Run the project's checks before calling task_complete and fix what you introduced.
+- End with: STAGE_STATUS: <files changed, checks run, and any known limitation for the next team>.`
+      },
+      devops: {
+        id: "devops",
+        label: "DevOps",
+        department: "Platform / Reliability",
+        icon: "\u{1F680}",
+        mode: "build",
+        taskType: "coding",
+        capabilityHint: "coding model comfortable with scripts, CI and config",
+        autoModel: true,
+        instructions: `You are the DEVOPS / RELIABILITY ENGINEER.
+- Review and improve build, scripts, CI config, container and deployment concerns relevant to the change.
+- Prefer minimal, safe configuration edits. Never print or write secrets.
+- Verify with the available commands where possible.
+- End with: STAGE_STATUS: <config changed, verification result, remaining operational risk>.`
+      },
+      security: {
+        id: "security",
+        label: "Security",
+        department: "Security & Compliance",
+        icon: "\u{1F6E1}",
+        mode: "security",
+        taskType: "review",
+        capabilityHint: "security-audit capable reviewer",
+        autoModel: true,
+        instructions: `You are the SECURITY ENGINEER. Read-only audit \u2014 do not edit files.
+- Review the change for authn/authz, injection, secret leakage, validation, unsafe file/command use and dependency risk.
+- Report findings by severity with file:line evidence and a concrete fix.
+- If you find no issues, say so plainly and state what you covered.
+- End with: STAGE_STATUS: <findings summary and what must be fixed before release>.`
+      },
+      qa: {
+        id: "qa",
+        label: "QA",
+        department: "Quality Assurance",
+        icon: "\u{1F9EA}",
+        mode: "test",
+        taskType: "coding",
+        capabilityHint: "test-writing and verification model",
+        autoModel: true,
+        instructions: `You are the QA ENGINEER.
+- Add or update tests for the delivered behavior, including edge and error paths.
+- Run the test/lint/build commands and report exact results.
+- If a test fails because of a product bug, fix the smallest cause or hand it back clearly.
+- End with: STAGE_STATUS: <tests added, commands run, pass/fail and any remaining gap>.`
+      },
+      review: {
+        id: "review",
+        label: "Review",
+        department: "Engineering / Best Practice",
+        icon: "\u2705",
+        mode: "review",
+        taskType: "review",
+        capabilityHint: "rigorous code reviewer",
+        autoModel: true,
+        instructions: `You are the BEST-PRACTICE REVIEWER. Read-only \u2014 do not edit files.
+- Review the full change for correctness, maintainability, error handling, duplication and convention drift.
+- Give a verdict: APPROVE or ISSUES, with concrete file:line findings.
+- End with: STAGE_STATUS: <verdict and the single most important follow-up>.`
+      },
+      docs: {
+        id: "docs",
+        label: "Docs",
+        department: "Documentation",
+        icon: "\u{1F4DA}",
+        mode: "docs",
+        taskType: "general",
+        capabilityHint: "precise technical writer",
+        autoModel: true,
+        instructions: `You are the TECHNICAL WRITER.
+- Update README/docs and comments to match what was actually built. Read the code first.
+- Prefer editing existing docs; keep examples runnable. Do not change implementation code.
+- End with: STAGE_STATUS: <docs updated and anything still undocumented>.`
+      },
+      marketing: {
+        id: "marketing",
+        label: "Marketing",
+        department: "Marketing & Growth",
+        icon: "\u{1F4E3}",
+        mode: "docs",
+        taskType: "general",
+        capabilityHint: "clear persuasive copywriter",
+        autoModel: true,
+        instructions: `You are the MARKETING LEAD.
+- Produce user-facing copy: positioning, landing-page messaging, release notes, changelog entries and social snippets as appropriate to the request.
+- Ground every claim in what the product actually does. Do not invent features.
+- If a visual asset is needed, use the generate_image tool and reference the saved path.
+- Write copy into the appropriate project files only when the user asked for site/docs content.
+- End with: STAGE_STATUS: <copy produced, files touched, and what remains>.`
+      }
+    };
+    TEAM_PIPELINES = {
+      fullOrganization: [
+        "research",
+        "product",
+        "architecture",
+        "design",
+        "engineering",
+        "devops",
+        "security",
+        "qa",
+        "review",
+        "docs",
+        "marketing"
+      ],
+      build: ["research", "architecture", "engineering", "security", "qa", "review", "docs"],
+      website: ["research", "product", "design", "engineering", "qa", "security", "marketing"],
+      security: ["research", "security", "review"],
+      test: ["research", "qa", "review"],
+      design: ["research", "design", "engineering", "qa"],
+      docs: ["research", "docs", "marketing"],
+      explain: ["research", "review"],
+      marketing: ["research", "product", "marketing", "design"],
+      devops: ["research", "devops", "security", "qa"]
+    };
+    ORG_WORDS = [
+      "full team",
+      "whole team",
+      "full organization",
+      "whole organization",
+      "entire organization",
+      "full company",
+      "whole company",
+      "all teams",
+      "marketing team",
+      "full software team",
+      "everything",
+      "end to end",
+      "end-to-end",
+      "complete product",
+      "whole product"
+    ];
+    PIPELINE_KEYWORDS = [
+      { id: "security", words: ["security", "vulnerab", "audit", "exploit", "injection", "secret leak", "xss", "csrf"] },
+      { id: "website", words: ["website", "landing page", "marketing site", "web app", "homepage", "brand", "website requires", "image", "logo", "illustration"] },
+      { id: "marketing", words: ["marketing", "campaign", "copy", "release notes", "changelog", "positioning", "social"] },
+      { id: "design", words: ["design", "ui", "ux", "css", "layout", "style", "mockup", "visual"] },
+      { id: "devops", words: ["deploy", "docker", "ci", "pipeline", "infra", "devops", "release script"] },
+      { id: "test", words: ["test", "coverage", "spec", "e2e", "flaky"] },
+      { id: "docs", words: ["document", "readme", "docs", "guide", "changelog"] },
+      { id: "explain", words: ["explain", "what does", "how does", "walk me through", "understand"] },
+      { id: "build", words: ["build", "fix", "implement", "add", "feature", "refactor", "bug", "create"] }
+    ];
+  }
+});
+
+// src/core/plugins/manifest.ts
+import { z as z4 } from "zod";
+import { readFileSync as readFileSync9 } from "fs";
+import { basename as basename4, dirname as dirname5, join as join13 } from "path";
+function formatZodIssues(error) {
+  return error.issues.slice(0, 12).map((issue) => {
+    const path = issue.path.length ? issue.path.join(".") : "(root)";
+    return `${path}: ${issue.message}`;
+  }).join("; ");
+}
+function parseManifest(input, filePath) {
+  const parsed = PluginManifestSchema.safeParse(input);
+  if (!parsed.success) {
+    throw new PluginManifestError(`invalid manifest \u2014 ${formatZodIssues(parsed.error)}`, filePath);
+  }
+  return parsed.data;
+}
+function loadManifestFile(filePath) {
+  const name = basename4(filePath).toLowerCase();
+  if (name === "plugin.yaml" || name.endsWith(".yaml") || name.endsWith(".yml")) {
+    throw new PluginManifestError(
+      "YAML manifests are not supported yet; convert plugin.yaml to plugin.json or comicode-plugin.json",
+      filePath
+    );
+  }
+  let raw;
+  try {
+    raw = readFileSync9(filePath, "utf8");
+  } catch (error) {
+    throw new PluginManifestError(
+      `cannot read manifest: ${error instanceof Error ? error.message : String(error)}`,
+      filePath
+    );
+  }
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch (error) {
+    throw new PluginManifestError(
+      `invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      filePath
+    );
+  }
+  return parseManifest(data, filePath);
+}
+function findManifestPath(pluginDir) {
+  for (const filename of MANIFEST_FILENAMES) {
+    const candidate = join13(pluginDir, filename);
+    try {
+      readFileSync9(candidate);
+      return candidate;
+    } catch {
+    }
+  }
+  return null;
+}
+var PluginCommandSchema, PluginSkillSchema, PluginToolDescriptorSchema, PluginMcpServerSchema, PluginManifestSchema, MANIFEST_FILENAMES, PluginManifestError;
+var init_manifest = __esm({
+  "src/core/plugins/manifest.ts"() {
+    "use strict";
+    PluginCommandSchema = z4.object({
+      name: z4.string().min(1).max(100),
+      description: z4.string().min(1).max(500),
+      promptTemplate: z4.string().min(1).max(2e4),
+      argumentHint: z4.string().max(200).optional()
+    }).strict();
+    PluginSkillSchema = z4.object({
+      name: z4.string().min(1).max(100),
+      description: z4.string().min(1).max(500),
+      body: z4.string().min(1).max(5e4)
+    }).strict();
+    PluginToolDescriptorSchema = z4.object({
+      name: z4.string().min(1).max(100),
+      description: z4.string().min(1).max(1e3),
+      /** JSON-schema-like input shape. Declarative only; execution requires host support. */
+      inputSchema: z4.record(z4.string(), z4.unknown()).optional()
+    }).strict();
+    PluginMcpServerSchema = z4.object({
+      name: z4.string().min(1).max(100),
+      command: z4.string().max(1e3).optional(),
+      args: z4.array(z4.string()).optional(),
+      env: z4.record(z4.string(), z4.string()).optional(),
+      url: z4.string().max(2e3).optional(),
+      headers: z4.record(z4.string(), z4.string()).optional()
+    }).strict();
+    PluginManifestSchema = z4.object({
+      name: z4.string().min(1).max(100),
+      version: z4.string().min(1).max(50),
+      description: z4.string().max(1e3).optional(),
+      author: z4.string().max(200).optional(),
+      license: z4.string().max(100).optional(),
+      commands: z4.array(PluginCommandSchema).default([]),
+      skills: z4.array(PluginSkillSchema).default([]),
+      tools: z4.array(PluginToolDescriptorSchema).default([]),
+      mcpServers: z4.array(PluginMcpServerSchema).default([])
+    }).strict();
+    MANIFEST_FILENAMES = ["plugin.json", "comicode-plugin.json", "plugin.yaml"];
+    PluginManifestError = class extends Error {
+      constructor(message, filePath) {
+        super(filePath ? `${filePath}: ${message}` : message);
+        this.filePath = filePath;
+        this.name = "PluginManifestError";
+      }
+      filePath;
+    };
+  }
+});
+
+// src/core/plugins/loader.ts
+import { existsSync as existsSync7, readdirSync as readdirSync3, statSync as statSync9 } from "fs";
+import { join as join14 } from "path";
+function warn(msg, options) {
+  options?.onWarning?.(msg);
+}
+function scanPluginRoot(baseDir, scope, options) {
+  if (!existsSync7(baseDir)) return [];
+  let entries;
+  try {
+    entries = readdirSync3(baseDir);
+  } catch (error) {
+    warn(
+      `[plugins] cannot read ${baseDir}: ${error instanceof Error ? error.message : String(error)}`,
+      options
+    );
+    return [];
+  }
+  const out = [];
+  for (const entry of entries) {
+    const full = join14(baseDir, entry);
+    let stat;
+    try {
+      stat = statSync9(full);
+    } catch {
+      continue;
+    }
+    if (!stat.isDirectory()) continue;
+    const manifestPath = findManifestPath(full);
+    if (!manifestPath) continue;
+    try {
+      const manifest = loadManifestFile(manifestPath);
+      out.push({
+        id: manifest.name,
+        manifest,
+        root: full,
+        manifestPath,
+        scope,
+        warnings: []
+      });
+    } catch (error) {
+      const message = error instanceof PluginManifestError ? error.message : `[plugins] failed to load ${manifestPath}: ${error instanceof Error ? error.message : String(error)}`;
+      warn(message, options);
+    }
+  }
+  return out;
+}
+function loadPlugins(options = {}) {
+  const cwd = options.cwd ?? process.cwd();
+  const byId2 = /* @__PURE__ */ new Map();
+  const userDir = join14(getComicodeHome(), "plugins");
+  for (const plugin of scanPluginRoot(userDir, "user", options)) {
+    byId2.set(plugin.id, plugin);
+  }
+  const projectDir = join14(getProjectStateDir(cwd), "plugins");
+  for (const plugin of scanPluginRoot(projectDir, "project", options)) {
+    const existing = byId2.get(plugin.id);
+    if (existing) {
+      warn(
+        `[plugins] project plugin "${plugin.id}" overrides ${existing.scope} plugin at ${existing.root}`,
+        options
+      );
+    }
+    byId2.set(plugin.id, plugin);
+  }
+  return [...byId2.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+function getPluginSkills(plugins) {
+  const skills = [];
+  for (const plugin of plugins) {
+    for (const skill of plugin.manifest.skills ?? []) {
+      skills.push({
+        name: skill.name,
+        description: skill.description,
+        content: skill.body.trim(),
+        source: plugin.scope === "project" ? "project" : "user",
+        path: plugin.manifestPath
+      });
+    }
+  }
+  return skills;
+}
+function getPluginCommands(plugins) {
+  const commands = [];
+  for (const plugin of plugins) {
+    for (const command of plugin.manifest.commands ?? []) {
+      commands.push({
+        name: command.name,
+        description: command.description,
+        promptTemplate: command.promptTemplate,
+        argumentHint: command.argumentHint,
+        pluginId: plugin.id,
+        pluginRoot: plugin.root,
+        scope: plugin.scope
+      });
+    }
+  }
+  return commands;
+}
+function getPluginTools(plugins) {
+  const tools = [];
+  for (const plugin of plugins) {
+    for (const tool of plugin.manifest.tools ?? []) {
+      tools.push({ ...tool, pluginId: plugin.id });
+    }
+  }
+  return tools;
+}
+function getPluginMcpServers(plugins) {
+  const servers = [];
+  for (const plugin of plugins) {
+    for (const server of plugin.manifest.mcpServers ?? []) {
+      servers.push({ ...server, pluginId: plugin.id });
+    }
+  }
+  return servers;
+}
+var init_loader = __esm({
+  "src/core/plugins/loader.ts"() {
+    "use strict";
+    init_paths();
+    init_manifest();
+  }
+});
+
+// src/core/plugins/install.ts
+import { spawnSync } from "child_process";
+import { cpSync, existsSync as existsSync8, mkdirSync as mkdirSync8, mkdtempSync, readdirSync as readdirSync4, rmSync, statSync as statSync10 } from "fs";
+import { tmpdir } from "os";
+import { basename as basename5, join as join15, resolve as resolve3 } from "path";
+function pluginsHomeDir() {
+  const dir = join15(getComicodeHome(), "plugins");
+  mkdirSync8(dir, { recursive: true });
+  return dir;
+}
+function isGitLikeSource(source) {
+  return /^(https?:\/\/|git@|ssh:\/\/|git:\/\/)/i.test(source) || source.endsWith(".git");
+}
+function safePluginDirName(name) {
+  const cleaned = name.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  return cleaned || "plugin";
+}
+function copyPluginDir(fromDir, toDir) {
+  rmSync(toDir, { recursive: true, force: true });
+  cpSync(fromDir, toDir, { recursive: true });
+}
+function installFromDirectory(dirPath, sourceLabel) {
+  const absolute = resolve3(dirPath);
+  if (!existsSync8(absolute) || !statSync10(absolute).isDirectory()) {
+    throw new PluginManifestError(`plugin directory not found: ${absolute}`);
+  }
+  const manifestPath = findManifestPath(absolute);
+  if (!manifestPath) {
+    throw new PluginManifestError(
+      `no plugin manifest found in ${absolute} (expected plugin.json or comicode-plugin.json)`
+    );
+  }
+  const manifest = loadManifestFile(manifestPath);
+  const target = join15(pluginsHomeDir(), safePluginDirName(manifest.name));
+  copyPluginDir(absolute, target);
+  return { name: manifest.name, version: manifest.version, path: target, source: sourceLabel };
+}
+function runGitClone(url, destination) {
+  const result = spawnSync("git", ["clone", "--depth", "1", url, destination], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true
+  });
+  if (result.error) {
+    throw new Error(`failed to run git: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    const stderr = (result.stderr || result.stdout || "").trim();
+    throw new Error(`git clone failed${stderr ? `: ${stderr}` : ""}`);
+  }
+}
+function resolveClonedPluginDir(cloneRoot) {
+  if (findManifestPath(cloneRoot)) return cloneRoot;
+  let entries = [];
+  try {
+    entries = readdirSync4(cloneRoot);
+  } catch {
+    return cloneRoot;
+  }
+  for (const entry of entries) {
+    const full = join15(cloneRoot, entry);
+    try {
+      if (statSync10(full).isDirectory() && findManifestPath(full)) return full;
+    } catch {
+    }
+  }
+  return cloneRoot;
+}
+function installFromGitUrl(url) {
+  const tempRoot = mkdtempSync(join15(tmpdir(), "comicode-plugin-"));
+  const cloneDir = join15(tempRoot, "repo");
+  try {
+    runGitClone(url, cloneDir);
+    const pluginDir = resolveClonedPluginDir(cloneDir);
+    return installFromDirectory(pluginDir, url);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+async function installPlugin(source) {
+  const trimmed = source.trim();
+  if (!trimmed) throw new Error("Plugin source is required (local path or git URL).");
+  if (isGitLikeSource(trimmed)) {
+    return installFromGitUrl(trimmed);
+  }
+  return installFromDirectory(trimmed, resolve3(trimmed));
+}
+async function removePlugin(name) {
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error("Plugin name is required.");
+  const userDir = pluginsHomeDir();
+  const plugins = loadPlugins({ cwd: process.cwd() }).filter((p) => p.scope === "user");
+  const match = plugins.find((p) => p.id.toLowerCase() === trimmed.toLowerCase());
+  if (!match) {
+    const direct = join15(userDir, safePluginDirName(trimmed));
+    if (existsSync8(direct)) {
+      rmSync(direct, { recursive: true, force: true });
+      return { removed: true, path: direct, name: basename5(direct) };
+    }
+    return { removed: false, name: trimmed };
+  }
+  rmSync(match.root, { recursive: true, force: true });
+  return { removed: true, path: match.root, name: match.id };
+}
+function getPluginInfo(name, cwd = process.cwd()) {
+  const needle = name.trim().toLowerCase();
+  if (!needle) return null;
+  const plugins = loadPlugins({ cwd });
+  return plugins.find((p) => p.id.toLowerCase() === needle) ?? null;
+}
+var init_install = __esm({
+  "src/core/plugins/install.ts"() {
+    "use strict";
+    init_paths();
+    init_manifest();
+    init_loader();
+  }
+});
+
+// src/core/plugins/index.ts
+var init_plugins = __esm({
+  "src/core/plugins/index.ts"() {
+    "use strict";
+    init_manifest();
+    init_loader();
+    init_install();
   }
 });
 
@@ -8704,8 +10311,8 @@ __export(repository_exports, {
 });
 import { execFile } from "child_process";
 import { createHash as createHash4 } from "crypto";
-import { readFileSync as readFileSync9, unlinkSync as unlinkSync3 } from "fs";
-import { isAbsolute, join as join11, relative as relative3, resolve as resolve3, sep as sep3 } from "path";
+import { readFileSync as readFileSync10, unlinkSync as unlinkSync3 } from "fs";
+import { isAbsolute, join as join16, relative as relative3, resolve as resolve4, sep as sep3 } from "path";
 function runGit(root, args, options = {}) {
   return new Promise((resolveResult) => {
     execFile(
@@ -8843,7 +10450,7 @@ async function pathExistsInRevision(root, revision, path) {
 }
 function safeRelative(root, path) {
   if (!path || isAbsolute(path)) return null;
-  const absolute = resolve3(root, path);
+  const absolute = resolve4(root, path);
   const rel = relative3(root, absolute);
   if (!rel || rel.startsWith("..") || isAbsolute(rel) || rel.split(sep3).includes(".git"))
     return null;
@@ -8853,7 +10460,7 @@ function hashFile(root, path) {
   const safe = safeRelative(root, path);
   if (!safe) return null;
   try {
-    return createHash4("sha256").update(readFileSync9(join11(root, safe))).digest("hex");
+    return createHash4("sha256").update(readFileSync10(join16(root, safe))).digest("hex");
   } catch {
     return null;
   }
@@ -8907,7 +10514,7 @@ function untrackedDiff(root, path) {
   const safe = safeRelative(root, path);
   if (!safe) return "";
   try {
-    const buffer = readFileSync9(join11(root, safe));
+    const buffer = readFileSync10(join16(root, safe));
     if (buffer.length > 24e4)
       return `--- /dev/null
 +++ b/${safe}
@@ -9077,7 +10684,7 @@ async function performUndo(root, plan) {
       continue;
     }
     try {
-      const absolute = join11(root, item.path);
+      const absolute = join16(root, item.path);
       unlinkSync3(absolute);
       deleted.push(item.path);
     } catch (error) {
@@ -9126,14 +10733,14 @@ function effortProfileFor(store, currentProfileId) {
 }
 function sleep(ms, signal) {
   if (ms <= 0) return Promise.resolve();
-  return new Promise((resolve6) => {
+  return new Promise((resolve8) => {
     const timer = setTimeout(() => {
       signal?.removeEventListener("abort", onAbort);
-      resolve6();
+      resolve8();
     }, ms);
     const onAbort = () => {
       clearTimeout(timer);
-      resolve6();
+      resolve8();
     };
     signal?.addEventListener("abort", onAbort, { once: true });
   });
@@ -9155,6 +10762,8 @@ var init_agent = __esm({
     init_executor();
     init_context();
     init_collaboration();
+    init_teams();
+    init_plugins();
     init_service();
     init_registry();
     init_errors();
@@ -9203,7 +10812,7 @@ var init_agent = __esm({
         tokenHint: null
       }
     };
-    CodingAgent = class {
+    CodingAgent = class _CodingAgent {
       store;
       task;
       hooks;
@@ -9246,6 +10855,9 @@ var init_agent = __esm({
       mode;
       skills;
       effort;
+      routingOverrides;
+      /** User messages injected while the loop is running (live follow-ups). */
+      pendingInjections = [];
       constructor(options) {
         this.store = options.store;
         const task = options.store.getTask(options.taskId);
@@ -9273,6 +10885,7 @@ var init_agent = __esm({
           },
           set: (path, snapshot) => options.store.saveProjectSnapshot(path, snapshot)
         });
+        this.routingOverrides = options.routingOverrides;
         this.router = new Router(options.store, options.routingOverrides);
         this.adapterFactory = options.adapterFactory ?? ((profile) => createAdapter(profile));
         this.contextFactory = options.contextFactory ?? ((profile, keyIndex) => createProfileContext(profile, keyIndex));
@@ -9281,12 +10894,17 @@ var init_agent = __esm({
         if (requestedMode === "auto" && this.mode !== "auto") {
           this.hooks.onNotice?.(`Auto mode selected ${this.mode} for this task.`);
         }
-        this.skills = loadSkills(task.projectPath);
+        const installedPlugins = loadPlugins({
+          cwd: task.projectPath,
+          onWarning: (message) => this.hooks.onNotice?.(message)
+        });
+        this.skills = [...loadSkills(task.projectPath), ...getPluginSkills(installedPlugins)];
         this.executor = new ToolExecutor({
           root: task.projectPath,
           settings: this.settings,
           authority: this.authority,
           inspector: this.inspector,
+          store: options.store,
           confirm: this.hooks.confirm,
           mode: this.mode,
           skills: this.skills,
@@ -9341,7 +10959,22 @@ var init_agent = __esm({
           );
         }
       }
+      /**
+       * Inject a follow-up instruction while this agent is already running. The
+       * message is persisted to the task thread, so the NEXT model step sees it
+       * through the normal context builder — no special prompt plumbing needed.
+       */
+      injectMessage(content) {
+        const text = content.trim();
+        if (!text || this.task.status === "completed") return;
+        this.store.appendMessage(this.task.id, {
+          role: "user",
+          content: `[Live follow-up] ${text}`
+        });
+        this.pendingInjections.push(text);
+      }
       async run(options = {}) {
+        if (this.mode === "team") return this.runTeam(options);
         const maxSteps2 = Math.max(1, Math.min(options.maxSteps ?? this.settings.agent.maxSteps, 200));
         try {
           await this.prepare(options);
@@ -9353,6 +10986,12 @@ var init_agent = __esm({
           while (this.steps < maxSteps2) {
             if (options.signal?.aborted) {
               return this.halt("paused", "Cancelled by user. Progress saved.");
+            }
+            if (this.pendingInjections.length > 0) {
+              const latest = this.pendingInjections[this.pendingInjections.length - 1];
+              this.pendingInjections.length = 0;
+              this.hooks.onNotice?.(`Live follow-up received \u2014 applying it now: ${latest.slice(0, 120)}`);
+              emptyResponses = 0;
             }
             const candidate = await this.ensureCandidate();
             if (!candidate) {
@@ -9468,6 +11107,164 @@ var init_agent = __esm({
           const message = redactSecrets(error instanceof Error ? error.message : String(error));
           return this.halt("failed", `Agent stopped with an unexpected error: ${message}`);
         }
+      }
+      // ------------------------------------------------------------------- team
+      /**
+       * Run the virtual software organization. Every stage is a complete
+       * `CodingAgent` run with its own mode and capability-chosen model, on the
+       * SAME task thread — so each member inherits the full transcript, plan,
+       * checkpoints, quota failover and context compaction of its predecessor.
+       */
+      async runTeam(options) {
+        const originalRequest = this.task.userRequest || this.task.summary || "";
+        const roles = selectTeamRoles(originalRequest, this.mode);
+        const handoffs = [];
+        const aggregate = { inputTokens: 0, outputTokens: 0 };
+        let steps = 0;
+        let lastResult = null;
+        this.hooks.onNotice?.(
+          `ComiCode Company assembled (${roles.length} departments): ${roles.map((role) => role.label).join(" \u2192 ")}.`
+        );
+        for (let index = 0; index < roles.length; index += 1) {
+          if (options.signal?.aborted) {
+            return this.halt("paused", "Cancelled by user. Progress saved.");
+          }
+          const role = roles[index];
+          let stageModel = null;
+          if (role.autoModel) {
+            const picked = this.router.select({
+              taskId: this.task.id,
+              taskType: role.taskType,
+              profileId: null,
+              modelId: null,
+              excludeKeys: [...this.exclude],
+              excludedProfileIds: [...this.excludedProfiles],
+              requirements: {
+                tools: role.mode !== "explain" && role.mode !== "plan",
+                vision: role.taskType === "vision"
+              }
+            });
+            if (picked.decision) {
+              const { profile, model } = picked.decision.candidate;
+              stageModel = `${profile.name}/${model.modelId}`;
+              this.task = this.store.updateTask(this.task.id, {
+                currentProfileId: profile.id,
+                currentModelId: model.modelId,
+                taskType: role.taskType
+              });
+            }
+          }
+          this.store.updateTask(this.task.id, {
+            status: "running",
+            phase: "inspect",
+            error: null,
+            completedAt: null
+          });
+          const stagePrompt = buildStagePrompt(role, originalRequest, handoffs);
+          this.store.appendMessage(this.task.id, { role: "user", content: stagePrompt });
+          this.hooks.onStage?.({
+            index: index + 1,
+            total: roles.length,
+            roleId: role.id,
+            label: role.label,
+            department: role.department,
+            icon: role.icon,
+            status: "start",
+            summary: null,
+            model: stageModel
+          });
+          this.hooks.onNotice?.(
+            `[${index + 1}/${roles.length}] ${role.icon} ${role.label} \xB7 ${role.department}` + (stageModel ? ` \xB7 ${stageModel}` : "") + ` \u2014 ${role.capabilityHint}`
+          );
+          let stageSummary = "";
+          const isLast = index === roles.length - 1;
+          try {
+            const stageAgent = new _CodingAgent({
+              store: this.store,
+              taskId: this.task.id,
+              authority: this.authority,
+              settings: this.settings,
+              mode: role.mode,
+              routingOverrides: this.routingOverrides,
+              adapterFactory: this.adapterFactory,
+              contextFactory: this.contextFactory,
+              hooks: {
+                ...this.hooks,
+                onStage: void 0,
+                onTaskComplete: (summary) => {
+                  stageSummary = summary ?? "";
+                  if (isLast) this.hooks.onTaskComplete?.(summary);
+                }
+              }
+            });
+            const result = await stageAgent.run(options);
+            lastResult = result;
+            aggregate.inputTokens += result.usage.inputTokens;
+            aggregate.outputTokens += result.usage.outputTokens;
+            steps += result.steps;
+            if (result.status !== "completed") {
+              this.hooks.onStage?.({
+                index: index + 1,
+                total: roles.length,
+                roleId: role.id,
+                label: role.label,
+                department: role.department,
+                icon: role.icon,
+                status: "error",
+                summary: result.pauseReason ?? result.summary,
+                model: stageModel
+              });
+              return {
+                ...result,
+                usage: aggregate,
+                steps
+              };
+            }
+            const latest = this.store.getTask(this.task.id);
+            const note = buildHandoffNote(
+              role,
+              stageSummary || result.summary || "",
+              latest?.changedFiles ?? []
+            );
+            handoffs.push(note);
+            this.store.appendMessage(this.task.id, { role: "system", content: note });
+            this.hooks.onStage?.({
+              index: index + 1,
+              total: roles.length,
+              roleId: role.id,
+              label: role.label,
+              department: role.department,
+              icon: role.icon,
+              status: "done",
+              summary: stageSummary || result.summary,
+              model: stageModel
+            });
+          } catch (error) {
+            const message = redactSecrets(error instanceof Error ? error.message : String(error));
+            logger.warn(`Team stage ${role.id} failed: ${message}`);
+            this.hooks.onStage?.({
+              index: index + 1,
+              total: roles.length,
+              roleId: role.id,
+              label: role.label,
+              department: role.department,
+              icon: role.icon,
+              status: "error",
+              summary: message,
+              model: stageModel
+            });
+            return this.halt("failed", `Team stage ${role.label} failed: ${message}`);
+          }
+        }
+        return {
+          status: "completed",
+          taskId: this.task.id,
+          summary: lastResult?.summary ?? null,
+          pauseReason: null,
+          finalResponse: lastResult?.finalResponse ?? null,
+          usage: aggregate,
+          steps
+        };
       }
       // ------------------------------------------------------------------ prepare
       async prepare(options) {
@@ -10516,6 +12313,13 @@ ${bold("Plan")} ${dim(value.summary ?? "")}`);
 ${bold("Reviewer")}
 ${review}`);
     },
+    onStage: (stage) => {
+      if (json) return;
+      const mark = stage.status === "done" ? success("\u2713") : stage.status === "error" ? danger("\u2717") : stage.status === "start" ? bold("\u25B8") : dim("\xB7");
+      console.log(
+        `${mark} ${stage.icon} [${stage.index}/${stage.total}] ${bold(stage.label)} ${dim(`\u2014 ${stage.department}${stage.model ? ` \xB7 ${stage.model}` : ""}`)}`
+      );
+    },
     onCheckpoint: () => {
     },
     onPaused: (reason) => {
@@ -10548,6 +12352,7 @@ ${review}`);
     hooks,
     authority: authorityFrom(options),
     settings: store.getSettings(),
+    mode: options.mode,
     routingOverrides: options.allowPaid ? { allowPaid: true } : void 0
   });
   let result;
@@ -10654,8 +12459,8 @@ __export(providers_exports, {
   describeKey: () => describeKey,
   registerProviderCommands: () => registerProviderCommands
 });
-import { existsSync as existsSync7, readFileSync as readFileSync10, writeFileSync as writeFileSync3 } from "fs";
-import { resolve as resolve4 } from "path";
+import { existsSync as existsSync9, readFileSync as readFileSync11, writeFileSync as writeFileSync3 } from "fs";
+import { resolve as resolve5 } from "path";
 function parseProviderKind(value) {
   if (PROVIDER_ORDER.includes(value)) return value;
   throw new Error(
@@ -11353,7 +13158,7 @@ async function exportProfiles(file) {
     const text = `${JSON.stringify(payload, null, 2)}
 `;
     if (file) {
-      const path = resolve4(process.cwd(), file);
+      const path = resolve5(process.cwd(), file);
       writeFileSync3(path, text, "utf8");
       console.log(`${success("\u2714")} Exported ${payload.profiles.length} profiles to ${path}.`);
       console.log(dim("Credentials are never included. Re-add API keys after importing."));
@@ -11363,11 +13168,11 @@ async function exportProfiles(file) {
   });
 }
 async function importProfiles(file) {
-  const path = resolve4(process.cwd(), file);
-  if (!existsSync7(path)) throw new Error(`File not found: ${path}`);
+  const path = resolve5(process.cwd(), file);
+  if (!existsSync9(path)) throw new Error(`File not found: ${path}`);
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync10(path, "utf8"));
+    parsed = JSON.parse(readFileSync11(path, "utf8"));
   } catch (error) {
     throw new Error(
       `Invalid JSON in ${file}: ${error instanceof Error ? error.message : String(error)}`
@@ -12174,8 +13979,8 @@ var init_usage = __esm({
 });
 
 // src/cli/commands/settings.ts
-import { existsSync as existsSync8, readFileSync as readFileSync11, writeFileSync as writeFileSync4 } from "fs";
-import { resolve as resolve5 } from "path";
+import { existsSync as existsSync10, readFileSync as readFileSync12, writeFileSync as writeFileSync4 } from "fs";
+import { resolve as resolve6 } from "path";
 function getPath(settings, path) {
   return path.split(".").reduce((current, key) => {
     if (current && typeof current === "object") {
@@ -12365,7 +14170,7 @@ async function exportConfig(file) {
     const text = `${JSON.stringify(bundle, null, 2)}
 `;
     if (file) {
-      const path = resolve5(process.cwd(), file);
+      const path = resolve6(process.cwd(), file);
       writeFileSync4(path, text, "utf8");
       console.log(`${success("\u2714")} Exported configuration to ${path}.`);
       console.log(dim("Credentials are never included. API keys must be re-added after import."));
@@ -12375,11 +14180,11 @@ async function exportConfig(file) {
   });
 }
 async function importConfig(file) {
-  const path = resolve5(process.cwd(), file);
-  if (!existsSync8(path)) throw new Error(`File not found: ${path}`);
+  const path = resolve6(process.cwd(), file);
+  if (!existsSync10(path)) throw new Error(`File not found: ${path}`);
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync11(path, "utf8"));
+    parsed = JSON.parse(readFileSync12(path, "utf8"));
   } catch (error) {
     throw new Error(`Invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -12449,26 +14254,26 @@ var init_settings2 = __esm({
 });
 
 // src/core/project/init.ts
-import { existsSync as existsSync9, mkdirSync as mkdirSync7, readFileSync as readFileSync12, writeFileSync as writeFileSync5 } from "fs";
-import { basename as basename4, join as join12 } from "path";
+import { existsSync as existsSync11, mkdirSync as mkdirSync9, readFileSync as readFileSync13, writeFileSync as writeFileSync5 } from "fs";
+import { basename as basename6, join as join17 } from "path";
 function readProjectConfig(cwd) {
   const path = getProjectStatePath(cwd);
-  if (!existsSync9(path)) return null;
+  if (!existsSync11(path)) return null;
   try {
-    return JSON.parse(readFileSync12(path, "utf8"));
+    return JSON.parse(readFileSync13(path, "utf8"));
   } catch {
     return null;
   }
 }
 async function initProject(cwd, requestedName) {
   const directory = getProjectStateDir(cwd);
-  mkdirSync7(directory, { recursive: true });
+  mkdirSync9(directory, { recursive: true });
   const inspector = new ProjectInspector(cwd);
   const existing = readProjectConfig(cwd);
   const commands = inspector.detectCommands();
   const config = existing ?? {
     schemaVersion: 1,
-    name: requestedName?.trim() || inspector.projectName() || basename4(cwd),
+    name: requestedName?.trim() || inspector.projectName() || basename6(cwd),
     createdAt: (/* @__PURE__ */ new Date()).toISOString(),
     commands: {
       test: commands.test,
@@ -12487,10 +14292,10 @@ async function initProject(cwd, requestedName) {
   const configPath = getProjectStatePath(cwd);
   writeFileSync5(configPath, JSON.stringify(config, null, 2) + "\n", "utf8");
   let gitignoreUpdated = false;
-  const gitignore = join12(cwd, ".gitignore");
+  const gitignore = join17(cwd, ".gitignore");
   const marker = ".comicode/";
   try {
-    const current = existsSync9(gitignore) ? readFileSync12(gitignore, "utf8") : "";
+    const current = existsSync11(gitignore) ? readFileSync13(gitignore, "utf8") : "";
     const hasMarker = current.split(/\r?\n/).some((line) => line.trim() === marker || line.trim() === ".comicode");
     if (!hasMarker) {
       const prefix = current && !current.endsWith("\n") ? "\n" : "";
@@ -12519,7 +14324,7 @@ var init_init = __esm({
 });
 
 // src/cli/commands/system.ts
-import { existsSync as existsSync10, statSync as statSync9 } from "fs";
+import { existsSync as existsSync12, statSync as statSync11 } from "fs";
 function compareVersions(left, right) {
   const a = left.split(".").map((part) => Number(part.replace(/\D/g, "")) || 0);
   const b = right.split(".").map((part) => Number(part.replace(/\D/g, "")) || 0);
@@ -12557,8 +14362,8 @@ async function initCommand(name, options) {
   console.log(
     `Next: ${bold("comicode providers add")} then ${bold("comicode")} or ${bold('comicode run "<task>"')}.`
   );
-  if (existsSync10(getDatabasePath())) {
-    console.log(dim(`Database: ${getDatabasePath()} (${statSync9(getDatabasePath()).size} bytes)`));
+  if (existsSync12(getDatabasePath())) {
+    console.log(dim(`Database: ${getDatabasePath()} (${statSync11(getDatabasePath()).size} bytes)`));
   }
 }
 async function credentialState(profile) {
@@ -12995,13 +14800,794 @@ var init_system = __esm({
   }
 });
 
+// src/cli/commands/plugin.ts
+function formatScope(scope) {
+  return scope === "project" ? warning("project") : dim("user");
+}
+function registerPluginCommand(program) {
+  const plugin = program.command("plugin").description("Install and manage ComiCode plugins");
+  plugin.command("list").alias("ls").description("List discovered plugins (user and project)").option("--json", "Output as JSON").action(async (options) => {
+    try {
+      const warnings = [];
+      const plugins = loadPlugins({ cwd: process.cwd(), onWarning: (m) => warnings.push(m) });
+      if (options.json) {
+        jsonOut({
+          plugins: plugins.map((p) => ({
+            id: p.id,
+            version: p.manifest.version,
+            description: p.manifest.description ?? null,
+            scope: p.scope,
+            root: p.root,
+            manifestPath: p.manifestPath,
+            commands: p.manifest.commands?.length ?? 0,
+            skills: p.manifest.skills?.length ?? 0,
+            tools: p.manifest.tools?.length ?? 0,
+            mcpServers: p.manifest.mcpServers?.length ?? 0
+          })),
+          warnings
+        });
+        return;
+      }
+      for (const message of warnings) console.log(`${warning("!")} ${message}`);
+      printSection(`Plugins (${plugins.length})`);
+      if (plugins.length === 0) {
+        console.log(dim("No plugins found. Install with: comicode plugin install <path-or-git-url>"));
+        console.log(dim("User plugins directory: <comicode home>/plugins  \u2022  Project: .comicode/plugins"));
+        return;
+      }
+      printTable(
+        ["Name", "Version", "Scope", "Provides", "Description"],
+        plugins.map((p) => [
+          p.id,
+          p.manifest.version,
+          formatScope(p.scope),
+          `${p.manifest.commands?.length ?? 0} cmd / ${p.manifest.skills?.length ?? 0} skill / ${p.manifest.tools?.length ?? 0} tool / ${p.manifest.mcpServers?.length ?? 0} mcp`,
+          truncate(p.manifest.description ?? "", 50)
+        ])
+      );
+    } catch (error) {
+      console.error(danger(error instanceof Error ? error.message : String(error)));
+      process.exitCode = 1;
+    }
+  });
+  plugin.command("install <source>").description("Install a plugin from a local directory or git/https URL").option("--json", "Output as JSON").action(async (source, options) => {
+    try {
+      const result = await installPlugin(source);
+      if (options.json) {
+        jsonOut({ ok: true, ...result });
+      } else {
+        console.log(`${success("\u2714")} Installed plugin ${bold(result.name)}@${result.version}`);
+        console.log(dim(`  Path: ${result.path}`));
+        console.log(dim(`  Source: ${result.source}`));
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (options.json) jsonOut({ ok: false, error: message });
+      else console.error(danger(`Install failed: ${message}`));
+      process.exitCode = 1;
+    }
+  });
+  plugin.command("remove <name>").alias("rm").description("Remove an installed user-scope plugin").option("--json", "Output as JSON").action(async (name, options) => {
+    try {
+      const result = await removePlugin(name);
+      if (options.json) {
+        jsonOut({ ok: result.removed, ...result });
+      } else if (result.removed) {
+        console.log(`${success("\u2714")} Removed plugin ${bold(result.name)}${result.path ? dim(` (${result.path})`) : ""}`);
+      } else {
+        console.error(danger(`Plugin not found in user plugins: ${name}`));
+        process.exitCode = 1;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (options.json) jsonOut({ ok: false, error: message });
+      else console.error(danger(message));
+      process.exitCode = 1;
+    }
+  });
+  plugin.command("info <name>").description("Show details for a discovered plugin").option("--json", "Output as JSON").action(async (name, options) => {
+    try {
+      const p = getPluginInfo(name, process.cwd());
+      if (!p) {
+        if (options.json) jsonOut({ ok: false, error: `Plugin not found: ${name}` });
+        else console.error(danger(`Plugin not found: ${name}`));
+        process.exitCode = 1;
+        return;
+      }
+      const commands = getPluginCommands([p]);
+      const skills = getPluginSkills([p]);
+      const tools = getPluginTools([p]);
+      const servers = getPluginMcpServers([p]);
+      if (options.json) {
+        jsonOut({ ok: true, plugin: p, commands, skills: skills.map((s) => ({ name: s.name, description: s.description })), tools, mcpServers: servers });
+        return;
+      }
+      printSection(`Plugin: ${p.id}`);
+      printKeyValue([
+        ["Name", p.manifest.name],
+        ["Version", p.manifest.version],
+        ["Scope", p.scope],
+        ["Root", p.root],
+        ["Manifest", p.manifestPath],
+        ["Author", p.manifest.author ?? "\u2014"],
+        ["License", p.manifest.license ?? "\u2014"],
+        ["Description", p.manifest.description ?? "\u2014"]
+      ]);
+      if (commands.length) {
+        printSection("Commands");
+        for (const c of commands) console.log(`  /${c.name}${c.argumentHint ? ` ${c.argumentHint}` : ""} ${dim(`- ${c.description}`)}`);
+      }
+      if (skills.length) {
+        printSection("Skills");
+        for (const s of skills) console.log(`  ${s.name} ${dim(`- ${s.description}`)}`);
+      }
+      if (tools.length) {
+        printSection("Tools (declarative)");
+        for (const t of tools) console.log(`  ${t.name} ${dim(`- ${t.description}`)}`);
+      }
+      if (servers.length) {
+        printSection("MCP servers (config only)");
+        for (const s of servers) console.log(`  ${s.name} ${dim(s.url ? s.url : s.command ?? "")}`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (options.json) jsonOut({ ok: false, error: message });
+      else console.error(danger(message));
+      process.exitCode = 1;
+    }
+  });
+}
+var init_plugin = __esm({
+  "src/cli/commands/plugin.ts"() {
+    "use strict";
+    init_output();
+    init_plugins();
+  }
+});
+
+// src/core/server/default-provider.ts
+function demoTask(id, userRequest, status, phase) {
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  return {
+    id,
+    projectPath: "/workspace/comicode",
+    projectName: "comicode",
+    userRequest,
+    taskType: "coding",
+    status,
+    phase,
+    plan: status === "completed" ? {
+      summary: "Inspect context, draft plan, implement, verify.",
+      steps: [
+        { title: "Inspect repository layout", status: "completed" },
+        { title: "Draft implementation plan", status: "completed" },
+        { title: "Implement changes", status: "completed" },
+        { title: "Run verification", status: "completed" }
+      ],
+      updatedAt: now
+    } : null,
+    completedSteps: [],
+    pendingSteps: ["Inspect repository layout", "Draft implementation plan", "Implement changes", "Run verification"],
+    relevantFiles: [],
+    changedFiles: [],
+    currentProfileId: "prof-groq-demo",
+    currentModelId: "llama-3.3-70b-versatile",
+    attempts: [],
+    metadata: { createdBy: "web-demo" },
+    summary: status === "completed" ? "Demo task completed." : null,
+    error: null,
+    createdAt: now,
+    updatedAt: now,
+    completedAt: status === "completed" ? now : null,
+    resumeCount: 0,
+    lastCheckpointId: null
+  };
+}
+var DEMO_PROFILES, DEMO_MODELS, InMemoryDataProvider;
+var init_default_provider = __esm({
+  "src/core/server/default-provider.ts"() {
+    "use strict";
+    DEMO_PROFILES = [
+      {
+        id: "prof-openai-demo",
+        providerId: "openai",
+        name: "OpenAI",
+        baseUrl: "https://api.openai.com/v1",
+        authType: "bearer",
+        defaultModel: "gpt-4o",
+        enabled: true,
+        accessClassification: "paid",
+        lastError: null
+      },
+      {
+        id: "prof-groq-demo",
+        providerId: "groq",
+        name: "Groq",
+        baseUrl: "https://api.groq.com/openai/v1",
+        authType: "bearer",
+        defaultModel: "llama-3.3-70b-versatile",
+        enabled: true,
+        accessClassification: "free-confirmed",
+        lastError: null
+      }
+    ];
+    DEMO_MODELS = [
+      {
+        id: "openai:gpt-4o",
+        providerId: "openai",
+        profileId: null,
+        modelId: "gpt-4o",
+        displayName: "GPT-4o",
+        contextWindow: 128e3,
+        maxOutputTokens: 16384,
+        supportsTools: true,
+        supportsStreaming: true,
+        supportsVision: true,
+        codingSuitability: 5,
+        reasoningSuitability: 4,
+        inputPricePerMillion: 2.5,
+        outputPricePerMillion: 10,
+        access: "paid",
+        accessSource: "curated",
+        accessNotes: "Paid tier.",
+        available: true,
+        lastCheckedAt: (/* @__PURE__ */ new Date()).toISOString()
+      },
+      {
+        id: "groq:llama-3.3-70b-versatile",
+        providerId: "groq",
+        profileId: null,
+        modelId: "llama-3.3-70b-versatile",
+        displayName: "Llama 3.3 70B Versatile",
+        contextWindow: 131072,
+        maxOutputTokens: 8192,
+        supportsTools: true,
+        supportsStreaming: true,
+        supportsVision: false,
+        codingSuitability: 4,
+        reasoningSuitability: 5,
+        inputPricePerMillion: 0,
+        outputPricePerMillion: 0,
+        access: "free-confirmed",
+        accessSource: "curated",
+        accessNotes: "Free tier confirmed.",
+        available: true,
+        lastCheckedAt: (/* @__PURE__ */ new Date()).toISOString()
+      }
+    ];
+    InMemoryDataProvider = class {
+      profiles = [...DEMO_PROFILES];
+      models = [...DEMO_MODELS];
+      tasks = [demoTask("task-demo-1", "Add streaming progress to the agent loop", "completed", "done")];
+      taskSeq = 1;
+      approvalSeq = 0;
+      async listProfiles() {
+        return this.profiles.map((profile) => ({ ...profile }));
+      }
+      async listModels() {
+        return this.models.map((model) => ({ ...model }));
+      }
+      async listTasks() {
+        return this.tasks.map((task) => ({ ...task }));
+      }
+      async getTask(id) {
+        const task = this.tasks.find((entry) => entry.id === id);
+        return task ? { ...task } : null;
+      }
+      async sendPrompt(text, handlers) {
+        const taskId = `task-demo-${++this.taskSeq}`;
+        this.tasks.unshift(
+          demoTask(taskId, text, "running", "intake")
+        );
+        const sleep2 = (ms) => new Promise((resolve8) => setTimeout(resolve8, ms));
+        try {
+          handlers.onStatus?.({ state: "running", label: "Working", detail: taskId });
+          handlers.onStage?.("intake");
+          await sleep2(320);
+          handlers.onStage?.("inspect");
+          await sleep2(420);
+          handlers.onText?.("Scanning the workspace to ground the plan in reality.");
+          await sleep2(240);
+          const toolCall = {
+            id: `call-demo-${this.taskSeq}`,
+            name: "read-file",
+            arguments: { path: "src/core/agent/agent.ts" }
+          };
+          handlers.onStatus?.({ state: "tool", label: toolCall.name, detail: String(toolCall.arguments.path ?? "") });
+          handlers.onToolStart?.(toolCall);
+          await sleep2(480);
+          const toolResult = {
+            ok: true,
+            content: "export class CodingAgent { /* \u2026 */ }",
+            changedFiles: []
+          };
+          handlers.onToolResult?.(toolCall, toolResult);
+          handlers.onStage?.("plan");
+          await sleep2(540);
+          handlers.onPlan?.({
+            summary: "Inspect context, draft plan, implement, verify.",
+            steps: [
+              { title: "Inspect repository layout", status: "completed" },
+              { title: "Draft implementation plan", status: "in_progress" },
+              { title: "Implement changes", status: "pending" },
+              { title: "Run verification", status: "pending" }
+            ],
+            updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+          });
+          await sleep2(620);
+          handlers.onStage?.("implement");
+          await sleep2(380);
+          handlers.onText?.("Drafting the implementation against the inspected context.");
+          await sleep2(340);
+          const grepCall = { ...toolCall, id: `call-demo-grep-${this.taskSeq}`, name: "grep" };
+          handlers.onToolStart?.(grepCall);
+          handlers.onToolResult?.(grepCall, { ok: true, content: 'src/core/agent/agent.ts:12 matches for "run"' });
+          await sleep2(420);
+          handlers.onStage?.("test");
+          await sleep2(380);
+          handlers.onStage?.("review");
+          await sleep2(420);
+          handlers.onText?.("\n\nFinal summary: the streamed response above reflects the current plan. Verification step queued for the touched surface.");
+          await sleep2(220);
+          handlers.onStatus?.({ state: "completed", label: "Completed", detail: taskId });
+          handlers.onDone?.({ status: "completed", summary: "Demo task completed.", taskId });
+          return { taskId };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          handlers.onError?.({ message });
+          handlers.onDone?.({ status: "failed", summary: null, taskId });
+          return { taskId };
+        }
+      }
+      async approve(_id, _decision) {
+        this.approvalSeq += 1;
+      }
+    };
+  }
+});
+
+// src/core/server/index.ts
+import { createServer } from "http";
+import { createReadStream, existsSync as existsSync13, statSync as statSync12 } from "fs";
+import { dirname as dirname6, extname as extname4, join as join18, resolve as resolve7 } from "path";
+import { fileURLToPath } from "url";
+import { spawn as spawn3 } from "child_process";
+function repoRoot() {
+  let dir = dirname6(fileURLToPath(import.meta.url));
+  for (let i = 0; i < 6; i += 1) {
+    if (existsSync13(join18(dir, "package.json"))) return dir;
+    const parent = dirname6(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return process.cwd();
+}
+function sendJson(response, status, value) {
+  const body = JSON.stringify(value);
+  response.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": Buffer.byteLength(body),
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type"
+  });
+  response.end(body);
+}
+function readBody(request) {
+  return new Promise((resolveBody, reject) => {
+    let body = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 1e6) {
+        reject(new Error("Request body too large."));
+        request.destroy();
+      }
+    });
+    request.on("end", () => {
+      try {
+        resolveBody(body ? JSON.parse(body) : {});
+      } catch {
+        reject(new Error("Invalid JSON body."));
+      }
+    });
+    request.on("error", reject);
+  });
+}
+function openBrowser(url) {
+  try {
+    if (process.platform === "win32") {
+      spawn3("explorer", [url], { detached: true, stdio: "ignore" }).unref();
+    } else if (process.platform === "darwin") {
+      spawn3("open", [url], { detached: true, stdio: "ignore" }).unref();
+    } else {
+      spawn3("xdg-open", [url], { detached: true, stdio: "ignore" }).unref();
+    }
+  } catch {
+  }
+}
+async function startServer(options = {}) {
+  const port = options.port ?? 8787;
+  const host = options.host ?? "127.0.0.1";
+  const log = options.onLog ?? (() => {
+  });
+  const provider = options.dataProvider ?? (options.store ? new EngineDataProvider(options.store, options.cwd ?? process.cwd()) : new InMemoryDataProvider());
+  const startedAt = Date.now();
+  const eventClients = /* @__PURE__ */ new Set();
+  const root = repoRoot();
+  const dist = resolve7(root, "web", "dist");
+  const broadcast = (event) => {
+    const payload = `data: ${JSON.stringify(event)}
+
+`;
+    for (const client of eventClients) {
+      if (!client.destroyed) client.write(payload);
+    }
+  };
+  const server = createServer((request, response) => {
+    const url2 = new URL(request.url ?? "/", `http://${host}:${port}`);
+    const path = url2.pathname;
+    response.setHeader("Access-Control-Allow-Origin", "*");
+    if (request.method === "OPTIONS") {
+      response.writeHead(204, {
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type"
+      });
+      response.end();
+      return;
+    }
+    const jsonOrError = async (fn) => {
+      try {
+        sendJson(response, 200, await fn());
+      } catch (error) {
+        sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) });
+      }
+    };
+    if (path === "/api/status" && request.method === "GET") {
+      void jsonOrError(async () => {
+        const [profiles, models, tasks] = await Promise.all([
+          provider.listProfiles(),
+          provider.listModels(),
+          provider.listTasks()
+        ]);
+        return {
+          version: VERSION,
+          uptime: Math.floor((Date.now() - startedAt) / 1e3),
+          providers: profiles.length,
+          models: models.length,
+          activeTasks: tasks.filter((task) => task.status === "running").length,
+          mode: "team",
+          health: "ok"
+        };
+      });
+      return;
+    }
+    if (path === "/api/providers" && request.method === "GET") {
+      void jsonOrError(() => provider.listProfiles());
+      return;
+    }
+    if (path === "/api/models" && request.method === "GET") {
+      void jsonOrError(() => provider.listModels());
+      return;
+    }
+    if (path === "/api/tasks" && request.method === "GET") {
+      void jsonOrError(() => provider.listTasks());
+      return;
+    }
+    if (path.startsWith("/api/tasks/") && request.method === "GET") {
+      const id = decodeURIComponent(path.slice("/api/tasks/".length));
+      void jsonOrError(async () => {
+        const task = await provider.getTask(id);
+        if (!task) {
+          sendJson(response, 404, { error: "Task not found." });
+          return null;
+        }
+        return task;
+      });
+      return;
+    }
+    if (path === "/api/approve" && request.method === "POST") {
+      void jsonOrError(async () => {
+        const body = await readBody(request);
+        await provider.approve(String(body.id ?? ""), body.decision ?? "allow");
+        return { ok: true };
+      });
+      return;
+    }
+    if (path === "/api/events" && request.method === "GET") {
+      response.writeHead(200, {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        "Access-Control-Allow-Origin": "*"
+      });
+      eventClients.add(response);
+      request.on("close", () => eventClients.delete(response));
+      response.write(`data: ${JSON.stringify({ type: "status", state: "connected" })}
+
+`);
+      return;
+    }
+    if (path === "/api/chat" && request.method === "POST") {
+      void (async () => {
+        try {
+          const body = await readBody(request);
+          const text = String(body.text ?? "").trim();
+          if (!text) {
+            sendJson(response, 400, { error: "A prompt is required." });
+            return;
+          }
+          response.writeHead(200, {
+            "Content-Type": "text/event-stream; charset=utf-8",
+            "Cache-Control": "no-cache",
+            Connection: "keep-alive",
+            "Access-Control-Allow-Origin": "*"
+          });
+          const emit = (event) => {
+            response.write(`data: ${JSON.stringify(event)}
+
+`);
+            broadcast(event);
+          };
+          emit({ type: "status", state: "running", label: "Starting" });
+          const handlers = {
+            onStatus: (status) => emit({ type: "status", ...status }),
+            onText: (delta) => emit({ type: "text", delta }),
+            onToolStart: (call) => emit({ type: "tool", ...call, phase: "start" }),
+            onToolResult: (call, result) => emit({ type: "tool", id: call.id, name: call.name, phase: "result", ok: result.ok, content: result.content }),
+            onPlan: (plan) => emit({ type: "plan", plan }),
+            onStage: (stage) => emit(typeof stage === "string" ? { type: "stage", stage } : { type: "stage", ...stage }),
+            onError: (error) => emit({ type: "error", message: error.message }),
+            onDone: (result) => emit({ type: "done", ...result })
+          };
+          await provider.sendPrompt(text, handlers);
+        } catch (error) {
+          response.write(
+            `data: ${JSON.stringify({ type: "error", message: error instanceof Error ? error.message : String(error) })}
+
+`
+          );
+        } finally {
+          if (!response.writableEnded) response.end();
+        }
+      })();
+      return;
+    }
+    if (request.method === "GET" && !path.startsWith("/api/")) {
+      const requested = path === "/" ? "index.html" : path.replace(/^\/+/, "");
+      const candidate = resolve7(dist, requested);
+      if (candidate.startsWith(dist) && existsSync13(candidate) && statSync12(candidate).isFile()) {
+        response.writeHead(200, {
+          "Content-Type": MIME[extname4(candidate).toLowerCase()] ?? "application/octet-stream",
+          "Access-Control-Allow-Origin": "*"
+        });
+        createReadStream(candidate).pipe(response);
+        return;
+      }
+      const index = join18(dist, "index.html");
+      if (existsSync13(index)) {
+        response.writeHead(200, {
+          "Content-Type": "text/html; charset=utf-8",
+          "Access-Control-Allow-Origin": "*"
+        });
+        createReadStream(index).pipe(response);
+        return;
+      }
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      response.end(
+        '<!doctype html><meta charset="utf-8"><title>ComiCode</title><body style="background:#0B0E14;color:#7CE8C3;font:16px ui-monospace,monospace;padding:48px"><h1>ComiCode dashboard</h1><p>The API is live. Build the frontend from the project root with:</p><pre>npm run web:build</pre><p>or run <code>npm run web:dev</code> for hot reload.</p></body>'
+      );
+      return;
+    }
+    sendJson(response, 404, { error: "Not found." });
+  });
+  await new Promise((resolveListen, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen(port, host, () => resolveListen());
+  });
+  const address = server.address();
+  const actualPort = typeof address === "object" && address ? address.port : port;
+  const url = `http://${host}:${actualPort}`;
+  log(`ComiCode dashboard listening on ${url}`);
+  if (options.open) openBrowser(url);
+  return {
+    port: actualPort,
+    close: async () => {
+      for (const client of eventClients) client.end();
+      eventClients.clear();
+      await new Promise((resolveClose, rejectClose) => {
+        server.close((error) => error ? rejectClose(error) : resolveClose());
+      });
+    }
+  };
+}
+var EngineDataProvider, MIME;
+var init_server = __esm({
+  "src/core/server/index.ts"() {
+    "use strict";
+    init_agent();
+    init_version();
+    init_default_provider();
+    EngineDataProvider = class {
+      constructor(store, cwd) {
+        this.store = store;
+        this.cwd = cwd;
+      }
+      store;
+      cwd;
+      approvals = /* @__PURE__ */ new Map();
+      approvalSeq = 0;
+      listProfiles() {
+        return this.store.listProfiles();
+      }
+      listModels() {
+        return this.store.listModels();
+      }
+      listTasks() {
+        return this.store.listTasks({ limit: 100 });
+      }
+      getTask(id) {
+        return this.store.getTask(id);
+      }
+      async approve(id, decision) {
+        const resolveApproval = this.approvals.get(id);
+        if (resolveApproval) {
+          this.approvals.delete(id);
+          resolveApproval(decision);
+        }
+      }
+      async sendPrompt(text, handlers) {
+        const profile = this.store.listProfiles().find((item) => item.id === this.store.getSelectedProfileId()) ?? this.store.listProfiles().find((item) => item.enabled) ?? null;
+        if (!profile) {
+          handlers.onError?.({ message: "No provider connected. Run `comicode connect` first." });
+          return { taskId: null };
+        }
+        const task = this.store.createTask({
+          projectPath: this.cwd,
+          projectName: this.cwd.split(/[\\/]/).filter(Boolean).pop() ?? "project",
+          userRequest: text,
+          taskType: "coding",
+          currentProfileId: profile.id,
+          currentModelId: profile.defaultModel ?? null,
+          metadata: { createdBy: "web", source: "comicode-web" }
+        });
+        handlers.onStatus?.({ state: "running", label: "Working", detail: task.id });
+        const hooks = {
+          onText: (delta) => handlers.onText?.(delta),
+          onPlan: (plan) => handlers.onPlan?.(plan ?? null),
+          onStage: (stage) => {
+            const value = {
+              stage: stage.roleId,
+              label: stage.label,
+              department: stage.department,
+              status: stage.status,
+              index: stage.index,
+              total: stage.total,
+              model: stage.model ?? void 0,
+              icon: stage.icon
+            };
+            handlers.onStage?.(value);
+          },
+          onToolStart: (call) => {
+            const value = {
+              id: call.id ?? `call-${Date.now()}`,
+              name: call.name,
+              arguments: call.arguments ?? {}
+            };
+            handlers.onToolStart?.(value);
+          },
+          onToolResult: (call, result) => {
+            const value = {
+              id: call.id ?? `call-${Date.now()}`,
+              name: call.name,
+              arguments: call.arguments ?? {}
+            };
+            handlers.onToolResult?.(value, {
+              ok: result.ok,
+              content: result.content,
+              changedFiles: result.changedFiles
+            });
+          },
+          onNotice: (message) => handlers.onStatus?.({ state: "running", label: "Notice", detail: message }),
+          confirm: (request) => {
+            const id = `approval-${++this.approvalSeq}`;
+            handlers.onStatus?.({
+              state: "approval",
+              label: request.title,
+              detail: id
+            });
+            return new Promise((resolveApproval) => {
+              this.approvals.set(id, resolveApproval);
+            });
+          }
+        };
+        try {
+          const agent = new CodingAgent({
+            store: this.store,
+            taskId: task.id,
+            hooks,
+            authority: { ...DEFAULT_AUTHORITY },
+            settings: this.store.getSettings(),
+            mode: "team"
+          });
+          const result = await agent.run({ maxSteps: this.store.getSettings().agent.maxSteps });
+          handlers.onStatus?.({ state: result.status, label: result.status, detail: task.id });
+          handlers.onDone?.({
+            status: result.status,
+            summary: result.summary,
+            taskId: task.id
+          });
+          return { taskId: task.id };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          handlers.onError?.({ message });
+          handlers.onDone?.({ status: "failed", summary: null, taskId: task.id });
+          return { taskId: task.id };
+        }
+      }
+    };
+    MIME = {
+      ".html": "text/html; charset=utf-8",
+      ".js": "text/javascript; charset=utf-8",
+      ".css": "text/css; charset=utf-8",
+      ".json": "application/json; charset=utf-8",
+      ".svg": "image/svg+xml",
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".woff2": "font/woff2",
+      ".ico": "image/x-icon"
+    };
+  }
+});
+
+// src/cli/commands/serve.ts
+function registerServeCommand(program) {
+  program.command("serve").description("Start the local web dashboard for ComiCode").option("--port <port>", "port to listen on", "8787").option("--host <host>", "host to bind", "127.0.0.1").option("--no-open", "do not open a browser automatically").option("--dev", "print the Vite dev command for the frontend").action(async (flags) => {
+    const port = Number(flags.port ?? 8787);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error("--port must be an integer between 1 and 65535.");
+    }
+    const context = openAppContext(process.cwd());
+    if (flags.dev) {
+      console.log(dim("Frontend dev server: npm run web:dev (from the project root)"));
+    }
+    const server = await startServer({
+      port,
+      host: flags.host ?? "127.0.0.1",
+      open: flags.open !== false,
+      store: context.store,
+      cwd: context.cwd,
+      onLog: (message) => console.log(success(`\u2714 ${message}`))
+    });
+    console.log(bold("ComiCode dashboard"));
+    console.log(dim(`  ${context.cwd}`));
+    console.log(dim("  ctrl+c to stop"));
+    const shutdown = () => {
+      void server.close().then(() => {
+        context.close();
+        process.exit(0);
+      });
+    };
+    process.once("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
+  });
+}
+var init_serve = __esm({
+  "src/cli/commands/serve.ts"() {
+    "use strict";
+    init_output();
+    init_app();
+    init_server();
+  }
+});
+
 // src/core/bench.ts
 var bench_exports = {};
 __export(bench_exports, {
   runBenchmarks: () => runBenchmarks
 });
 import { performance } from "perf_hooks";
-import { statSync as statSync10 } from "fs";
+import { statSync as statSync13 } from "fs";
 function mb(bytes) {
   return Math.round(bytes / 1024 / 1024 * 100) / 100;
 }
@@ -13035,7 +15621,7 @@ async function runBenchmarks(cwd, iterations = 5) {
     try {
       results.push({
         metric: "storage.databaseSize",
-        value: mb(statSync10(opened.store.path).size),
+        value: mb(statSync13(opened.store.path).size),
         unit: "MB"
       });
     } catch {
@@ -13749,7 +16335,7 @@ function formatCount(value) {
   if (value >= 1e3) return `${(value / 1e3).toFixed(1)}K`;
   return String(value);
 }
-function clip(text, max = 120) {
+function clip2(text, max = 120) {
   const single = text.replace(/\s+/g, " ").trim();
   return single.length > max ? `${single.slice(0, max - 1)}\u2026` : single;
 }
@@ -14163,15 +16749,15 @@ function ConfirmDialog({
           " ",
           request.title
         ] }),
-        /* @__PURE__ */ jsx2(Text2, { color: theme.muted, wrap: "truncate", children: clip(request.description, 120) }),
+        /* @__PURE__ */ jsx2(Text2, { color: theme.muted, wrap: "truncate", children: clip2(request.description, 120) }),
         target ? /* @__PURE__ */ jsxs2(Text2, { color: theme.warning, wrap: "truncate-middle", children: [
           request.command ? "$ " : "",
-          clip(target, 100)
+          clip2(target, 100)
         ] }) : null,
         request.reasons?.slice(0, 2).map((reason) => /* @__PURE__ */ jsxs2(Text2, { color: theme.danger, wrap: "truncate", children: [
           glyph.bullet,
           " ",
-          clip(reason, 100)
+          clip2(reason, 100)
         ] }, reason)),
         diffLines.length ? /* @__PURE__ */ jsxs2(Box2, { flexDirection: "column", children: [
           diffLines.map((line, index) => /* @__PURE__ */ jsx2(
@@ -14179,7 +16765,7 @@ function ConfirmDialog({
             {
               color: line.startsWith("+") ? theme.success : line.startsWith("-") ? theme.danger : theme.muted,
               wrap: "truncate",
-              children: clip(line, 100) || " "
+              children: clip2(line, 100) || " "
             },
             `${index}-${line.slice(0, 10)}`
           )),
@@ -14393,10 +16979,10 @@ var init_catalog2 = __esm({
       },
       {
         id: "tasks",
-        summary: "Manage tasks and sessions",
-        description: "Search tasks, inspect progress, resume paused work, rename tasks, delete history, or start a new task.",
-        usage: "/tasks",
-        aliases: ["sessions"],
+        summary: "Open task history (also /history)",
+        description: "Browse all past and paused work. Search history, inspect progress, resume a task, rename it, delete entries, or start a new task.",
+        usage: "/history",
+        aliases: ["history", "sessions"],
         category: "tasks",
         surfaces: ["slash", "cli"],
         shortcut: "ctrl+t"
@@ -14668,11 +17254,11 @@ async function copyToClipboard(text) {
   const { platform } = process;
   const command = platform === "win32" ? "clip" : platform === "darwin" ? "pbcopy" : "xclip";
   const args = platform === "linux" ? ["-selection", "clipboard"] : [];
-  return new Promise((resolve6) => {
+  return new Promise((resolve8) => {
     const child = execFile2(command, args, { timeout: 5e3 }, (error) => {
-      resolve6(!error);
+      resolve8(!error);
     });
-    child.stdin?.on("error", () => resolve6(false));
+    child.stdin?.on("error", () => resolve8(false));
     child.stdin?.end(text);
   });
 }
@@ -14692,12 +17278,40 @@ var init_registry2 = __esm({
     init_compaction();
     init_modes();
     init_skills();
+    init_plugins();
     init_theme();
     CommandRegistry = class {
       commands = /* @__PURE__ */ new Map();
       aliasMap = /* @__PURE__ */ new Map();
       constructor() {
         this.registerDefaults();
+        this.registerPluginCommands();
+      }
+      /** Register slash commands contributed by installed plugins. */
+      registerPluginCommands() {
+        const installed = loadPlugins({ cwd: process.cwd() });
+        for (const command of getPluginCommands(installed)) {
+          if (this.get(command.name)) continue;
+          const spec = {
+            id: command.name,
+            summary: command.description.slice(0, 60),
+            description: `${command.description} (plugin: ${command.pluginId})`,
+            usage: `/${command.name}${command.argumentHint ? ` ${command.argumentHint}` : ""}`,
+            category: "agent",
+            surfaces: ["slash"]
+          };
+          this.register(spec, (args, ctx) => {
+            const rendered = command.promptTemplate.replace(/\{\{args\}\}|\{\$ARGUMENTS\}/g, args.join(" ")).replace(/\$ARGUMENTS/g, args.join(" "));
+            const taskId = ctx.getActiveTaskId();
+            if (!taskId) {
+              ctx.addError("Start or resume a task before running a plugin command.");
+              return;
+            }
+            ctx.context.store.appendMessage(taskId, { role: "user", content: rendered });
+            ctx.notify(`Plugin ${command.pluginId}/${command.name} queued into the active task.`);
+            return ctx.executeTask(taskId, false);
+          });
+        }
       }
       register(spec, handler) {
         const registered = { ...spec, handler };
@@ -14955,7 +17569,7 @@ ${res.record.summary.slice(0, 400)}\u2026`;
             const activeId = ctx.getActiveTaskId();
             task = activeId ? store.getTask(activeId) : null;
             if (!task) {
-              ctx.addError("No active task to delete. Open /tasks and press ctrl+d for saved history.");
+              ctx.addError("No active task to delete. Open /history and press ctrl+d for saved history.");
               return;
             }
           }
@@ -15026,9 +17640,9 @@ ${res.record.summary.slice(0, 400)}\u2026`;
               return;
             }
             const { copyToClipboard: copyToClipboard3 } = await Promise.resolve().then(() => (init_clipboard(), clipboard_exports));
-            const ok2 = await copyToClipboard3(transcript.slice(0, 5e5));
+            const ok3 = await copyToClipboard3(transcript.slice(0, 5e5));
             ctx.notify(
-              ok2 ? `Copied the full transcript (${transcript.length} chars) to clipboard.` : "Clipboard unavailable. Use ctrl+y and your terminal copy shortcut."
+              ok3 ? `Copied the full transcript (${transcript.length} chars) to clipboard.` : "Clipboard unavailable. Use ctrl+y and your terminal copy shortcut."
             );
             return;
           }
@@ -15041,8 +17655,8 @@ ${res.record.summary.slice(0, 400)}\u2026`;
             return;
           }
           const { copyToClipboard: copyToClipboard2 } = await Promise.resolve().then(() => (init_clipboard(), clipboard_exports));
-          const ok = await copyToClipboard2(text.slice(0, 2e5));
-          ctx.notify(ok ? `Copied ${text.length} chars to clipboard.` : "Clipboard unavailable.");
+          const ok2 = await copyToClipboard2(text.slice(0, 2e5));
+          ctx.notify(ok2 ? `Copied ${text.length} chars to clipboard.` : "Clipboard unavailable.");
         });
         this.register(findSpec("allow-paid"), (args, ctx) => {
           const value = args[0]?.toLowerCase();
@@ -15061,7 +17675,7 @@ ${res.record.summary.slice(0, 400)}\u2026`;
         this.register(findSpec("mode"), (args, ctx) => {
           const target = args[0]?.toLowerCase();
           if (!target) {
-            ctx.notify(`Agent mode: ${ctx.agentMode ?? "build"} (tab cycles, /mode build|plan|debug)`);
+            ctx.openDialog("mode-picker");
             return;
           }
           if (!isAgentMode(target)) {
@@ -15126,7 +17740,7 @@ function taskToEntries(context, task) {
           id: ++id,
           kind: "tool",
           title: call.name,
-          text: clip(JSON.stringify(call.arguments ?? {}), 120)
+          text: clip2(JSON.stringify(call.arguments ?? {}), 120)
         });
       }
     } else if (message.role === "tool") {
@@ -15287,7 +17901,8 @@ function EntryCard({
   fromLine = 0,
   toLine,
   showHeader = true,
-  showMargin = true
+  showMargin = true,
+  selected = false
 }) {
   const role = roleFor(entry);
   const lines = bodyLines ?? wrapBodyLines(entryDisplay(entry), 80);
@@ -15295,12 +17910,32 @@ function EntryCard({
   const start = Math.max(0, Math.min(end, fromLine));
   const visible = lines.slice(start, end);
   return /* @__PURE__ */ jsxs4(Box4, { flexDirection: "column", marginBottom: showMargin ? 1 : 0, flexShrink: 0, children: [
-    showHeader ? /* @__PURE__ */ jsxs4(Text4, { color: role.color, bold: true, dimColor: dimmed, children: [
-      role.marker,
-      " ",
-      role.label
-    ] }) : null,
-    visible.length > 0 ? /* @__PURE__ */ jsx4(Box4, { paddingLeft: 2, flexDirection: "column", children: visible.map((line, index) => /* @__PURE__ */ jsx4(Text4, { color: role.bodyColor, wrap: "truncate", dimColor: dimmed, children: line.length > 0 ? line : " " }, `${start + index}`)) }) : null
+    showHeader ? /* @__PURE__ */ jsxs4(
+      Text4,
+      {
+        color: selected ? theme.black : role.color,
+        backgroundColor: selected ? theme.accent : void 0,
+        bold: true,
+        dimColor: dimmed && !selected,
+        children: [
+          selected ? "\u25B8 " : "",
+          role.marker,
+          " ",
+          role.label
+        ]
+      }
+    ) : null,
+    visible.length > 0 ? /* @__PURE__ */ jsx4(Box4, { paddingLeft: 2, flexDirection: "column", children: visible.map((line, index) => /* @__PURE__ */ jsx4(
+      Text4,
+      {
+        color: selected ? theme.black : role.bodyColor,
+        backgroundColor: selected ? theme.accent : void 0,
+        wrap: "truncate",
+        dimColor: dimmed && !selected,
+        children: line.length > 0 ? line : " "
+      },
+      `${start + index}`
+    )) }) : null
   ] });
 }
 function Workspace({
@@ -15340,7 +17975,11 @@ function Workspace({
   const [frame, setFrame] = useState3(0);
   const [pauseReason, setPauseReason] = useState3(null);
   const [lastResult, setLastResult] = useState3(null);
+  const [stages, setStages] = useState3([]);
+  const [selection, setSelection] = useState3(null);
+  const [frozenEntries, setFrozenEntries] = useState3(null);
   const nextId = useRef3(1);
+  const agentRef = useRef3(null);
   const abortRef = useRef3(null);
   const confirmResolve = useRef3(null);
   const adoptedNonce = useRef3(0);
@@ -15383,14 +18022,14 @@ function Workspace({
     });
   }, [active, context, selectionMode, mouseScrollEnabled]);
   const respondConfirm = useCallback((decision) => {
-    const resolve6 = confirmResolve.current;
+    const resolve8 = confirmResolve.current;
     confirmResolve.current = null;
     setConfirmRequest(null);
-    resolve6?.(decision);
+    resolve8?.(decision);
   }, []);
   const askConfirm = useCallback(
-    (request) => new Promise((resolve6) => {
-      confirmResolve.current = resolve6;
+    (request) => new Promise((resolve8) => {
+      confirmResolve.current = resolve8;
       setConfirmRequest(request);
     }),
     []
@@ -15429,7 +18068,7 @@ function Workspace({
         addEntry({
           kind: "tool",
           title: call.name,
-          text: clip(JSON.stringify(call.arguments ?? {}), 180)
+          text: clip2(JSON.stringify(call.arguments ?? {}), 180)
         });
       },
       onToolResult: (call, result) => {
@@ -15437,7 +18076,7 @@ function Workspace({
         addEntry({
           kind: result.ok ? "tool" : "error",
           title: `${result.ok ? glyph.check : glyph.cross} ${call.name}`,
-          text: clip(firstLine, 180)
+          text: clip2(firstLine, 180)
         });
       },
       onRoute: (decision) => {
@@ -15460,6 +18099,24 @@ function Workspace({
       },
       onReview: (review) => {
         addEntry({ kind: "review", title: "reviewer", text: clipLines(review, 10, 3e3) });
+      },
+      onStage: (stage) => {
+        setStages((previous) => {
+          const index = previous.findIndex(
+            (item) => item.index === stage.index && item.roleId === stage.roleId
+          );
+          if (index === -1) return [...previous, stage];
+          const next = [...previous];
+          next[index] = stage;
+          return next;
+        });
+        if (stage.status === "start") {
+          addEntry({
+            kind: "route",
+            title: `${stage.icon} team`,
+            text: `${stage.index}/${stage.total} ${stage.label} \u2014 ${stage.department}${stage.model ? ` \xB7 ${stage.model}` : ""}`
+          });
+        }
       },
       onNotice: (message) => {
         addEntry({ kind: "notice", text: message });
@@ -15506,6 +18163,9 @@ function Workspace({
       setPlan(null);
       setRoute(null);
       setScrollOffset(0);
+      setSelection(null);
+      setFrozenEntries(null);
+      setStages([]);
       streamingId.current = null;
       const controller = new AbortController();
       abortRef.current = controller;
@@ -15518,6 +18178,7 @@ function Workspace({
           settings: context.store.getSettings(),
           mode: agentMode
         });
+        agentRef.current = agent;
         const result = await agent.run({
           resume,
           signal: controller.signal,
@@ -15540,6 +18201,7 @@ function Workspace({
         setLastResult(message);
       } finally {
         abortRef.current = null;
+        agentRef.current = null;
         setRunning(false);
         streamingId.current = null;
         refreshData();
@@ -15756,12 +18418,21 @@ function Workspace({
       );
       setScrollOffset(0);
       if (running && !trimmed.startsWith("/")) {
-        setQueue((previous) => [...previous, trimmed]);
-        addEntry({
-          kind: "notice",
-          title: "queued",
-          text: `Queued while the agent runs: ${clip(trimmed, 90)}`
-        });
+        if (agentRef.current) {
+          agentRef.current.injectMessage(trimmed);
+          addEntry({ kind: "user", text: trimmed });
+          addEntry({
+            kind: "notice",
+            text: `Added live to the running task \u2014 the model will see it on its next step.`
+          });
+        } else {
+          setQueue((previous) => [...previous, trimmed]);
+          addEntry({
+            kind: "notice",
+            title: "queued",
+            text: `Queued while the agent starts: ${clip2(trimmed, 90)}`
+          });
+        }
         return;
       }
       if (trimmed.startsWith("/")) {
@@ -15780,16 +18451,17 @@ function Workspace({
     else void startRequest(next);
   }, [running, queue, handleCommand, startRequest]);
   const bodyWidth = Math.max(24, columns - 8);
+  const renderEntries = frozenEntries ?? entries;
   const entryLayouts = useMemo2(() => {
     let line = 0;
-    return entries.map((entry) => {
+    return renderEntries.map((entry) => {
       const lines = wrapBodyLines(entryDisplay(entry), bodyWidth);
       const height = 1 + lines.length + 1;
       const layout = { entry, lines, start: line, height };
       line += height;
       return layout;
     });
-  }, [entries, bodyWidth]);
+  }, [renderEntries, bodyWidth]);
   const totalLines = entryLayouts.reduce((sum, layout) => sum + layout.height, 0);
   const lineBudget = Math.max(5, rows - 18);
   const maxOffset = Math.max(0, totalLines - lineBudget);
@@ -15816,7 +18488,53 @@ function Workspace({
       if (isMouseSequence(input2) || isSuppressedInput()) return;
       if (selectionMode) {
         if (key.escape) {
-          onToggleSelection?.();
+          if (selection) {
+            setSelection(null);
+            setFrozenEntries(null);
+          } else {
+            onToggleSelection?.();
+          }
+          return;
+        }
+        const moveFocus = (direction) => {
+          const source = frozenEntries ?? entries;
+          if (source.length === 0) return;
+          if (!frozenEntries) setFrozenEntries([...source]);
+          const current = selection?.focus ?? source[source.length - 1].id;
+          const index = source.findIndex((entry) => entry.id === current);
+          const nextIndex = Math.max(0, Math.min(source.length - 1, (index === -1 ? source.length - 1 : index) + direction));
+          setSelection({ anchor: selection?.anchor ?? current, focus: source[nextIndex].id });
+          const nextEntry = source[nextIndex];
+          const top = entryLayouts.find((layout) => layout.entry.id === nextEntry.id)?.start ?? 0;
+          setScrollOffset((value) => Math.min(value, Math.max(0, top)));
+        };
+        if (key.shift && key.upArrow) {
+          moveFocus(-1);
+          return;
+        }
+        if (key.shift && key.downArrow) {
+          moveFocus(1);
+          return;
+        }
+        if (input2 === "a" && !key.ctrl) {
+          const source = frozenEntries ?? entries;
+          if (source.length > 0) {
+            setFrozenEntries([...source]);
+            setSelection({ anchor: source[0].id, focus: source[source.length - 1].id });
+            notify("Selected all transcript entries \u2014 ctrl+c copies.");
+          }
+          return;
+        }
+        if (key.ctrl && input2 === "c") {
+          const source = frozenEntries ?? entries;
+          const selected = selection ? source.filter((entry) => {
+            const ids = [selection.anchor, selection.focus];
+            return entry.id >= Math.min(...ids) && entry.id <= Math.max(...ids);
+          }) : source;
+          const text = selected.map((entry) => entryDisplay(entry)).join("\n");
+          void copyToClipboard(text).then(
+            (ok2) => notify(ok2 ? `Copied ${selected.length} entr${selected.length === 1 ? "y" : "ies"}.` : "Clipboard unavailable \u2014 select with your terminal instead.")
+          );
           return;
         }
         if (key.pageUp) {
@@ -15932,7 +18650,7 @@ function Workspace({
         lastInputTokens > 0 ? ` \xB7 ctx ~${formatCount(lastInputTokens)}` : "",
         queue.length > 0 ? ` \xB7 ${queue.length} queued` : "",
         `  ${glyph.bullet}  `,
-        "type to queue \xB7 esc pauses"
+        "type to add live \xB7 esc pauses"
       ] })
     ] }) }) : null,
     /* @__PURE__ */ jsxs4(
@@ -15999,7 +18717,7 @@ function Workspace({
         "  ",
         glyph.route,
         " ",
-        clip(selectedProfile.name, 24)
+        clip2(selectedProfile.name, 24)
       ] }) : /* @__PURE__ */ jsxs4(Text4, { color: theme.faint, children: [
         "  ",
         glyph.route,
@@ -16010,7 +18728,7 @@ function Workspace({
       route ? /* @__PURE__ */ jsxs4(Text4, { color: theme.violet, children: [
         glyph.route,
         " ",
-        clip(route, 54)
+        clip2(route, 54)
       ] }) : /* @__PURE__ */ jsxs4(Text4, { color: theme.faint, children: [
         glyph.route,
         " no route yet"
@@ -16029,15 +18747,19 @@ function Workspace({
     /* @__PURE__ */ jsxs4(Text4, { color: theme.faint, wrap: "truncate", dimColor: dimmed, children: [
       usage2.inputTokens + usage2.outputTokens > 0 ? `${formatCount(usage2.inputTokens)} in \xB7 ${formatCount(usage2.outputTokens)} out` : `${formatCount(usage2.inputTokens + usage2.outputTokens)} tokens`,
       lastInputTokens > 0 ? ` \xB7 ctx ~${formatCount(lastInputTokens)}` : "",
-      pauseReason ? ` ${glyph.bullet} ${clip(pauseReason, 48)}` : lastResult ? ` ${glyph.bullet} ${clip(lastResult, 48)}` : ""
+      pauseReason ? ` ${glyph.bullet} ${clip2(pauseReason, 48)}` : lastResult ? ` ${glyph.bullet} ${clip2(lastResult, 48)}` : ""
     ] })
   ] });
   const selectionBanner = selectionMode ? /* @__PURE__ */ jsx4(Box4, { flexShrink: 0, paddingTop: 1, children: /* @__PURE__ */ jsxs4(Text4, { color: theme.success, wrap: "truncate", children: [
     "\u2318 SELECT MODE ",
     glyph.bullet,
-    " drag to highlight, then copy with your terminal",
+    " shift+\u2191/\u2193 highlight ",
     glyph.bullet,
-    " esc / ctrl+y exits"
+    " a select all ",
+    glyph.bullet,
+    "ctrl+c copy ",
+    glyph.bullet,
+    " esc clear / ctrl+y exits"
   ] }) }) : null;
   if (entries.length === 0) {
     return /* @__PURE__ */ jsxs4(Box4, { flexDirection: "column", flexGrow: 1, paddingX: 2, children: [
@@ -16085,7 +18807,8 @@ function Workspace({
             fromLine: layout.fromLine,
             toLine: layout.toLine,
             showHeader: layout.localStart === 0,
-            showMargin: layout.localEnd >= layout.height
+            showMargin: layout.localEnd >= layout.height,
+            selected: selection !== null && layout.entry.id >= Math.min(selection.anchor, selection.focus) && layout.entry.id <= Math.max(selection.anchor, selection.focus)
           },
           layout.entry.id
         )),
@@ -16093,6 +18816,39 @@ function Workspace({
       ] }),
       scrollbar
     ] }),
+    stages.length ? /* @__PURE__ */ jsxs4(Box4, { flexDirection: "column", flexShrink: 0, marginBottom: 1, children: [
+      /* @__PURE__ */ jsxs4(Text4, { color: theme.accent, bold: true, wrap: "truncate", children: [
+        "\u25C8 ComiCode Company ",
+        glyph.bullet,
+        " ",
+        stages.filter((stage) => stage.status === "done").length,
+        "/",
+        stages.length,
+        " departments"
+      ] }),
+      stages.map((stage) => {
+        const mark = stage.status === "done" ? theme.success : stage.status === "error" ? theme.danger : stage.status === "start" ? theme.accent : theme.faint;
+        const symbol = stage.status === "done" ? "\u2713" : stage.status === "error" ? "\u2717" : stage.status === "start" ? "\u25B8" : "\xB7";
+        return /* @__PURE__ */ jsxs4(Box4, { flexDirection: "column", children: [
+          /* @__PURE__ */ jsxs4(Text4, { color: mark, wrap: "truncate", dimColor: dimmed && stage.status !== "start", children: [
+            symbol,
+            " ",
+            stage.icon,
+            " ",
+            stage.label,
+            /* @__PURE__ */ jsxs4(Text4, { color: theme.faint, children: [
+              " \u2014 ",
+              stage.department,
+              stage.model ? ` \xB7 ${stage.model}` : ""
+            ] })
+          ] }),
+          stage.status === "done" && stage.summary ? /* @__PURE__ */ jsxs4(Text4, { color: theme.faint, dimColor: true, wrap: "truncate", children: [
+            "\u21B3 ",
+            clip2(stage.summary.replace(/\s+/g, " "), 110)
+          ] }) : null
+        ] }, `${stage.index}-${stage.roleId}`);
+      })
+    ] }) : null,
     plan?.steps?.length ? /* @__PURE__ */ jsxs4(Box4, { flexDirection: "column", flexShrink: 0, marginBottom: 1, children: [
       /* @__PURE__ */ jsxs4(Text4, { color: theme.muted, wrap: "truncate", dimColor: dimmed, children: [
         /* @__PURE__ */ jsx4(Text4, { color: theme.accent, children: "\u25A4 plan " }),
@@ -16128,7 +18884,7 @@ function Workspace({
                 wrap: "truncate",
                 children: [
                   selected ? `${glyph.active} ` : "  ",
-                  clip(prompt, 64)
+                  clip2(prompt, 64)
                 ]
               }
             ) }, entryIndex);
@@ -16156,6 +18912,7 @@ var init_workspace = __esm({
     init_registry2();
     init_files();
     init_mouse();
+    init_clipboard();
   }
 });
 
@@ -16689,8 +19446,8 @@ function ProvidersScreen({
                     ] }),
                     /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, wrap: "truncate", children: [
                       "     ",
-                      clip(option.detail, Math.max(20, columns - 12)),
-                      option.baseUrl && option.preset ? /* @__PURE__ */ jsx5(Text5, { color: theme.faint, children: `  ${clip(option.baseUrl, 40)}` }) : null
+                      clip2(option.detail, Math.max(20, columns - 12)),
+                      option.baseUrl && option.preset ? /* @__PURE__ */ jsx5(Text5, { color: theme.faint, children: `  ${clip2(option.baseUrl, 40)}` }) : null
                     ] })
                   ]
                 },
@@ -16878,7 +19635,7 @@ function ProvidersScreen({
                 ["Streaming", config.supportsStreaming ? "yes" : "no"],
                 ["Models", String(models.length)],
                 ["Last success", formatRelative(profile.lastSuccessAt)],
-                ["Last error", profile.lastError ? clip(profile.lastError, 70) : "\u2014"],
+                ["Last error", profile.lastError ? clip2(profile.lastError, 70) : "\u2014"],
                 ["Active limits", limits2.length ? String(limits2.length) : "none"]
               ],
               width: 18
@@ -16968,7 +19725,7 @@ function ProvidersScreen({
             ] }),
             /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, wrap: "truncate", children: [
               "    ",
-              clip(profile.baseUrl, Math.max(20, columns - 34)),
+              clip2(profile.baseUrl, Math.max(20, columns - 34)),
               " ",
               glyph.bullet,
               " ",
@@ -18298,7 +21055,7 @@ function TasksDialog({
   return /* @__PURE__ */ jsx10(
     Selector,
     {
-      title: "TASKS & SESSIONS",
+      title: "TASK HISTORY",
       subtitle: `${filteredTasks.length} task${filteredTasks.length !== 1 ? "s" : ""} in this project`,
       items,
       query,
@@ -19627,30 +22384,102 @@ var init_effort_dialog = __esm({
   }
 });
 
+// src/tui/dialogs/mode-picker.tsx
+import { useMemo as useMemo10, useState as useState15 } from "react";
+import { jsx as jsx19 } from "react/jsx-runtime";
+function ModePicker({
+  current,
+  onMode,
+  onClose,
+  notify,
+  refreshData
+}) {
+  const [query, setQuery] = useState15("");
+  const items = useMemo10(
+    () => AGENT_MODE_IDS.map((id) => {
+      const spec = AGENT_MODES[id];
+      return {
+        key: id,
+        label: id === "team" ? "team  \u25C8 full company" : id,
+        detail: spec.description,
+        badge: id === current ? "current" : void 0
+      };
+    }),
+    [current]
+  );
+  const filtered = useMemo10(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return items;
+    return items.filter(
+      (item) => item.key.toLowerCase().includes(needle) || (item.detail ?? "").toLowerCase().includes(needle)
+    );
+  }, [items, query]);
+  const [selected, setSelected] = useState15(
+    () => Math.max(0, AGENT_MODE_IDS.indexOf(current))
+  );
+  const apply = (key) => {
+    if (!AGENT_MODE_IDS.includes(key)) {
+      onClose();
+      return;
+    }
+    const mode = key;
+    onMode(mode);
+    notify(
+      mode === "team" ? "Team mode: the full company works the task stage by stage with handoffs." : mode === "plan" ? "Plan mode: read-only \u2014 the agent proposes steps without changing files." : mode === "security" ? "Security mode: read-only audit with severity-ranked findings." : `${AGENT_MODES[mode].label} mode: ${AGENT_MODES[mode].description}`
+    );
+    refreshData();
+    onClose();
+  };
+  return /* @__PURE__ */ jsx19(
+    Selector,
+    {
+      title: "AGENT / WORKFLOW",
+      subtitle: "choose who works on this task",
+      items: filtered,
+      query,
+      onQueryChange: setQuery,
+      selected: Math.min(selected, Math.max(0, filtered.length - 1)),
+      onSelectedChange: setSelected,
+      onSelect: (item) => apply(item.key),
+      onClose,
+      searchPlaceholder: "Filter agents\u2026",
+      emptyText: "No matching agent.",
+      footer: ["\u2191/\u2193 choose", "enter select", "esc close"]
+    }
+  );
+}
+var init_mode_picker = __esm({
+  "src/tui/dialogs/mode-picker.tsx"() {
+    "use strict";
+    init_modes();
+    init_selector();
+  }
+});
+
 // src/tui/app.tsx
 var app_exports = {};
 __export(app_exports, {
   App: () => App,
   runTui: () => runTui
 });
-import { useCallback as useCallback4, useEffect as useEffect10, useMemo as useMemo10, useRef as useRef4, useState as useState15 } from "react";
+import { useCallback as useCallback4, useEffect as useEffect10, useMemo as useMemo11, useRef as useRef4, useState as useState16 } from "react";
 import { Box as Box17, Text as Text17, render, useApp, useInput as useInput15 } from "ink";
-import { jsx as jsx19, jsxs as jsxs15 } from "react/jsx-runtime";
+import { jsx as jsx20, jsxs as jsxs15 } from "react/jsx-runtime";
 function App({ context }) {
   const { exit } = useApp();
   const { columns, rows } = useLayout();
   setActiveTheme(context.store.getSettings().ui.theme);
-  const [status, setStatus] = useState15("idle");
-  const [tick, setTick] = useState15(0);
-  const [toast, setToast] = useState15(null);
-  const [resumeRequest, setResumeRequest] = useState15(null);
-  const [dialogStack, setDialogStack] = useState15([]);
-  const [paletteQuery, setPaletteQuery] = useState15("");
-  const [paletteIndex, setPaletteIndex] = useState15(0);
-  const [branch, setBranch] = useState15(null);
-  const [agentMode, setAgentMode] = useState15("auto");
-  const [outputContent, setOutputContent] = useState15(null);
-  const [selectionMode, setSelectionMode] = useState15(false);
+  const [status, setStatus] = useState16("idle");
+  const [tick, setTick] = useState16(0);
+  const [toast, setToast] = useState16(null);
+  const [resumeRequest, setResumeRequest] = useState16(null);
+  const [dialogStack, setDialogStack] = useState16([]);
+  const [paletteQuery, setPaletteQuery] = useState16("");
+  const [paletteIndex, setPaletteIndex] = useState16(0);
+  const [branch, setBranch] = useState16(null);
+  const [agentMode, setAgentMode] = useState16("auto");
+  const [outputContent, setOutputContent] = useState16(null);
+  const [selectionMode, setSelectionMode] = useState16(false);
   const quitArmedAt = useRef4(0);
   const activeDialog = dialogStack.length > 0 ? dialogStack[dialogStack.length - 1] : null;
   const isDialogOpen = activeDialog !== null;
@@ -19723,12 +22552,17 @@ function App({ context }) {
   const latestPaused = useCallback4(() => {
     return context.store.listTasks({ projectPath: context.cwd, limit: 100 }).find((task) => task.status === "paused" || task.status === "failed") ?? null;
   }, [context]);
-  const paletteActions = useMemo10(
+  const paletteActions = useMemo11(
     () => [
       {
         label: "Select an AI model",
         detail: "model-picker (ctrl+m)",
         run: () => openDialog("model-picker")
+      },
+      {
+        label: "Choose agent / workflow (team, build, plan\u2026)",
+        detail: "/mode",
+        run: () => openDialog("mode-picker")
       },
       {
         label: "Choose reasoning effort",
@@ -19832,7 +22666,7 @@ function App({ context }) {
     ],
     [context, latestPaused, notify, openDialog, openTask, quit, refreshData, togglePaid]
   );
-  const filteredActions = useMemo10(() => {
+  const filteredActions = useMemo11(() => {
     const needle = paletteQuery.trim().toLowerCase();
     if (!needle) return paletteActions;
     return paletteActions.filter(
@@ -19943,7 +22777,7 @@ function App({ context }) {
     )
   );
   return /* @__PURE__ */ jsxs15(Box17, { flexDirection: "column", height: rows, width: columns, overflow: "hidden", children: [
-    /* @__PURE__ */ jsx19(
+    /* @__PURE__ */ jsx20(
       Header,
       {
         version: VERSION,
@@ -19958,7 +22792,7 @@ function App({ context }) {
         agentMode
       }
     ),
-    /* @__PURE__ */ jsx19(Box17, { flexDirection: "column", flexGrow: 1, overflow: "hidden", paddingX: 1, children: /* @__PURE__ */ jsx19(
+    /* @__PURE__ */ jsx20(Box17, { flexDirection: "column", flexGrow: 1, overflow: "hidden", paddingX: 1, children: /* @__PURE__ */ jsx20(
       Workspace,
       {
         context,
@@ -19993,7 +22827,7 @@ function App({ context }) {
         height: Math.max(10, rows - 8),
         footer: ["type to filter", "\u2191/\u2193 choose", "enter run", "esc close"],
         children: [
-          /* @__PURE__ */ jsx19(Box17, { marginBottom: 1, flexShrink: 0, children: /* @__PURE__ */ jsx19(
+          /* @__PURE__ */ jsx20(Box17, { marginBottom: 1, flexShrink: 0, children: /* @__PURE__ */ jsx20(
             PromptInput,
             {
               value: paletteQuery,
@@ -20006,7 +22840,7 @@ function App({ context }) {
               placeholder: "Search commands, providers, models, tasks\u2026"
             }
           ) }),
-          /* @__PURE__ */ jsx19(Box17, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children: filteredActions.length === 0 ? /* @__PURE__ */ jsx19(Text17, { color: theme.muted, children: "No matching actions." }) : filteredActions.slice(paletteStart, paletteStart + paletteRows).map((action, offset) => {
+          /* @__PURE__ */ jsx20(Box17, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children: filteredActions.length === 0 ? /* @__PURE__ */ jsx20(Text17, { color: theme.muted, children: "No matching actions." }) : filteredActions.slice(paletteStart, paletteStart + paletteRows).map((action, offset) => {
             const index = paletteStart + offset;
             const selected = index === paletteIndex;
             return /* @__PURE__ */ jsxs15(Box17, { children: [
@@ -20023,13 +22857,13 @@ function App({ context }) {
                   ]
                 }
               ),
-              /* @__PURE__ */ jsx19(Text17, { color: selected ? theme.black : theme.faint, children: action.detail })
+              /* @__PURE__ */ jsx20(Text17, { color: selected ? theme.black : theme.faint, children: action.detail })
             ] }, action.label);
           }) })
         ]
       }
     ) : null,
-    activeDialog === "model-picker" ? /* @__PURE__ */ jsx19(
+    activeDialog === "model-picker" ? /* @__PURE__ */ jsx20(
       ModelPicker,
       {
         context,
@@ -20038,7 +22872,7 @@ function App({ context }) {
         refreshData
       }
     ) : null,
-    activeDialog === "connect" ? /* @__PURE__ */ jsx19(
+    activeDialog === "connect" ? /* @__PURE__ */ jsx20(
       ConnectDialog,
       {
         context,
@@ -20051,7 +22885,7 @@ function App({ context }) {
         refreshData
       }
     ) : null,
-    activeDialog === "providers" ? /* @__PURE__ */ jsx19(
+    activeDialog === "providers" ? /* @__PURE__ */ jsx20(
       ProvidersDialog,
       {
         context,
@@ -20062,7 +22896,7 @@ function App({ context }) {
         onRequestConnect: () => setDialogStack((stack) => [...stack.slice(0, -1), "connect"])
       }
     ) : null,
-    activeDialog === "tasks" ? /* @__PURE__ */ jsx19(
+    activeDialog === "tasks" ? /* @__PURE__ */ jsx20(
       TasksDialog,
       {
         context,
@@ -20076,7 +22910,7 @@ function App({ context }) {
         refreshData
       }
     ) : null,
-    activeDialog === "diff" ? /* @__PURE__ */ jsx19(
+    activeDialog === "diff" ? /* @__PURE__ */ jsx20(
       DiffDialog,
       {
         context,
@@ -20084,7 +22918,7 @@ function App({ context }) {
         onClose: closeDialog
       }
     ) : null,
-    activeDialog === "undo" ? /* @__PURE__ */ jsx19(
+    activeDialog === "undo" ? /* @__PURE__ */ jsx20(
       UndoDialog,
       {
         context,
@@ -20094,7 +22928,7 @@ function App({ context }) {
         refreshData
       }
     ) : null,
-    activeDialog === "status" ? /* @__PURE__ */ jsx19(
+    activeDialog === "status" ? /* @__PURE__ */ jsx20(
       StatusDialog,
       {
         context,
@@ -20102,7 +22936,7 @@ function App({ context }) {
         onClose: closeDialog
       }
     ) : null,
-    activeDialog === "usage" ? /* @__PURE__ */ jsx19(
+    activeDialog === "usage" ? /* @__PURE__ */ jsx20(
       UsageDialog,
       {
         context,
@@ -20111,7 +22945,7 @@ function App({ context }) {
         refreshData
       }
     ) : null,
-    activeDialog === "settings" ? /* @__PURE__ */ jsx19(
+    activeDialog === "settings" ? /* @__PURE__ */ jsx20(
       SettingsDialog,
       {
         context,
@@ -20120,9 +22954,9 @@ function App({ context }) {
         refreshData
       }
     ) : null,
-    activeDialog === "shortcuts" ? /* @__PURE__ */ jsx19(ShortcutsDialog, { onClose: closeDialog }) : null,
-    activeDialog === "output" && outputContent ? /* @__PURE__ */ jsx19(OutputDialog, { title: outputContent.title, text: outputContent.text, onClose: closeDialog }) : null,
-    activeDialog === "effort" ? /* @__PURE__ */ jsx19(
+    activeDialog === "shortcuts" ? /* @__PURE__ */ jsx20(ShortcutsDialog, { onClose: closeDialog }) : null,
+    activeDialog === "output" && outputContent ? /* @__PURE__ */ jsx20(OutputDialog, { title: outputContent.title, text: outputContent.text, onClose: closeDialog }) : null,
+    activeDialog === "effort" ? /* @__PURE__ */ jsx20(
       EffortDialog,
       {
         context,
@@ -20131,7 +22965,17 @@ function App({ context }) {
         refreshData
       }
     ) : null,
-    /* @__PURE__ */ jsx19(Footer, { hints, toast, width: columns })
+    activeDialog === "mode-picker" ? /* @__PURE__ */ jsx20(
+      ModePicker,
+      {
+        current: agentMode,
+        onMode: setAgentMode,
+        onClose: closeDialog,
+        notify,
+        refreshData
+      }
+    ) : null,
+    /* @__PURE__ */ jsx20(Footer, { hints, toast, width: columns })
   ] });
 }
 async function runTui() {
@@ -20143,7 +22987,7 @@ async function runTui() {
   process.stdout.write("\x1B]0;ComiCode\x07");
   let instance = null;
   try {
-    instance = render(/* @__PURE__ */ jsx19(App, { context }), {
+    instance = render(/* @__PURE__ */ jsx20(App, { context }), {
       // Render inline (not the alternate screen) so conhost/Command Prompt
       // and other terminals keep native text selection and scrollback.
       alternateScreen: false,
@@ -20183,6 +23027,7 @@ var init_app2 = __esm({
     init_shortcuts_dialog();
     init_output_dialog();
     init_effort_dialog();
+    init_mode_picker();
     init_modal();
     init_manager();
     init_modes();
@@ -20234,11 +23079,19 @@ function reportResult(result) {
   printResumeHint(result);
   process.exitCode = resultExitCode(result);
 }
+function resolveAgentMode(value) {
+  if (!value) return void 0;
+  if (!isAgentMode(value)) {
+    throw new Error(`Unknown agent mode "${value}". Use build, plan, debug, architect, review, test, docs, design, security, explain, or team.`);
+  }
+  return value;
+}
 async function runCommand(parts, flags) {
   const request = parts.join(" ").trim();
   if (!request) {
     throw new Error('Provide a request. Example: comicode run "fix the failing tests"');
   }
+  const mode = resolveAgentMode(flags.mode);
   await withStore(async ({ store, cwd }) => {
     const target = selectedModelReference(store, flags);
     const task = createTaskForRequest(store, cwd, request, {
@@ -20247,13 +23100,13 @@ async function runCommand(parts, flags) {
       modelId: target.modelId
     });
     if (flags.json) {
-      reportResult(await runTask(store, task.id, { ...flags, maxSteps: maxSteps(flags.maxSteps) }));
+      reportResult(await runTask(store, task.id, { ...flags, mode, maxSteps: maxSteps(flags.maxSteps) }));
       return;
     }
     console.log("");
     console.log(`${bold("COMICODE")} ${dim(`task ${task.id.slice(0, 8)} \xB7 ${cwd}`)}`);
     console.log(dim(`request: ${request}`));
-    reportResult(await runTask(store, task.id, { ...flags, maxSteps: maxSteps(flags.maxSteps) }));
+    reportResult(await runTask(store, task.id, { ...flags, mode, maxSteps: maxSteps(flags.maxSteps) }));
   });
 }
 async function resumeCommand(reference, flags) {
@@ -20292,6 +23145,7 @@ async function resumeCommand(reference, flags) {
     reportResult(
       await runTask(store, exact.id, {
         ...flags,
+        mode: void 0,
         resume: true,
         maxSteps: maxSteps(flags.maxSteps)
       })
@@ -20299,6 +23153,7 @@ async function resumeCommand(reference, flags) {
   });
 }
 async function launchChat(flags) {
+  const mode = resolveAgentMode(flags.mode);
   if (!isInteractive()) {
     throw new Error(
       'The chat REPL requires an interactive terminal. Use "comicode run" for scripts.'
@@ -20310,7 +23165,7 @@ async function launchChat(flags) {
     let task = null;
     console.log("");
     console.log(
-      `${bold("COMICODE")} ${dim("chat \xB7 /exit to quit, /new to start a fresh task, /tasks to list")}`
+      `${bold("COMICODE")} ${dim("chat \xB7 /exit to quit, /new to start a fresh task, /history to list past work")}`
     );
     const request = await promptText("You", { required: true });
     if (!request.trim() || request.trim() === "/exit") return;
@@ -20319,7 +23174,7 @@ async function launchChat(flags) {
       profileId: target.profileId,
       modelId: target.modelId
     });
-    let result = await runTask(store, task.id, { ...flags, maxSteps: maxSteps(flags.maxSteps) });
+    let result = await runTask(store, task.id, { ...flags, mode, maxSteps: maxSteps(flags.maxSteps) });
     while (result.status === "completed") {
       const next = await promptText("You", { allowEmpty: true, defaultValue: "/exit" });
       const trimmed = next.trim();
@@ -20331,7 +23186,7 @@ async function launchChat(flags) {
           profileId: target.profileId,
           modelId: target.modelId
         });
-      } else if (trimmed === "/tasks") {
+      } else if (trimmed === "/tasks" || trimmed === "/history") {
         for (const entry of store.listTasks({ projectPath: cwd, limit: 10 })) {
           console.log(
             dim(`  ${entry.id.slice(0, 8)}  ${entry.status}  ${entry.userRequest.slice(0, 60)}`)
@@ -20347,7 +23202,7 @@ async function launchChat(flags) {
           completedAt: null
         });
       }
-      result = await runTask(store, task.id, { ...flags, maxSteps: maxSteps(flags.maxSteps) });
+      result = await runTask(store, task.id, { ...flags, mode, maxSteps: maxSteps(flags.maxSteps) });
     }
     if (result.status === "paused") printResumeHint(result);
   });
@@ -20355,10 +23210,10 @@ async function launchChat(flags) {
 function buildProgram() {
   const program = new Command();
   program.name("comicode").description("Multi-provider AI coding agent with quota-aware routing and persistent tasks").version(VERSION, "-v, --version", "print the ComiCode version").showHelpAfterError().configureHelp({ sortSubcommands: true });
-  program.command("run <request...>").description("Run a coding task in the current project").option("-p, --profile <profile>", "provider profile to start with").option("-m, --model <model>", "model to start with (explicit selections are honored)").option("-t, --type <type>", "coding, reasoning, review, vision, or general", "coding").option("--max-steps <number>", "maximum agent steps for this run").option("--json", "emit a single JSON result instead of streaming output").action(async (parts, flags) => {
+  program.command("run <request...>").description("Run a coding task in the current project").option("-p, --profile <profile>", "provider profile to start with").option("-m, --model <model>", "model to start with (explicit selections are honored)").option("-t, --type <type>", "coding, reasoning, review, vision, or general", "coding").option("--mode <mode>", "agent mode: build, plan, debug, architect, review, test, docs, design, security, explain, team").option("--max-steps <number>", "maximum agent steps for this run").option("--json", "emit a single JSON result instead of streaming output").action(async (parts, flags) => {
     await runCommand(parts, flags);
   });
-  program.command("task <request...>").description("Run a coding task in the current project (alias for run)").option("-p, --profile <profile>", "provider profile to start with").option("-m, --model <model>", "model to start with (explicit selections are honored)").option("-t, --type <type>", "coding, reasoning, review, vision, or general", "coding").option("--max-steps <number>", "maximum agent steps for this run").option("--json", "emit a single JSON result instead of streaming output").action(async (parts, flags) => {
+  program.command("task <request...>").description("Run a coding task in the current project (alias for run)").option("-p, --profile <profile>", "provider profile to start with").option("-m, --model <model>", "model to start with (explicit selections are honored)").option("-t, --type <type>", "coding, reasoning, review, vision, or general", "coding").option("--mode <mode>", "agent mode: build, plan, debug, architect, review, test, docs, design, security, explain, team").option("--max-steps <number>", "maximum agent steps for this run").option("--json", "emit a single JSON result instead of streaming output").action(async (parts, flags) => {
     await runCommand(parts, flags);
   });
   program.command("resume [task]").description("Resume a paused or interrupted task").option("--max-steps <number>", "maximum agent steps for this run").option("--json", "emit a single JSON result instead of streaming output").action(async (reference, flags) => {
@@ -20410,7 +23265,7 @@ function buildProgram() {
       ]);
     });
   });
-  program.command("chat").description("Start a multi-turn coding conversation in this project").option("-p, --profile <profile>", "provider profile to start with").option("-m, --model <model>", "model to start with").option("-t, --type <type>", "coding, reasoning, review, vision, or general", "coding").option("--max-steps <number>", "maximum agent steps per turn").action(async (flags) => {
+  program.command("chat").description("Start a multi-turn coding conversation in this project").option("-p, --profile <profile>", "provider profile to start with").option("-m, --model <model>", "model to start with").option("-t, --type <type>", "coding, reasoning, review, vision, or general", "coding").option("--mode <mode>", "agent mode: build, plan, debug, architect, review, test, docs, design, security, explain, team").option("--max-steps <number>", "maximum agent steps per turn").action(async (flags) => {
     await launchChat(flags);
   });
   for (const command of program.commands) {
@@ -20422,6 +23277,8 @@ function buildProgram() {
   registerUsageCommands(program);
   registerSettingsCommands(program);
   registerSystemCommands(program);
+  registerPluginCommand(program);
+  registerServeCommand(program);
   program.command("bench").description("Run honest micro-benchmarks (startup, memory, context build, tokens)").option("-n, --iterations <number>", "samples per metric", "5").action(async (options) => {
     const iterations = Math.max(1, Math.min(50, Number(options.iterations) || 5));
     const { runBenchmarks: runBenchmarks2 } = await Promise.resolve().then(() => (init_bench(), bench_exports));
@@ -20470,9 +23327,12 @@ var init_main = __esm({
     init_usage();
     init_settings2();
     init_system();
+    init_plugin();
+    init_serve();
     init_shared();
     init_output();
     init_prompt();
+    init_modes();
   }
 });
 

@@ -238,7 +238,7 @@ export function TasksDialog({
 
   return (
     <Selector
-      title="TASKS & SESSIONS"
+      title="TASK HISTORY"
       subtitle={`${filteredTasks.length} task${filteredTasks.length !== 1 ? 's' : ''} in this project`}
       items={items}
       query={query}

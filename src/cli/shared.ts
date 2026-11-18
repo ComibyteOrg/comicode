@@ -9,6 +9,7 @@ import type { Store } from '../core/db/store.js';
 import { openAppContext, type AppContext } from '../core/app.js';
 import { CodingAgent } from '../core/agent/agent.js';
 import type { AgentHooks, AgentResult, ConfirmationRequest } from '../core/agent/types.js';
+import type { AgentMode } from '../core/agent/modes.js';
 import { providerDisplayName } from '../core/providers/definitions.js';
 import { ACCESS_LABELS, effectiveAccess } from '../core/providers/catalog.js';
 import { ProjectInspector } from '../core/project/inspector.js';
@@ -268,6 +269,7 @@ export interface RunTaskOptions extends AuthorityOptions {
   resume?: boolean;
   signal?: AbortSignal;
   maxSteps?: number;
+  mode?: AgentMode;
 }
 
 function printConfirmation(request: ConfirmationRequest): void {
@@ -374,6 +376,20 @@ export async function runTask(
       if (json) return;
       console.log(`\n${bold('Reviewer')}\n${review}`);
     },
+    onStage: (stage) => {
+      if (json) return;
+      const mark =
+        stage.status === 'done'
+          ? success('✓')
+          : stage.status === 'error'
+            ? danger('✗')
+            : stage.status === 'start'
+              ? bold('▸')
+              : dim('·');
+      console.log(
+        `${mark} ${stage.icon} [${stage.index}/${stage.total}] ${bold(stage.label)} ${dim(`— ${stage.department}${stage.model ? ` · ${stage.model}` : ''}`)}`,
+      );
+    },
     onCheckpoint: () => {
       // Checkpoints are intentionally quiet in the CLI.
     },
@@ -408,6 +424,7 @@ export async function runTask(
     hooks,
     authority: authorityFrom(options),
     settings: store.getSettings(),
+    mode: options.mode,
     routingOverrides: options.allowPaid ? { allowPaid: true } : undefined,
   });
 

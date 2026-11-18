@@ -27,6 +27,17 @@ import {
 import { runProcess } from '../../safety/process.js';
 import { redactSecrets } from '../../security/redact.js';
 import type { ProjectInspector } from '../../project/inspector.js';
+import type { AppContext } from '../../app.js';
+import type { Store } from '../../db/store.js';
+import { executeGenerateImageTool, GENERATE_IMAGE_TOOL_NAME } from './image-tool.js';
+import {
+  CLOSE_WEB_TOOL_NAME,
+  executeCloseWebTool,
+  executeOpenWebTool,
+  executeWebActionTool,
+  OPEN_WEB_TOOL_NAME,
+  WEB_ACTION_TOOL_NAME,
+} from './web-tool.js';
 import { TOOL_DEFINITIONS } from './definitions.js';
 
 const MAX_READ_BYTES = 600_000;
@@ -90,6 +101,11 @@ const verifyUiSchema = z.object({
   url: z.string().min(1).max(2000),
   wait_ms: z.number().int().min(0).max(30_000).optional(),
 });
+const generateImageSchema = z.object({
+  prompt: z.string().min(1).max(4000),
+  size: z.string().max(50).optional(),
+  n: z.number().int().min(1).max(4).optional(),
+});
 
 export interface ToolExecutorOptions {
   root: string;
@@ -108,6 +124,10 @@ export interface ToolExecutorOptions {
   onPlan?: (plan: TaskPlan) => void;
   onTaskComplete?: (summary: string) => void;
   onNotice?: (message: string) => void;
+  /** Optional app context for tools that need provider/profile access (e.g. generate_image). */
+  appContext?: AppContext;
+  /** Optional store when a full AppContext is not wired yet. */
+  store?: Store;
 }
 
 function truncateForModel(text: string, maxChars: number): string {
@@ -286,6 +306,20 @@ export class ToolExecutor {
           return await this.runPreset('build', call.arguments);
         case 'verify_ui':
           return await this.verifyUiTool(call.arguments);
+        case GENERATE_IMAGE_TOOL_NAME:
+          return await this.generateImageTool(call.arguments);
+        case OPEN_WEB_TOOL_NAME:
+          return await executeOpenWebTool(
+            (call.arguments ?? {}) as Record<string, unknown>,
+            { cwd: this.options.root },
+          );
+        case WEB_ACTION_TOOL_NAME:
+          return await executeWebActionTool(
+            (call.arguments ?? {}) as Record<string, unknown>,
+            { cwd: this.options.root },
+          );
+        case CLOSE_WEB_TOOL_NAME:
+          return await executeCloseWebTool((call.arguments ?? {}) as Record<string, unknown>);
         case 'git_status':
           return await this.gitStatus();
         case 'git_diff':
@@ -651,6 +685,18 @@ export class ToolExecutor {
         : 'Failed requests: none',
     ].filter(Boolean);
     return { ok: true, content: lines.join('\n') };
+  }
+
+  private async generateImageTool(args: unknown): Promise<ToolResult> {
+    const parsed = this.parse(generateImageSchema, args);
+    if (!parsed.ok) return parsed.result;
+    const settings = this.options.getSettings?.() ?? this.options.settings;
+    return executeGenerateImageTool(parsed.data, {
+      appContext: this.options.appContext,
+      store: this.options.store ?? this.options.appContext?.store,
+      settings,
+      cwd: this.options.root,
+    });
   }
 
   private async runPreset(kind: 'test' | 'lint' | 'build', args: unknown): Promise<ToolResult> {

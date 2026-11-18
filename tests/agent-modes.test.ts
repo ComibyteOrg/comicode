@@ -66,9 +66,11 @@ describe('agent modes', () => {
     expect(nextAgentMode('plan', 1)).toBe('debug');
     expect(nextAgentMode('debug', 1)).toBe('architect');
     expect(nextAgentMode('explain', 1)).toBe('review');
-    expect(nextAgentMode('design', 1)).toBe('auto');
+    expect(nextAgentMode('design', 1)).toBe('team');
+    expect(nextAgentMode('team', 1)).toBe('auto');
     expect(nextAgentMode('auto', 1)).toBe('build');
     expect(nextAgentMode('build', -1)).toBe('auto');
+    expect(isAgentMode('team')).toBe(true);
     expect(isAgentMode('plan')).toBe(true);
     expect(isAgentMode('review')).toBe(true);
     expect(isAgentMode('security')).toBe(true);

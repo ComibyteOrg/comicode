@@ -43,6 +43,19 @@ export interface ToolResult {
   metadata?: Record<string, unknown>;
 }
 
+/** Fired as each member of the virtual "ComiCode Company" starts/finishes. */
+export interface TeamStageEvent {
+  index: number;
+  total: number;
+  roleId: string;
+  label: string;
+  department: string;
+  icon: string;
+  status: 'start' | 'done' | 'error';
+  summary: string | null;
+  model: string | null;
+}
+
 export interface AgentHooks {
   confirm?: ConfirmFn;
   onText?: (delta: string) => void;
@@ -64,6 +77,8 @@ export interface AgentHooks {
   onTaskComplete?: (summary: string | null) => void;
   onPaused?: (reason: string) => void;
   onReview?: (review: string) => void;
+  /** Team/department pipeline progress (only fires in `team` mode). */
+  onStage?: (stage: TeamStageEvent) => void;
 }
 
 export interface AgentResult {

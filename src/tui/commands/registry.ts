@@ -17,6 +17,7 @@ import { resolveModel, resolveProfile } from '../../cli/shared.js';
 import { compactTask } from '../../core/agent/compaction.js';
 import { AGENT_MODE_IDS, isAgentMode, type AgentMode } from '../../core/agent/modes.js';
 import { loadSkills } from '../../core/agent/skills.js';
+import { getPluginCommands, loadPlugins } from '../../core/plugins/index.js';
 import { glyph } from '../theme.js';
 import type { ConfirmationRequest, ConfirmDecision } from '../../core/agent/types.js';
 
@@ -63,6 +64,36 @@ class CommandRegistry {
 
   constructor() {
     this.registerDefaults();
+    this.registerPluginCommands();
+  }
+
+  /** Register slash commands contributed by installed plugins. */
+  private registerPluginCommands(): void {
+    const installed = loadPlugins({ cwd: process.cwd() });
+    for (const command of getPluginCommands(installed)) {
+      if (this.get(command.name)) continue;
+      const spec: CommandSpec = {
+        id: command.name,
+        summary: command.description.slice(0, 60),
+        description: `${command.description} (plugin: ${command.pluginId})`,
+        usage: `/${command.name}${command.argumentHint ? ` ${command.argumentHint}` : ''}`,
+        category: 'agent',
+        surfaces: ['slash'],
+      };
+      this.register(spec, (args, ctx) => {
+        const rendered = command.promptTemplate
+          .replace(/\{\{args\}\}|\{\$ARGUMENTS\}/g, args.join(' '))
+          .replace(/\$ARGUMENTS/g, args.join(' '));
+        const taskId = ctx.getActiveTaskId();
+        if (!taskId) {
+          ctx.addError('Start or resume a task before running a plugin command.');
+          return;
+        }
+        ctx.context.store.appendMessage(taskId, { role: 'user', content: rendered });
+        ctx.notify(`Plugin ${command.pluginId}/${command.name} queued into the active task.`);
+        return ctx.executeTask(taskId, false);
+      });
+    }
   }
 
   register(spec: CommandSpec, handler: CommandAction): void {
@@ -395,7 +426,7 @@ class CommandRegistry {
         const activeId = ctx.getActiveTaskId();
         task = activeId ? store.getTask(activeId) : null;
         if (!task) {
-          ctx.addError('No active task to delete. Open /tasks and press ctrl+d for saved history.');
+          ctx.addError('No active task to delete. Open /history and press ctrl+d for saved history.');
           return;
         }
       }
@@ -518,7 +549,7 @@ class CommandRegistry {
     this.register(findSpec('mode'), (args, ctx) => {
       const target = args[0]?.toLowerCase();
       if (!target) {
-        ctx.notify(`Agent mode: ${ctx.agentMode ?? 'build'} (tab cycles, /mode build|plan|debug)`);
+        ctx.openDialog('mode-picker');
         return;
       }
       if (!isAgentMode(target)) {

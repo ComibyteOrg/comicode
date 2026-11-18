@@ -80,10 +80,13 @@ describe('TUI application', () => {
     expect(frame()).toContain(WORKSPACE_MARKER);
     stdout.clear();
     await send(ESC);
-    await flush(200);
-    // stdout accumulates every render; assert on the final frame only, since
-    // an intermediate pre-close render can still contain the dialog title.
-    const tail = frame().slice(-4000);
+    // stdout accumulates every render; poll until the final frame no longer
+    // contains the dialog title (an intermediate frame can still show it).
+    let tail = frame().slice(-4000);
+    for (let attempt = 0; attempt < 12 && tail.includes('Select model'); attempt += 1) {
+      await flush(50);
+      tail = frame().slice(-4000);
+    }
     expect(tail).not.toContain('Select model');
     expect(tail).toContain(WORKSPACE_MARKER);
   });

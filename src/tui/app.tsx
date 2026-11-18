@@ -19,6 +19,7 @@ import { SettingsDialog } from './dialogs/settings-dialog.js';
 import { ShortcutsDialog } from './dialogs/shortcuts-dialog.js';
 import { OutputDialog } from './dialogs/output-dialog.js';
 import { EffortDialog } from './dialogs/effort-dialog.js';
+import { ModePicker } from './dialogs/mode-picker.js';
 import { ModalWindow } from './dialogs/modal.js';
 import { shortcutMatches } from './shortcuts/manager.js';
 import { nextAgentMode, type AgentMode } from '../core/agent/modes.js';
@@ -39,7 +40,8 @@ export type DialogId =
   | 'settings'
   | 'shortcuts'
   | 'output'
-  | 'effort';
+  | 'effort'
+  | 'mode-picker';
 
 interface PaletteAction {
   label: string;
@@ -166,6 +168,11 @@ function App({ context }: { context: AppContext }): React.ReactElement {
         label: 'Select an AI model',
         detail: 'model-picker (ctrl+m)',
         run: () => openDialog('model-picker'),
+      },
+      {
+        label: 'Choose agent / workflow (team, build, plan…)',
+        detail: '/mode',
+        run: () => openDialog('mode-picker'),
       },
       {
         label: 'Choose reasoning effort',
@@ -599,6 +606,16 @@ function App({ context }: { context: AppContext }): React.ReactElement {
       {activeDialog === 'effort' ? (
         <EffortDialog
           context={context}
+          onClose={closeDialog}
+          notify={notify}
+          refreshData={refreshData}
+        />
+      ) : null}
+
+      {activeDialog === 'mode-picker' ? (
+        <ModePicker
+          current={agentMode}
+          onMode={setAgentMode}
           onClose={closeDialog}
           notify={notify}
           refreshData={refreshData}

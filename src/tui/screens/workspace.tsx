@@ -1,7 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import type { AppContext } from '../../core/app.js';
-import type { AgentHooks, ConfirmationRequest, ConfirmDecision } from '../../core/agent/types.js';
+import type {
+  AgentHooks,
+  ConfirmationRequest,
+  ConfirmDecision,
+  TeamStageEvent,
+} from '../../core/agent/types.js';
 import { CodingAgent, DEFAULT_AUTHORITY } from '../../core/agent/agent.js';
 import { nextAgentMode, type AgentMode } from '../../core/agent/modes.js';
 import type { TaskPlan, TaskRecord } from '../../core/types.js';
@@ -23,6 +28,7 @@ import { glyph, theme } from '../theme.js';
 import { commandRegistry, type CommandContext } from '../commands/registry.js';
 import { listProjectFiles } from '../../core/safety/files.js';
 import { disableMouseTracking, enableMouseWheel, isMouseSequence, isSuppressedInput } from '../mouse.js';
+import { copyToClipboard } from '../../core/clipboard.js';
 
 interface Entry {
   id: number;
@@ -285,6 +291,7 @@ function EntryCard({
   toLine,
   showHeader = true,
   showMargin = true,
+  selected = false,
 }: {
   entry: Entry;
   dimmed?: boolean;
@@ -293,6 +300,7 @@ function EntryCard({
   toLine?: number;
   showHeader?: boolean;
   showMargin?: boolean;
+  selected?: boolean;
 }): React.ReactElement {
   const role = roleFor(entry);
   const lines = bodyLines ?? wrapBodyLines(entryDisplay(entry), 80);
@@ -302,14 +310,26 @@ function EntryCard({
   return (
     <Box flexDirection="column" marginBottom={showMargin ? 1 : 0} flexShrink={0}>
       {showHeader ? (
-        <Text color={role.color} bold dimColor={dimmed}>
+        <Text
+          color={selected ? theme.black : role.color}
+          backgroundColor={selected ? theme.accent : undefined}
+          bold
+          dimColor={dimmed && !selected}
+        >
+          {selected ? '▸ ' : ''}
           {role.marker} {role.label}
         </Text>
       ) : null}
       {visible.length > 0 ? (
         <Box paddingLeft={2} flexDirection="column">
           {visible.map((line, index) => (
-            <Text key={`${start + index}`} color={role.bodyColor} wrap="truncate" dimColor={dimmed}>
+            <Text
+              key={`${start + index}`}
+              color={selected ? theme.black : role.bodyColor}
+              backgroundColor={selected ? theme.accent : undefined}
+              wrap="truncate"
+              dimColor={dimmed && !selected}
+            >
               {line.length > 0 ? line : ' '}
             </Text>
           ))}
@@ -356,8 +376,12 @@ export function Workspace({
   const [frame, setFrame] = useState(0);
   const [pauseReason, setPauseReason] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<string | null>(null);
+  const [stages, setStages] = useState<TeamStageEvent[]>([]);
+  const [selection, setSelection] = useState<{ anchor: number; focus: number } | null>(null);
+  const [frozenEntries, setFrozenEntries] = useState<Entry[] | null>(null);
 
   const nextId = useRef(1);
+  const agentRef = useRef<CodingAgent | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const confirmResolve = useRef<((decision: ConfirmDecision) => void) | null>(null);
   const adoptedNonce = useRef(0);
@@ -494,6 +518,24 @@ export function Workspace({
       onReview: (review) => {
         addEntry({ kind: 'review', title: 'reviewer', text: clipLines(review, 10, 3000) });
       },
+      onStage: (stage) => {
+        setStages((previous) => {
+          const index = previous.findIndex(
+            (item) => item.index === stage.index && item.roleId === stage.roleId,
+          );
+          if (index === -1) return [...previous, stage];
+          const next = [...previous];
+          next[index] = stage;
+          return next;
+        });
+        if (stage.status === 'start') {
+          addEntry({
+            kind: 'route',
+            title: `${stage.icon} team`,
+            text: `${stage.index}/${stage.total} ${stage.label} — ${stage.department}${stage.model ? ` · ${stage.model}` : ''}`,
+          });
+        }
+      },
       onNotice: (message) => {
         addEntry({ kind: 'notice', text: message });
       },
@@ -550,6 +592,9 @@ export function Workspace({
       setPlan(null);
       setRoute(null);
       setScrollOffset(0);
+      setSelection(null);
+      setFrozenEntries(null);
+      setStages([]);
       streamingId.current = null;
       const controller = new AbortController();
       abortRef.current = controller;
@@ -562,6 +607,7 @@ export function Workspace({
           settings: context.store.getSettings(),
           mode: agentMode,
         });
+        agentRef.current = agent;
         const result = await agent.run({
           resume,
           signal: controller.signal,
@@ -584,6 +630,7 @@ export function Workspace({
         setLastResult(message);
       } finally {
         abortRef.current = null;
+        agentRef.current = null;
         setRunning(false);
         streamingId.current = null;
         refreshData();
@@ -820,12 +867,23 @@ export function Workspace({
       );
       setScrollOffset(0);
       if (running && !trimmed.startsWith('/')) {
-        setQueue((previous) => [...previous, trimmed]);
-        addEntry({
-          kind: 'notice',
-          title: 'queued',
-          text: `Queued while the agent runs: ${clip(trimmed, 90)}`,
-        });
+        if (agentRef.current) {
+          // Live injection: the running loop rebuilds its context every step,
+          // so this message is picked up by the very next model call.
+          agentRef.current.injectMessage(trimmed);
+          addEntry({ kind: 'user', text: trimmed });
+          addEntry({
+            kind: 'notice',
+            text: `Added live to the running task — the model will see it on its next step.`,
+          });
+        } else {
+          setQueue((previous) => [...previous, trimmed]);
+          addEntry({
+            kind: 'notice',
+            title: 'queued',
+            text: `Queued while the agent starts: ${clip(trimmed, 90)}`,
+          });
+        }
         return;
       }
       if (trimmed.startsWith('/')) {
@@ -850,16 +908,19 @@ export function Workspace({
   // Measure the transcript in terminal lines. Scrolling then moves by lines,
   // so wheel/page keys feel continuous even when individual answers are tall.
   const bodyWidth = Math.max(24, columns - 8);
+  // Freeze the transcript while highlighting so streaming output cannot reflow
+  // underneath the user's selection.
+  const renderEntries = frozenEntries ?? entries;
   const entryLayouts = useMemo(() => {
     let line = 0;
-    return entries.map((entry) => {
+    return renderEntries.map((entry) => {
       const lines = wrapBodyLines(entryDisplay(entry), bodyWidth);
       const height = 1 + lines.length + 1; // header + body + margin
       const layout = { entry, lines, start: line, height };
       line += height;
       return layout;
     });
-  }, [entries, bodyWidth]);
+  }, [renderEntries, bodyWidth]);
   const totalLines = entryLayouts.reduce((sum, layout) => sum + layout.height, 0);
   const lineBudget = Math.max(5, rows - 18);
   const maxOffset = Math.max(0, totalLines - lineBudget);
@@ -890,7 +951,55 @@ export function Workspace({
       if (isMouseSequence(input) || isSuppressedInput()) return;
       if (selectionMode) {
         if (key.escape) {
-          onToggleSelection?.();
+          if (selection) {
+            setSelection(null);
+            setFrozenEntries(null);
+          } else {
+            onToggleSelection?.();
+          }
+          return;
+        }
+        const moveFocus = (direction: -1 | 1): void => {
+          const source = frozenEntries ?? entries;
+          if (source.length === 0) return;
+          if (!frozenEntries) setFrozenEntries([...source]);
+          const current = selection?.focus ?? source[source.length - 1]!.id;
+          const index = source.findIndex((entry) => entry.id === current);
+          const nextIndex = Math.max(0, Math.min(source.length - 1, (index === -1 ? source.length - 1 : index) + direction));
+          setSelection({ anchor: selection?.anchor ?? current, focus: source[nextIndex]!.id });
+          const nextEntry = source[nextIndex]!;
+          const top = entryLayouts.find((layout) => layout.entry.id === nextEntry.id)?.start ?? 0;
+          setScrollOffset((value) => Math.min(value, Math.max(0, top)));
+        };
+        if (key.shift && key.upArrow) {
+          moveFocus(-1);
+          return;
+        }
+        if (key.shift && key.downArrow) {
+          moveFocus(1);
+          return;
+        }
+        if (input === 'a' && !key.ctrl) {
+          const source = frozenEntries ?? entries;
+          if (source.length > 0) {
+            setFrozenEntries([...source]);
+            setSelection({ anchor: source[0]!.id, focus: source[source.length - 1]!.id });
+            notify('Selected all transcript entries — ctrl+c copies.');
+          }
+          return;
+        }
+        if (key.ctrl && input === 'c') {
+          const source = frozenEntries ?? entries;
+          const selected = selection
+            ? source.filter((entry) => {
+                const ids = [selection.anchor, selection.focus];
+                return entry.id >= Math.min(...ids) && entry.id <= Math.max(...ids);
+              })
+            : source;
+          const text = selected.map((entry) => entryDisplay(entry)).join('\n');
+          void copyToClipboard(text).then((ok) =>
+            notify(ok ? `Copied ${selected.length} entr${selected.length === 1 ? 'y' : 'ies'}.` : 'Clipboard unavailable — select with your terminal instead.'),
+          );
           return;
         }
         if (key.pageUp) {
@@ -1042,7 +1151,7 @@ export function Workspace({
               {formatCount(usage.inputTokens)} in / {formatCount(usage.outputTokens)} out
               {lastInputTokens > 0 ? ` · ctx ~${formatCount(lastInputTokens)}` : ''}
               {queue.length > 0 ? ` · ${queue.length} queued` : ''}
-              {`  ${glyph.bullet}  `}type to queue · esc pauses
+              {`  ${glyph.bullet}  `}type to add live · esc pauses
             </Text>
           </Box>
         </Box>
@@ -1151,8 +1260,8 @@ export function Workspace({
   const selectionBanner = selectionMode ? (
     <Box flexShrink={0} paddingTop={1}>
       <Text color={theme.success} wrap="truncate">
-        ⌘ SELECT MODE {glyph.bullet} drag to highlight, then copy with your terminal
-        {glyph.bullet} esc / ctrl+y exits
+        ⌘ SELECT MODE {glyph.bullet} shift+↑/↓ highlight {glyph.bullet} a select all {glyph.bullet}
+        ctrl+c copy {glyph.bullet} esc clear / ctrl+y exits
       </Text>
     </Box>
   ) : null;
@@ -1214,6 +1323,11 @@ export function Workspace({
               toLine={layout.toLine}
               showHeader={layout.localStart === 0}
               showMargin={layout.localEnd >= layout.height}
+              selected={
+                selection !== null &&
+                layout.entry.id >= Math.min(selection.anchor, selection.focus) &&
+                layout.entry.id <= Math.max(selection.anchor, selection.focus)
+              }
             />
           ))}
           {visibleOffset > 0 && visibleLayouts.length === 0 ? (
@@ -1222,6 +1336,39 @@ export function Workspace({
         </Box>
         {scrollbar}
       </Box>
+
+      {stages.length ? (
+        <Box flexDirection="column" flexShrink={0} marginBottom={1}>
+          <Text color={theme.accent} bold wrap="truncate">
+            ◈ ComiCode Company {glyph.bullet} {stages.filter((stage) => stage.status === 'done').length}/{stages.length} departments
+          </Text>
+          {stages.map((stage) => {
+            const mark =
+              stage.status === 'done'
+                ? theme.success
+                : stage.status === 'error'
+                  ? theme.danger
+                  : stage.status === 'start'
+                    ? theme.accent
+                    : theme.faint;
+            const symbol =
+              stage.status === 'done' ? '✓' : stage.status === 'error' ? '✗' : stage.status === 'start' ? '▸' : '·';
+            return (
+              <Box key={`${stage.index}-${stage.roleId}`} flexDirection="column">
+                <Text color={mark} wrap="truncate" dimColor={dimmed && stage.status !== 'start'}>
+                  {symbol} {stage.icon} {stage.label}
+                  <Text color={theme.faint}> — {stage.department}{stage.model ? ` · ${stage.model}` : ''}</Text>
+                </Text>
+                {stage.status === 'done' && stage.summary ? (
+                  <Text color={theme.faint} dimColor wrap="truncate">
+                      ↳ {clip(stage.summary.replace(/\s+/g, ' '), 110)}
+                  </Text>
+                ) : null}
+              </Box>
+            );
+          })}
+        </Box>
+      ) : null}
 
       {plan?.steps?.length ? (
         <Box flexDirection="column" flexShrink={0} marginBottom={1}>

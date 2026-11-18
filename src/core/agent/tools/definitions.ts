@@ -1,4 +1,6 @@
 import type { ToolDefinition } from '../../types.js';
+import { generateImageToolDefinition } from './image-tool.js';
+import { WEB_TOOL_DEFINITIONS } from './web-tool.js';
 
 export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
@@ -222,6 +224,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     description: 'Show OS, Node version, git state, and detected test/lint/build commands.',
     parameters: { type: 'object', properties: {}, required: [] },
   },
+  generateImageToolDefinition,
+  ...WEB_TOOL_DEFINITIONS,
   {
     name: 'use_skill',
     description:

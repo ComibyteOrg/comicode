@@ -15,7 +15,7 @@ export interface UiVerifyOptions {
  * user's project via createRequire so a globally-installed CLI can still use
  * a project's devDependency.
  */
-async function loadChromium(resolveFrom?: string): Promise<any | null> {
+export async function loadChromium(resolveFrom?: string): Promise<any | null> {
   // Prefer the slim playwright-core; fall back to full playwright for projects
   // that installed it. Both are resolved next to ComiCode first, then inside
   // the user's project so a global CLI can reuse a project devDependency.
