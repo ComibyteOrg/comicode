@@ -98,7 +98,7 @@ function App({ context }: { context: AppContext }): React.ReactElement {
     setSelectionMode(next);
     notify(
       next
-        ? 'Select mode on — drag to highlight text and copy anywhere. Esc or ctrl+y returns to wheel scrolling.'
+        ? 'Select mode — shift+↑/↓ entries, shift+←/→ characters, a all, ctrl+c copy, esc clear.'
         : 'Wheel scrolling restored.',
     );
   }, [notify, selectionMode]);

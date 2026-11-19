@@ -180,7 +180,7 @@ describe('TUI application', () => {
     stdout.clear();
     await send(String.fromCharCode(25));
     expect(frame()).toContain('SELECT MODE');
-    expect(frame()).toContain('drag to highlight');
+    expect(frame()).toContain('shift+←/→ characters');
     stdout.clear();
     await send(ESC);
     expect(frame()).not.toContain('SELECT MODE');
