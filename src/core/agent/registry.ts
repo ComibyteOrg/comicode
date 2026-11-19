@@ -1,6 +1,8 @@
 /** The 14-agent software team exposed by the workspace sidebar. */
 import type { AgentMode } from './modes.js';
 import type { TeamRoleId } from './teams.js';
+import type { AgentEvent } from '../events/types.js';
+import type { TaskContract } from './task-contract.js';
 
 export type AgentId =
   | 'team_lead'
@@ -198,6 +200,56 @@ export function getAgentDefinition(id: AgentId): AgentDefinition {
 
 export function resolveAgentId(roleId: TeamRoleId): AgentId {
   return byRole.get(roleId) ?? 'backend';
+}
+
+/** Derive statuses only from real runtime events and task contracts. */
+export function deriveAgentStates(
+  events: AgentEvent[],
+  contracts: TaskContract[],
+): Record<AgentId, AgentRuntimeState> {
+  const states = Object.fromEntries(
+    AGENT_REGISTRY.map((agent) => [agent.id, idleAgentState()]),
+  ) as Record<AgentId, AgentRuntimeState>;
+  for (const contract of contracts) {
+    const state = states[contract.assignee];
+    if (!state) continue;
+    state.assignedTaskCount += 1;
+    if (contract.status === 'completed') state.completedTaskCount += 1;
+  }
+  for (const event of events) {
+    if (!event.agentId) continue;
+    const state = states[event.agentId as AgentId];
+    if (!state) continue;
+    switch (event.type) {
+      case 'agent.started':
+        state.status = 'working';
+        state.currentTaskId = String(event.payload.contractId ?? '') || null;
+        break;
+      case 'agent.progress':
+        state.status = 'working';
+        break;
+      case 'agent.handoff':
+        state.status = 'completed';
+        break;
+      case 'agent.completed':
+        state.status = 'completed';
+        state.completedTaskCount += 1;
+        break;
+      case 'agent.failed':
+        state.status = 'failed';
+        state.lastError = String(event.payload.reason ?? '').slice(0, 200);
+        break;
+      case 'agent.needs_input':
+        state.status = 'needs_input';
+        break;
+      case 'agent.waiting':
+        state.status = 'waiting';
+        break;
+      default:
+        break;
+    }
+  }
+  return states;
 }
 
 export function idleAgentState(): AgentRuntimeState {
