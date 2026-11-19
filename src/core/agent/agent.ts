@@ -543,9 +543,22 @@ export class CodingAgent {
     let steps = 0;
     let lastResult: AgentResult | null = null;
 
-    const estimatedTokens = Math.min(6_000, state.roles.length * 1_500);
-    const tokenBudget = Math.max(estimatedTokens * 2, 8_000);
-    const stepBudget = Math.max(2, Math.min(this.settings.agent.maxSteps * 2, 8));
+    const baseStep = Math.max(2, Math.min(this.settings.agent.maxSteps * 2, 8));
+    const baseToken = Math.min(
+      120_000,
+      Math.max(
+        20_000,
+        Math.round(
+          this.settings.agent.contextBudgetRatio * 120_000 * Math.min(state.roles.length, 4),
+        ),
+      ),
+    );
+    const remaining = saved ? Math.max(0, state.roles.length - state.cursor) : 0;
+    state.stepBudget = (saved?.stepBudget ?? 0) + baseStep + remaining;
+    state.tokenBudget = (saved?.tokenBudget ?? 0) + baseToken;
+    const estimatedTokens = Math.min(baseToken, state.roles.length * 1_500);
+    const tokenBudget = state.tokenBudget!;
+    const stepBudget = state.stepBudget!;
     this.hooks.onEstimate?.({
       stages: state.roles.length,
       estimatedTokens,

@@ -92,24 +92,25 @@ function setup(maxSteps?: number) {
     profile: p,
     apiKey: 'test-key',
   });
-  const agent = new CodingAgent({
-    store,
-    taskId: task.id,
-    mode: 'team',
-    authority: DEFAULT_AUTHORITY,
-    adapterFactory,
-    contextFactory,
-    hooks: {
-      onEstimate: (info) => estimates.push(info),
-      onStage: (event) => stages.push(event),
-    },
-  });
-  return { store, task, estimates, stages, agent };
+  const makeAgent = () =>
+    new CodingAgent({
+      store,
+      taskId: task.id,
+      mode: 'team',
+      authority: DEFAULT_AUTHORITY,
+      adapterFactory,
+      contextFactory,
+      hooks: {
+        onEstimate: (info) => estimates.push(info),
+        onStage: (event) => stages.push(event),
+      },
+    });
+  return { store, task, estimates, stages, makeAgent };
 }
 
 describe('team credit budget', () => {
   it('emits a preflight estimate before the first stage', async () => {
-    const { agent, estimates } = setup();
+    const { makeAgent, estimates } = setup(); const agent = makeAgent();
     await agent.run();
     expect(estimates.length).toBe(1);
     expect(estimates[0]!.stages).toBeGreaterThan(0);
@@ -117,16 +118,39 @@ describe('team credit budget', () => {
   });
 
   it('compacts the task between stages', async () => {
-    const { agent } = setup();
+    const { makeAgent } = setup(); const agent = makeAgent();
     await agent.run();
     expect(vi.mocked(compactTask).mock.calls.length).toBeGreaterThanOrEqual(1);
   });
 
   it('stops at the shared step budget and pauses', async () => {
-    const { agent, stages } = setup(1);
+    const { makeAgent, stages } = setup(1); const agent = makeAgent();
     const result = await agent.run();
     expect(result.status).toBe('paused');
     const starts = stages.filter((event) => event.status === 'start');
     expect(starts.length).toBeLessThanOrEqual(2);
+  });
+
+  it('grants a fresh allowance when resuming a budget-paused team', async () => {
+    const { store, task, stages, makeAgent } = setup(1);
+    const saved = {
+      roles: ['plan', 'frontend', 'backend', 'security', 'review'],
+      cursor: 2,
+      revisits: {},
+      stepsUsed: 2,
+      tokensUsed: 200,
+      stepBudget: 2,
+      tokenBudget: 8000,
+    };
+    store.updateTask(task.id, { metadata: { teamRun: saved } });
+    const result = await makeAgent().run();
+    expect(result.status).toBe('completed');
+    expect(stages.filter((event) => event.status === 'start').length).toBeGreaterThan(0);
+  });
+
+  it('uses a realistic per-stage token budget', async () => {
+    const { makeAgent, estimates } = setup(); const agent = makeAgent();
+    await agent.run();
+    expect(estimates[0]!.tokenBudget).toBeGreaterThanOrEqual(20_000);
   });
 });

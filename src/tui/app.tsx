@@ -314,7 +314,7 @@ function App({ context }: { context: AppContext }): React.ReactElement {
     // While a modal is open it owns the keyboard; nothing else leaks into the chat.
     if (isDialogOpen) return;
 
-    if (shortcutMatches('quit', input, key, shortcutOverrides)) {
+    if (!selectionMode && shortcutMatches('quit', input, key, shortcutOverrides)) {
       if (status === 'running') {
         notify('Pause the run with esc before quitting.');
         return;

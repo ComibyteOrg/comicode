@@ -60,6 +60,17 @@ describe('terminal highlighting', () => {
     expect(frame()).not.toMatch(/❯\s*a+/);
   });
 
+  it('does not arm quit when copying with ctrl+c in select mode', async () => {
+    stdin.write(CTRL_Y);
+    await flush();
+    stdout.clear();
+    stdin.write(String.fromCharCode(3));
+    await flush();
+    stdin.write(String.fromCharCode(3));
+    await flush(180);
+    expect(frame()).toContain('comicode workspace');
+  });
+
   it('slices exactly the selected character range', () => {
     expect(sliceSelection('highlight me', 0, 9)).toBe('highlight');
     expect(sliceSelection('highlight me', 10, 12)).toBe('me');

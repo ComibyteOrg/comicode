@@ -41,6 +41,9 @@ export interface TeamRunState {
   revisits: Record<string, number>;
   stepsUsed: number;
   tokensUsed: number;
+  /** Budgets are persisted so a resume grants a fresh allowance. */
+  stepBudget?: number;
+  tokenBudget?: number;
 }
 
 export interface TeamRole {
