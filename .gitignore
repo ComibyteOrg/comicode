@@ -13,6 +13,7 @@ coverage/
 comicode.db
 comicode.db-*
 credentials*
+!src/core/security/credentials.ts
 *.key
 *.pem
 *.log
