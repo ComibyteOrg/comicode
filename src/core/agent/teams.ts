@@ -13,17 +13,35 @@ import type { AgentMode } from './modes.js';
 import type { TaskType } from '../types.js';
 
 export type TeamRoleId =
+  | 'plan'
   | 'research'
   | 'product'
   | 'architecture'
   | 'design'
+  | 'frontend'
   | 'engineering'
+  | 'backend'
+  | 'devops'
   | 'security'
   | 'qa'
   | 'review'
   | 'docs'
   | 'marketing'
-  | 'devops';
+  | 'debug';
+
+export interface TeamPlan {
+  roles: TeamRoleId[];
+  source: 'rules' | 'planner';
+  revisitLimit: number;
+}
+
+export interface TeamRunState {
+  roles: TeamRoleId[];
+  cursor: number;
+  revisits: Record<string, number>;
+  stepsUsed: number;
+  tokensUsed: number;
+}
 
 export interface TeamRole {
   id: TeamRoleId;
@@ -42,6 +60,65 @@ export interface TeamRole {
 }
 
 export const TEAM_ROLES: Record<TeamRoleId, TeamRole> = {
+  plan: {
+    id: 'plan',
+    label: 'Plan',
+    department: 'Product & Planning',
+    icon: '▤',
+    mode: 'plan',
+    taskType: 'reasoning',
+    capabilityHint: 'planning model with read-only tools',
+    autoModel: true,
+    instructions: `You are the PLANNING AGENT. Break the request into an ordered, testable plan.
+- Inspect what exists with read-only tools; define scope, acceptance criteria and non-goals.
+- Call update_plan with concrete steps the delivery agents will follow. Do not implement.
+- End with: STAGE_STATUS: <what is planned and where the next agent should start>.`,
+  },
+  frontend: {
+    id: 'frontend',
+    label: 'Frontend',
+    department: 'Engineering / Frontend',
+    icon: '◈',
+    mode: 'design',
+    taskType: 'vision',
+    capabilityHint: 'vision-capable model for UI, layout and assets',
+    autoModel: true,
+    instructions: `You are the FRONTEND AGENT. Own the user-facing side of the product.
+- Implement UI, layout, states and accessibility from the handed-off plan.
+- If an image/illustration/logo is needed, call generate_image and reference the saved path.
+- Verify with the project's build/lint where possible.
+- End with: STAGE_STATUS: <what you built, files changed, and what backend/security must do>.`,
+  },
+  backend: {
+    id: 'backend',
+    label: 'Backend',
+    department: 'Engineering / Backend',
+    icon: '⬡',
+    mode: 'build',
+    taskType: 'coding',
+    capabilityHint: 'strong coding model for services, data and APIs',
+    autoModel: true,
+    instructions: `You are the BACKEND AGENT. Own server logic, data models, APIs and integrations.
+- Implement against the handed-off plan and the frontend's stated needs.
+- Keep interfaces explicit; add or update tests for behaviour you add.
+- Verify with the project's test/build commands.
+- End with: STAGE_STATUS: <what you built, files changed, and what remains>.`,
+  },
+  debug: {
+    id: 'debug',
+    label: 'Debug',
+    department: 'Engineering / Diagnostics',
+    icon: '⌁',
+    mode: 'debug',
+    taskType: 'reasoning',
+    capabilityHint: 'diagnosis-first model with full tool use',
+    autoModel: true,
+    instructions: `You are the DEBUG AGENT. Find and fix the reported failure.
+- Reproduce or isolate the failure from real output before changing anything.
+- Trace the code path, identify the root cause, apply the smallest fix, add a regression test.
+- Prove the fix with the project's test/lint/build commands.
+- End with: STAGE_STATUS: <root cause, fix, verification result, and any remaining risk>.`,
+  },
   research: {
     id: 'research',
     label: 'Research',
@@ -242,32 +319,81 @@ const PIPELINE_KEYWORDS: Array<{ id: keyof typeof TEAM_PIPELINES; words: string[
   { id: 'build', words: ['build', 'fix', 'implement', 'add', 'feature', 'refactor', 'bug', 'create'] },
 ];
 
-/** Deterministic, token-free selection of the team for a request. */
-export function selectTeamRoles(text: string, mode: AgentMode): TeamRole[] {
+const DEBUG_WORDS = ['debug', 'crash', 'exception', 'stack trace', 'not working', 'broken', 'error'];
+const ECOMMERCE_WORDS = [
+  'ecommerce', 'e-commerce', 'online shop', 'storefront', 'checkout', 'shopping cart',
+  'product catalog', 'online store',
+];
+
+/**
+ * Deterministic, token-free selection of the team for a request. The LLM
+ * planner is only used for vague/org-wide requests and is executed by the
+ * agent, not here.
+ */
+export function resolveTeamPlan(text: string, mode: AgentMode): TeamPlan {
   const lower = ` ${text.toLowerCase()} `;
-  let ids: TeamRoleId[];
-  if (ORG_WORDS.some((word) => lower.includes(word))) {
-    ids = TEAM_PIPELINES.fullOrganization!;
-  } else {
-    let best: keyof typeof TEAM_PIPELINES = 'build';
-    let bestScore = 0;
-    for (const entry of PIPELINE_KEYWORDS) {
-      const score = entry.words.reduce((sum, word) => sum + (lower.includes(word) ? 1 : 0), 0);
-      if (score > bestScore) {
-        bestScore = score;
-        best = entry.id;
-      }
-    }
-    // Mode context also guides the team when the prompt itself is short.
-    if (mode === 'security') best = 'security';
-    else if (mode === 'test') best = 'test';
-    else if (mode === 'design') best = 'design';
-    else if (mode === 'docs') best = 'docs';
-    else if (mode === 'explain') best = 'explain';
-    else if (mode === 'architect') best = 'build';
-    ids = TEAM_PIPELINES[best] ?? TEAM_PIPELINES.build!;
+  const has = (words: string[]): boolean => words.some((word) => lower.includes(word));
+
+  if (mode === 'debug' || has(DEBUG_WORDS)) {
+    return { roles: ['debug'], source: 'rules', revisitLimit: 2 };
   }
-  return ids.map((id) => TEAM_ROLES[id]);
+  if (has(ECOMMERCE_WORDS)) {
+    return {
+      roles: ['plan', 'frontend', 'backend', 'security', 'review'],
+      source: 'rules',
+      revisitLimit: 2,
+    };
+  }
+  if (ORG_WORDS.some((word) => lower.includes(word))) {
+    return { roles: [...TEAM_PIPELINES.fullOrganization!], source: 'rules', revisitLimit: 2 };
+  }
+  if (has(['security', 'vulnerab', 'exploit', 'injection', 'xss', 'csrf']) || mode === 'security') {
+    return { roles: ['research', 'security', 'review'], source: 'rules', revisitLimit: 2 };
+  }
+  if (has(['test', 'coverage', 'e2e', 'flaky']) || mode === 'test') {
+    return { roles: ['research', 'qa', 'review'], source: 'rules', revisitLimit: 2 };
+  }
+  if (has(['document', 'readme', 'docs', 'guide']) || mode === 'docs') {
+    return { roles: ['research', 'docs', 'marketing'], source: 'rules', revisitLimit: 2 };
+  }
+  if (has(['explain', 'what does', 'how does', 'walk me through']) || mode === 'explain') {
+    return { roles: ['research', 'review'], source: 'rules', revisitLimit: 2 };
+  }
+  if (has(['deploy', 'docker', 'ci/cd', 'pipeline', 'infra', 'devops'])) {
+    return { roles: ['research', 'devops', 'security', 'qa'], source: 'rules', revisitLimit: 2 };
+  }
+  if (has(['marketing', 'campaign', 'landing page', 'brand'])) {
+    return { roles: ['plan', 'design', 'frontend', 'marketing'], source: 'rules', revisitLimit: 2 };
+  }
+  if (has(['design', 'ui', 'ux', 'layout', 'mockup']) || mode === 'design') {
+    return { roles: ['research', 'design', 'engineering', 'qa'], source: 'rules', revisitLimit: 2 };
+  }
+  if (has(['build', 'implement', 'add ', 'feature', 'refactor', 'create'])) {
+    return { roles: [...TEAM_PIPELINES.build!], source: 'rules', revisitLimit: 2 };
+  }
+  // Vague or org-wide: let the agent run a cheap planner pass.
+  return {
+    roles: ['research', 'architecture', 'engineering', 'security', 'review'],
+    source: 'planner',
+    revisitLimit: 2,
+  };
+}
+
+/** Compatibility wrapper used by tests and older call sites. */
+export function selectTeamRoles(text: string, mode: AgentMode): TeamRole[] {
+  return resolveTeamPlan(text, mode).roles.map((id) => TEAM_ROLES[id]!);
+}
+
+/** Parse the handoff directives a stage is asked to emit. */
+export function parseStageDirective(text: string): {
+  status: string | null;
+  revisit: TeamRoleId | null;
+} {
+  const status = /\bSTAGE_STATUS:\s*(.+)/i.exec(text)?.[1]?.trim().slice(0, 300) ?? null;
+  const revisitRaw = /\bNEEDS_REVISIT:\s*([a-z-]+)/i.exec(text)?.[1]?.toLowerCase();
+  const revisit =
+    revisitRaw && revisitRaw in TEAM_ROLES ? (revisitRaw as TeamRoleId) : null;
+  return { status, revisit };
 }
 
 /** The compact "where the former AI stopped" note handed to the next member. */
@@ -292,7 +418,7 @@ export function buildHandoffNote(
 export function buildStagePrompt(
   role: TeamRole,
   originalRequest: string,
-  handoffs: string[],
+  latestHandoff: string | null,
 ): string {
   const parts = [
     `# Team assignment: ${role.label} — ${role.department}`,
@@ -300,8 +426,8 @@ export function buildStagePrompt(
     '',
     `## Original user request\n${originalRequest.slice(0, 12_000)}`,
   ];
-  if (handoffs.length) {
-    parts.push('', '## Handoffs from previous team members (read carefully)', handoffs.join('\n\n---\n\n'));
+  if (latestHandoff) {
+    parts.push('', '## Handoff from the previous team member (read carefully)', latestHandoff);
   }
   parts.push(
     '',

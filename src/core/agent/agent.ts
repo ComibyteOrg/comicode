@@ -23,7 +23,8 @@ import { Collaborator, planFromCollaborator } from './collaboration.js';
 import {
   buildHandoffNote,
   buildStagePrompt,
-  selectTeamRoles,
+  resolveTeamPlan,
+  TEAM_ROLES,
   type TeamRole,
 } from './teams.js';
 import { getPluginSkills, loadPlugins } from '../plugins/index.js';
@@ -498,7 +499,9 @@ export class CodingAgent {
    */
   private async runTeam(options: AgentRunOptions): Promise<AgentResult> {
     const originalRequest = this.task.userRequest || this.task.summary || '';
-    const roles = selectTeamRoles(originalRequest, this.mode);
+    const roles = resolveTeamPlan(originalRequest, this.mode).roles.map(
+      (id) => TEAM_ROLES[id]!,
+    );
     const handoffs: string[] = [];
     const aggregate = { inputTokens: 0, outputTokens: 0 };
     let steps = 0;
@@ -547,7 +550,7 @@ export class CodingAgent {
         error: null,
         completedAt: null,
       });
-      const stagePrompt = buildStagePrompt(role, originalRequest, handoffs);
+      const stagePrompt = buildStagePrompt(role, originalRequest, handoffs.at(-1) ?? null);
       this.store.appendMessage(this.task.id, { role: 'user', content: stagePrompt });
 
       this.hooks.onStage?.({
