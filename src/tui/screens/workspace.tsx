@@ -394,7 +394,7 @@ export function Workspace({
   selectionMode = false,
   onToggleSelection,
   sidePanel = false,
-  onToggleSidePanel,
+  onToggleSidePanel: _onToggleSidePanel,
 }: WorkspaceProps): React.ReactElement {
   const { rows, columns } = useLayout();
   const [entries, setEntries] = useState<Entry[]>([]);

@@ -185,6 +185,15 @@ comicode run "Build a full landing page with a hero image and launch copy" --mod
 
 Then press `esc` in the terminal or watch the **Teams** view in the web GUI.
 
+**Automatic agent selection:** you don't have to ask for a team explicitly. A
+single-focus prompt picks one specialist automatically — `"fix this crash"` runs
+the **Debug** agent, `"review this code"` the reviewer, `"audit for security"`
+the security auditor. A multi-part prompt (for example `"build an ecommerce
+site"`) assembles `Plan → Frontend → Backend → Security → Review` on its own.
+Stages can send work **back** (`NEEDS_REVISIT: frontend`) and the team will
+revisit that role, with a hard cap. Press **F6** to show/hide the side panel
+that displays the live stage pipeline and plan in wide terminals.
+
 ---
 
 ## How quota failover works
@@ -194,14 +203,18 @@ a limit, ComiCode does **not** give up:
 
 1. **Same model, next key.** It rotates to key 2, then key 3 of the same
    profile on the *same model* before trying anything else.
-2. **Same provider, next free model.** Only after every key for that model is
-   exhausted does it try other free models of the same provider. A cooldown is
-   saved so it doesn't hammer a limited model.
-3. **Next provider.** After repeated same-provider failures it offers to switch
+2. **Same model on your other APIs.** Before trying a different model, ComiCode
+   looks for that *exact* model on every other connected provider (for example
+   DeepSeek V4.1 Flash on NVIDIA → the same model on Kilo). Gateways that accept
+   arbitrary model IDs are also probed even if the model was never discovered.
+3. **Same provider, next free model.** Only when no other API serves that model
+   does it try other free models of the original provider. A cooldown is saved
+   so it doesn't hammer a limited model.
+4. **Next provider.** After repeated same-provider failures it offers to switch
    provider. Approving once remembers that provider for the rest of the run.
-4. **Context handoff.** The replacement model receives a note explaining why
+5. **Context handoff.** The replacement model receives a note explaining why
    it is there and exactly where the previous one stopped — no lost work.
-5. **Pause instead of failing.** If everything is exhausted, progress is
+6. **Pause instead of failing.** If everything is exhausted, progress is
    checkpointed and you can resume after resetting a quota.
 
 Paid models are never used silently. Enable them with `--allow-paid` or
@@ -226,10 +239,13 @@ current run to finish. The transcript marks it as a live follow-up.
 - **Terminal-native:** press `ctrl+y` to release mouse capture, then drag to
   select and copy with your terminal. `esc` or `ctrl+y` returns to wheel
   scrolling. (`ui.mouseScroll` controls capture.)
-- **In-app selection:** in select mode use `shift+↑` / `shift+↓` to highlight
-  transcript entries, `a` to select all, and `ctrl+c` to copy to the OS
-  clipboard. The transcript is frozen while selecting, so streaming output
-  can't reflow underneath your selection.
+- **In-app selection:** press `ctrl+y`, then `shift+↑` / `shift+↓` to highlight
+  whole transcript entries, `a` to select all, or `shift+←` / `shift+→` (and
+  `shift+home` / `shift+end`) to select **exact characters inside one message**.
+  `ctrl+c` copies the highlighted text to your OS clipboard; if the clipboard
+  tool is unavailable it saves `.comicode/selection.txt` and tells you the
+  path. `esc` clears the selection, a second `esc` leaves select mode. The
+  transcript is frozen while selecting, so streaming can't reflow under it.
 
 ### Todos and plans
 
@@ -352,6 +368,7 @@ tell you to run `npx playwright install chromium`.
 | `ctrl+t` | Task history (`/history`) |
 | `ctrl+j` | Jump between your questions |
 | `ctrl+y` | Toggle text-selection mode / release mouse |
+| `f6` | Show/hide the teams + plan side panel |
 | `esc` | Pause after the current operation |
 | PgUp / PgDn, wheel | Scroll transcript |
 
@@ -377,6 +394,10 @@ ComiCode is engineered to spend far fewer tokens than a naive agent:
 - **Capability-aware routing** picks free models first and the cheapest
   adequate model for each role.
 - **Token-discipline hints** are injected at low/medium effort.
+- **Team budget:** the whole team shares one step/token budget, the task is
+   compacted between stages, only the latest handoff is carried forward, and
+   per-stage planner/reviewer/tester cycles are suppressed. Before a team run
+   ComiCode prints an estimate (`~stages · tokens · budget`).
 
 Use `/profile` or `comicode providers edit` to set effort; `low` is the
 leanest profile.

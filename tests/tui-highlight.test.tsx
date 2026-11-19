@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { App } from '../src/tui/app.js';
 import { openAppContext, type AppContext } from '../src/core/app.js';
 import { sliceSelection } from '../src/tui/screens/workspace.js';
-import { FakeStdout, flush, makeStdin } from './helpers/tui.js';
+import { FakeStdout, flush, makeStdin, stripAnsi } from './helpers/tui.js';
 
 const CTRL_Y = String.fromCharCode(25);
 
@@ -48,7 +48,7 @@ describe('terminal highlighting', () => {
     else process.env.COMICODE_DB_PATH = originalDb;
   });
 
-  const frame = (): string => stdout.output.replace(/\u001b\[[0-9;?]*[a-zA-Z]/g, '');
+  const frame = (): string => stripAnsi(stdout.output);
 
   it('sends the select-all key to the selection, not the composer', async () => {
     stdin.write(CTRL_Y);

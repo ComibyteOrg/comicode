@@ -307,18 +307,6 @@ const ORG_WORDS = [
   'full company', 'whole company', 'all teams', 'marketing team', 'full software team',
   'everything', 'end to end', 'end-to-end', 'complete product', 'whole product',
 ];
-const PIPELINE_KEYWORDS: Array<{ id: keyof typeof TEAM_PIPELINES; words: string[] }> = [
-  { id: 'security', words: ['security', 'vulnerab', 'audit', 'exploit', 'injection', 'secret leak', 'xss', 'csrf'] },
-  { id: 'website', words: ['website', 'landing page', 'marketing site', 'web app', 'homepage', 'brand', 'website requires', 'image', 'logo', 'illustration'] },
-  { id: 'marketing', words: ['marketing', 'campaign', 'copy', 'release notes', 'changelog', 'positioning', 'social'] },
-  { id: 'design', words: ['design', 'ui', 'ux', 'css', 'layout', 'style', 'mockup', 'visual'] },
-  { id: 'devops', words: ['deploy', 'docker', 'ci', 'pipeline', 'infra', 'devops', 'release script'] },
-  { id: 'test', words: ['test', 'coverage', 'spec', 'e2e', 'flaky'] },
-  { id: 'docs', words: ['document', 'readme', 'docs', 'guide', 'changelog'] },
-  { id: 'explain', words: ['explain', 'what does', 'how does', 'walk me through', 'understand'] },
-  { id: 'build', words: ['build', 'fix', 'implement', 'add', 'feature', 'refactor', 'bug', 'create'] },
-];
-
 const DEBUG_WORDS = ['debug', 'crash', 'exception', 'stack trace', 'not working', 'broken', 'error'];
 const ECOMMERCE_WORDS = [
   'ecommerce', 'e-commerce', 'online shop', 'storefront', 'checkout', 'shopping cart',

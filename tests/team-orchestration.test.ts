@@ -7,7 +7,7 @@ import { TEAM_ROLES, type TeamRunState } from '../src/core/agent/teams.js';
 import type { AgentMode } from '../src/core/agent/modes.js';
 import type { TeamStageEvent } from '../src/core/agent/types.js';
 import type { AdapterContext, ProviderAdapter } from '../src/core/providers/adapter.js';
-import { openStore, type Store } from '../src/core/db/store.js';
+import { openStore } from '../src/core/db/store.js';
 import type { ChatResponse, DiscoveredModel, ProviderProfile } from '../src/core/types.js';
 
 const cleanup: Array<() => void> = [];
