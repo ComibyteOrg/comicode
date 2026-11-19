@@ -38,7 +38,7 @@ import { classifyThrown, describeCategory, ProviderError } from '../providers/er
 import type { ErrorCategory } from '../types.js';
 import { redactSecrets } from '../security/redact.js';
 import { logger } from '../logger.js';
-import { compactionOf } from './compaction.js';
+import { compactTask, compactionOf } from './compaction.js';
 import { captureGitBaseline, recordGitFinalMetadata } from '../git/repository.js';
 
 export const DEFAULT_AUTHORITY: AgentAuthority = {
@@ -374,7 +374,7 @@ export class CodingAgent {
     try {
       await this.prepare(options);
       if (options.signal?.aborted) return this.halt('paused', 'Cancelled by user. Progress saved.');
-      await this.runPlannerIfEnabled();
+      if (!options.skipCollaboration) await this.runPlannerIfEnabled();
       this.setPhase('inspect');
       this.checkpoint('run-start');
 
@@ -439,7 +439,7 @@ export class CodingAgent {
             return this.halt('paused', 'Cancelled by user. Progress saved.');
           }
           if (completed || this.completionSummary) {
-            if (this.shouldRequestVerification()) {
+            if (!options.skipCollaboration && this.shouldRequestVerification()) {
               this.verificationNudged = true;
               this.completionSummary = null;
               this.finalResponse = null;
@@ -451,7 +451,7 @@ export class CodingAgent {
               this.checkpoint('verification-nudge');
               continue;
             }
-            const continueAfterTest = await this.testIfEnabled();
+            const continueAfterTest = options.skipCollaboration ? false : await this.testIfEnabled();
             if (continueAfterTest) {
               this.completionSummary = null;
               this.finalResponse = null;
@@ -459,7 +459,7 @@ export class CodingAgent {
               this.checkpoint('after-test');
               continue;
             }
-            const continueAfterReview = await this.reviewIfEnabled();
+            const continueAfterReview = options.skipCollaboration ? false : await this.reviewIfEnabled();
             if (continueAfterReview) {
               this.completionSummary = null;
               this.finalResponse = null;
@@ -492,7 +492,7 @@ export class CodingAgent {
         emptyResponses = 0;
         this.finalResponse = response.content;
         this.completionSummary = this.completionSummary ?? response.content.slice(0, 8000);
-        const continueAfterReview = await this.reviewIfEnabled();
+        const continueAfterReview = options.skipCollaboration ? false : await this.reviewIfEnabled();
         if (continueAfterReview) {
           this.completionSummary = null;
           this.finalResponse = null;
@@ -543,6 +543,16 @@ export class CodingAgent {
     let steps = 0;
     let lastResult: AgentResult | null = null;
 
+    const estimatedTokens = Math.min(6_000, state.roles.length * 1_500);
+    const tokenBudget = Math.max(estimatedTokens * 2, 8_000);
+    const stepBudget = Math.max(2, Math.min(this.settings.agent.maxSteps * 2, 8));
+    this.hooks.onEstimate?.({
+      stages: state.roles.length,
+      estimatedTokens,
+      tokenBudget,
+      stepBudget,
+    });
+
     this.hooks.onNotice?.(
       `ComiCode Company assembled (${state.roles.length} stages): ${state.roles.map((id) => TEAM_ROLES[id]!.label).join(' → ')}.`,
     );
@@ -550,6 +560,15 @@ export class CodingAgent {
     while (queue.length > 0) {
       if (options.signal?.aborted) {
         return this.halt('paused', 'Cancelled by user. Progress saved.');
+      }
+      if (state.stepsUsed >= stepBudget || state.tokensUsed >= tokenBudget) {
+        this.store.updateTask(this.task.id, {
+          metadata: { ...this.task.metadata, teamRun: state },
+        });
+        return this.halt(
+          'paused',
+          `Team credit budget reached (${state.stepsUsed}/${stepBudget} steps, ${state.tokensUsed}/${tokenBudget} tokens). Progress saved — resume to continue.`,
+        );
       }
       const roleId = queue.shift()!;
       const role: TeamRole = TEAM_ROLES[roleId]!;
@@ -630,7 +649,7 @@ export class CodingAgent {
             },
           },
         });
-        const result = await stageAgent.run(options);
+        const result = await stageAgent.run({ ...options, skipCollaboration: true });
         lastResult = result;
         aggregate.inputTokens += result.usage.inputTokens;
         aggregate.outputTokens += result.usage.outputTokens;
@@ -688,6 +707,10 @@ export class CodingAgent {
         this.store.updateTask(this.task.id, {
           metadata: { ...this.task.metadata, teamRun: state },
         });
+        if (queue.length > 0) {
+          compactTask(this.store, this.task.id);
+          this.task = this.store.getTask(this.task.id) ?? this.task;
+        }
         this.hooks.onStage?.({
           index: index + 1,
           total: state.roles.length,

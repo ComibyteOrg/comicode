@@ -363,6 +363,14 @@ export async function runTask(
         ),
       );
     },
+    onEstimate: (info) => {
+      if (json) return;
+      console.log(
+        dim(
+          `  estimate: ${info.stages} stages · ~${formatTokens(info.estimatedTokens)} tokens · budget ${formatTokens(info.tokenBudget)} / ${info.stepBudget} steps`,
+        ),
+      );
+    },
     onPlan: (plan) => {
       if (json) return;
       const value = plan as { summary?: string; steps?: Array<{ title: string; status: string }> };
