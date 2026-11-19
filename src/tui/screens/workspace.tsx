@@ -93,6 +93,8 @@ interface WorkspaceProps {
   /** Release mouse capture so the terminal can highlight and copy text. */
   selectionMode?: boolean;
   onToggleSelection?: () => void;
+  /** Shared event bus for the multi-agent workspace. */
+  eventBus?: import('../../core/events/bus.js').EventBus;
   /** Show the collapsible teams/plan pane. */
   sidePanel?: boolean;
   onToggleSidePanel?: () => void;
@@ -393,6 +395,7 @@ export function Workspace({
   onShowOutput,
   selectionMode = false,
   onToggleSelection,
+  eventBus,
   sidePanel = false,
   onToggleSidePanel: _onToggleSidePanel,
 }: WorkspaceProps): React.ReactElement {
@@ -651,6 +654,7 @@ export function Workspace({
           authority: { ...DEFAULT_AUTHORITY },
           settings: context.store.getSettings(),
           mode: agentMode,
+          eventBus,
         });
         agentRef.current = agent;
         const result = await agent.run({
@@ -681,7 +685,7 @@ export function Workspace({
         refreshData();
       }
     },
-    [addEntry, agentMode, askConfirm, context, makeHooks, refreshData, running, updateStatus],
+    [addEntry, agentMode, askConfirm, context, eventBus, makeHooks, refreshData, running, updateStatus],
   );
 
   const startRequest = useCallback(

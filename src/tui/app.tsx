@@ -6,7 +6,9 @@ import type { TaskRecord } from '../core/types.js';
 import { refreshProfileModels } from '../core/providers/service.js';
 import { gitBranch } from '../core/git/repository.js';
 import { Footer, Header, PromptInput, useLayout, type AgentStatus } from './components.js';
-import { Workspace, type ResumeRequest } from './screens/workspace.js';
+import type { ResumeRequest } from './screens/workspace.js';
+import { MissionControl } from './screens/mission-control.js';
+import { EventBus } from '../core/events/bus.js';
 import { ProvidersDialog } from './dialogs/providers-dialog.js';
 import { ModelPicker } from './dialogs/model-picker.js';
 import { ConnectDialog } from './dialogs/connect-dialog.js';
@@ -66,6 +68,7 @@ function App({ context }: { context: AppContext }): React.ReactElement {
   const [branch, setBranch] = useState<string | null>(null);
   const [agentMode, setAgentMode] = useState<AgentMode>('auto');
   const [sidePanelVisible, setSidePanelVisible] = useState<boolean>(() => columns >= 112);
+  const [eventBus] = useState(() => new EventBus());
 
   useEffect(() => {
     setSidePanelVisible(columns >= 112);
@@ -445,28 +448,18 @@ function App({ context }: { context: AppContext }): React.ReactElement {
 
       <Box flexDirection="column" flexGrow={1} overflow="hidden" paddingX={1}>
         {/* The chat workspace stays mounted and visible behind every dialog. */}
-        <Workspace
+        <MissionControl
           context={context}
           active={!isDialogOpen}
-          dimmed={isDialogOpen}
-          onStatusChange={setStatus}
-          onNavigate={() => {}}
-          onCycleScreen={() => {}}
-          onOpenDialog={(d) => {
-            if (d) openDialog(d);
-            else closeDialog();
-          }}
-          onQuit={quit}
-          resumeRequest={resumeRequest}
-          notify={notify}
-          refreshData={refreshData}
+          eventBus={eventBus}
           agentMode={agentMode}
           onAgentMode={setAgentMode}
-          onShowOutput={showOutput}
+          resumeRequest={resumeRequest}
           selectionMode={selectionMode}
           onToggleSelection={toggleSelectionMode}
-          sidePanel={sidePanelVisible && columns >= 80}
-          onToggleSidePanel={() => setSidePanelVisible((visible) => !visible)}
+          onStatusChange={setStatus}
+          notify={notify}
+          refreshData={refreshData}
         />
       </Box>
 
