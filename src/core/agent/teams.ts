@@ -21,6 +21,8 @@ export type TeamRoleId =
   | 'frontend'
   | 'engineering'
   | 'backend'
+  | 'database'
+  | 'mobile'
   | 'devops'
   | 'security'
   | 'qa'
@@ -106,6 +108,36 @@ export const TEAM_ROLES: Record<TeamRoleId, TeamRole> = {
 - Keep interfaces explicit; add or update tests for behaviour you add.
 - Verify with the project's test/build commands.
 - End with: STAGE_STATUS: <what you built, files changed, and what remains>.`,
+  },
+  database: {
+    id: 'database',
+    label: 'Database',
+    department: 'Engineering / Data',
+    icon: '▦',
+    mode: 'architect',
+    taskType: 'reasoning',
+    capabilityHint: 'schema and query design model',
+    autoModel: true,
+    instructions: `You are the DATABASE ARCHITECT. Own schemas, migrations, indexes and queries.
+- Inspect the existing data model and conventions before proposing changes.
+- Design safe, incremental migrations; call out data-backfill and rollback steps.
+- Add or update queries and tests for behaviour you change.
+- End with: STAGE_STATUS: <schema decisions, files changed, and what remains>.`,
+  },
+  mobile: {
+    id: 'mobile',
+    label: 'Mobile',
+    department: 'Engineering / Mobile',
+    icon: '▤',
+    mode: 'design',
+    taskType: 'vision',
+    capabilityHint: 'mobile UI and responsive layout model',
+    autoModel: true,
+    instructions: `You are the MOBILE DEVELOPER. Own mobile screens, navigation and responsive behaviour.
+- Reuse the project's design tokens and platform conventions.
+- Handle loading, empty, error and offline states; verify with available builds.
+- If a visual asset is needed, call generate_image and reference the saved path.
+- End with: STAGE_STATUS: <screens built, files changed, and what remains>.`,
   },
   debug: {
     id: 'debug',
