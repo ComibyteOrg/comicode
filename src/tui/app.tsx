@@ -65,6 +65,11 @@ function App({ context }: { context: AppContext }): React.ReactElement {
   const [paletteIndex, setPaletteIndex] = useState(0);
   const [branch, setBranch] = useState<string | null>(null);
   const [agentMode, setAgentMode] = useState<AgentMode>('auto');
+  const [sidePanelVisible, setSidePanelVisible] = useState<boolean>(() => columns >= 112);
+
+  useEffect(() => {
+    setSidePanelVisible(columns >= 112);
+  }, [columns]);
   const [outputContent, setOutputContent] = useState<{ title: string; text: string } | null>(null);
   const [selectionMode, setSelectionMode] = useState(false);
   const quitArmedAt = useRef(0);
@@ -292,6 +297,12 @@ function App({ context }: { context: AppContext }): React.ReactElement {
   }, [filteredActions.length]);
 
   useInput((input, key) => {
+    // F6 has stable keyboard encoding across terminals, unlike ctrl+shift combos.
+    if (input === '\u001b[17~') {
+      setSidePanelVisible((visible) => !visible);
+      notify(sidePanelVisible ? 'Side panel hidden.' : 'Side panel shown.');
+      return;
+    }
     const shortcutOverrides = context.store.getSettings().ui.shortcuts;
     // Selection mode works even while a dialog is open: release mouse capture
     // so the terminal can highlight/copy any visible text.
@@ -454,6 +465,8 @@ function App({ context }: { context: AppContext }): React.ReactElement {
           onShowOutput={showOutput}
           selectionMode={selectionMode}
           onToggleSelection={toggleSelectionMode}
+          sidePanel={sidePanelVisible && columns >= 80}
+          onToggleSidePanel={() => setSidePanelVisible((visible) => !visible)}
         />
       </Box>
 

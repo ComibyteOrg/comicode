@@ -22,6 +22,7 @@ import {
   type AgentStatus,
   type ScreenId,
 } from '../components.js';
+import { SidePanel } from './side-panel.js';
 import { ConfirmDialog } from '../dialogs/confirm-dialog.js';
 import { ModalWindow } from '../dialogs/modal.js';
 import { glyph, theme } from '../theme.js';
@@ -92,6 +93,9 @@ interface WorkspaceProps {
   /** Release mouse capture so the terminal can highlight and copy text. */
   selectionMode?: boolean;
   onToggleSelection?: () => void;
+  /** Show the collapsible teams/plan pane. */
+  sidePanel?: boolean;
+  onToggleSidePanel?: () => void;
 }
 
 function taskToEntries(context: AppContext, task: TaskRecord): Entry[] {
@@ -389,6 +393,8 @@ export function Workspace({
   onShowOutput,
   selectionMode = false,
   onToggleSelection,
+  sidePanel = false,
+  onToggleSidePanel,
 }: WorkspaceProps): React.ReactElement {
   const { rows, columns } = useLayout();
   const [entries, setEntries] = useState<Entry[]>([]);
@@ -946,7 +952,7 @@ export function Workspace({
   // ---------------------------------------------------------------- viewport
   // Measure the transcript in terminal lines. Scrolling then moves by lines,
   // so wheel/page keys feel continuous even when individual answers are tall.
-  const bodyWidth = Math.max(24, columns - 8);
+  const bodyWidth = Math.max(24, columns - (sidePanel ? 34 : 8));
   // Freeze the transcript while highlighting so streaming output cannot reflow
   // underneath the user's selection.
   const renderEntries = frozenEntries ?? entries;
@@ -1362,7 +1368,20 @@ export function Workspace({
     return (
       <Box flexDirection="column" flexGrow={1} paddingX={2}>
         {selectionBanner}
-        <Box flexDirection="column" flexGrow={1} justifyContent="center">
+        {sidePanel ? (
+          <Box flexDirection="row" flexGrow={1} overflow="hidden">
+            <Box flexDirection="column" flexGrow={1} justifyContent="center" overflow="hidden">
+              <SidePanel
+                stages={stages}
+                plan={plan}
+                route={route}
+                usage={usage}
+                agentMode={agentMode}
+              />
+            </Box>
+          </Box>
+        ) : null}
+        <Box flexDirection="column" flexGrow={sidePanel ? 0 : 1} justifyContent="center">
           <Box flexDirection="column" alignItems="center" width="100%">
             <Box flexDirection="column" alignItems="center" marginBottom={1}>
               <Text color={theme.accent} bold wrap="truncate">
@@ -1432,6 +1451,15 @@ export function Workspace({
           ) : null}
         </Box>
         {scrollbar}
+        {sidePanel ? (
+          <SidePanel
+            stages={stages}
+            plan={plan}
+            route={route}
+            usage={usage}
+            agentMode={agentMode}
+          />
+        ) : null}
       </Box>
 
       {stages.length ? (
