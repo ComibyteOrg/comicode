@@ -277,7 +277,7 @@ export const COMMAND_SPECS: CommandSpec[] = [
     description:
       'Choose how the agent behaves: auto (classify), build, plan, debug, architect, review, refactor, test, docs, design, security, or explain. Tab also cycles modes.',
     usage: '/mode [mode]',
-    aliases: ['agent'],
+    aliases: [],
     arguments: [
       {
         name: 'mode',

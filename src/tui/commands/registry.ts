@@ -17,6 +17,7 @@ import { resolveModel, resolveProfile } from '../../cli/shared.js';
 import { compactTask } from '../../core/agent/compaction.js';
 import { AGENT_MODE_IDS, isAgentMode, type AgentMode } from '../../core/agent/modes.js';
 import { loadSkills } from '../../core/agent/skills.js';
+import { AGENT_REGISTRY } from '../../core/agent/registry.js';
 import { getPluginCommands, loadPlugins } from '../../core/plugins/index.js';
 import { glyph } from '../theme.js';
 import type { ConfirmationRequest, ConfirmDecision } from '../../core/agent/types.js';
@@ -65,6 +66,53 @@ class CommandRegistry {
   constructor() {
     this.registerDefaults();
     this.registerPluginCommands();
+    this.registerWorkspaceCommands();
+  }
+
+  private registerWorkspaceCommands(): void {
+    const simple: Array<{ id: string; summary: string; text: string }> = [
+      { id: 'agents', summary: 'Show the 14-agent roster', text: AGENT_REGISTRY.map((a) => `${a.icon} ${a.name}`).join(' · ') },
+      { id: 'plan', summary: 'Show the current plan', text: 'Use /tasks to inspect the active plan.' },
+      { id: 'tasks', summary: 'Show the task board', text: 'Press t in the workspace to open the task board.' },
+      { id: 'activity', summary: 'Show live activity', text: 'The activity panel is on the right of the workspace.' },
+      { id: 'review', summary: 'Run a review stage', text: 'Reviewer will be assigned after implementation.' },
+      { id: 'test', summary: 'Run a QA stage', text: 'QA Engineer will be assigned after implementation.' },
+    ];
+    for (const item of simple) {
+      this.register(
+        {
+          id: item.id,
+          summary: item.summary,
+          description: item.summary,
+          usage: `/${item.id}`,
+          category: 'agent',
+          surfaces: ['slash'],
+        },
+        (_args, ctx) => ctx.addNotice(item.id, item.text),
+      );
+    }
+    this.register(
+      {
+        id: 'agent',
+        summary: 'Inspect or invoke a specialist',
+        description: 'Select a named agent from the 14-agent roster.',
+        usage: '/agent <name>',
+        category: 'agent',
+        surfaces: ['slash'],
+      },
+      (args, ctx) => {
+        const needle = (args[0] ?? '').toLowerCase();
+        const match = AGENT_REGISTRY.find(
+          (agent) => agent.id === needle || agent.name.toLowerCase().includes(needle),
+        );
+        ctx.addNotice(
+          'agent',
+          match
+            ? `${match.icon} ${match.name} — ${match.description}`
+            : `Unknown agent "${needle}". Try: ${AGENT_REGISTRY.map((a) => a.id).join(', ')}.`,
+        );
+      },
+    );
   }
 
   /** Register slash commands contributed by installed plugins. */
