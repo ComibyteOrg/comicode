@@ -62,7 +62,7 @@ function setup(maxSteps?: number) {
     currentProfileId: profile.id,
     currentModelId: 'fake-model',
   });
-  const estimates: Array<{ stages: number; estimatedTokens: number }> = [];
+  const estimates: Array<{ stages: number; estimatedTokens: number; tokenBudget: number }> = [];
   const stages: TeamStageEvent[] = [];
   const adapterFactory = (_profile: ProviderProfile): ProviderAdapter => ({
     kind: _profile.providerId,
