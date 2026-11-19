@@ -23,9 +23,12 @@ import { Collaborator, planFromCollaborator } from './collaboration.js';
 import {
   buildHandoffNote,
   buildStagePrompt,
+  parseStageDirective,
   resolveTeamPlan,
   TEAM_ROLES,
+  type TeamPlan,
   type TeamRole,
+  type TeamRunState,
 } from './teams.js';
 import { getPluginSkills, loadPlugins } from '../plugins/index.js';
 import { createProfileContext } from '../providers/service.js';
@@ -115,6 +118,8 @@ export interface CodingAgentOptions {
   mode?: AgentMode;
   /** One-run overrides that do not persist to the database. */
   routingOverrides?: Partial<RoutingPolicy>;
+  /** Prevent auto-team dispatch (used for individual team stages). */
+  disableAutoTeam?: boolean;
   /** Injection points used by tests and embedding hosts. */
   adapterFactory?: (profile: ProviderProfile) => ProviderAdapter;
   contextFactory?: (profile: ProviderProfile, keyIndex?: number) => Promise<AdapterContext>;
@@ -186,7 +191,8 @@ export class CodingAgent {
     [];
   private usage = { inputTokens: 0, outputTokens: 0 };
   private steps = 0;
-  private readonly mode: AgentMode;
+  private mode: AgentMode;
+  private teamPlanOverride: TeamPlan | null = null;
   private readonly skills: AgentSkill[];
   private readonly effort: EffortProfile | null;
   private readonly routingOverrides?: Partial<RoutingPolicy>;
@@ -230,8 +236,28 @@ export class CodingAgent {
     this.contextFactory =
       options.contextFactory ?? ((profile, keyIndex) => createProfileContext(profile, keyIndex));
     const requestedMode = options.mode ?? 'build';
-    this.mode = requestedMode === 'auto' ? classifyAgentMode(task.summary ?? '') : requestedMode;
-    if (requestedMode === 'auto' && this.mode !== 'auto') {
+    const requestText = task.userRequest || task.summary || '';
+    const plan = resolveTeamPlan(requestText, requestedMode);
+    this.mode = requestedMode === 'auto' ? classifyAgentMode(requestText) : requestedMode;
+    if (
+      !options.disableAutoTeam &&
+      plan.roles.length > 1 &&
+      (requestedMode === 'auto' || requestedMode === 'build')
+    ) {
+      this.teamPlanOverride = plan;
+      this.hooks.onNotice?.(
+        `Auto-selected ${plan.roles.length}-agent team: ${plan.roles.map((id) => TEAM_ROLES[id]!.label).join(' → ')}.`,
+      );
+    } else if (plan.roles.length === 1) {
+      const specialist = TEAM_ROLES[plan.roles[0]!]!;
+      if (requestedMode === 'auto') {
+        this.mode = specialist.mode;
+        this.hooks.onNotice?.(
+          `Auto-selected ${specialist.label.toLowerCase()} specialist for this task.`,
+        );
+      }
+    }
+    if (requestedMode === 'auto' && !this.teamPlanOverride && plan.roles.length !== 1) {
       this.hooks.onNotice?.(`Auto mode selected ${this.mode} for this task.`);
     }
     const installedPlugins = loadPlugins({
@@ -343,7 +369,7 @@ export class CodingAgent {
   async run(options: AgentRunOptions = {}): Promise<AgentResult> {
     // Team mode runs a full virtual organization as a sequence of specialized
     // stages, each reusing the normal agent loop with its own mode and model.
-    if (this.mode === 'team') return this.runTeam(options);
+    if (this.mode === 'team' || this.teamPlanOverride) return this.runTeam(options);
     const maxSteps = Math.max(1, Math.min(options.maxSteps ?? this.settings.agent.maxSteps, 200));
     try {
       await this.prepare(options);
@@ -499,23 +525,35 @@ export class CodingAgent {
    */
   private async runTeam(options: AgentRunOptions): Promise<AgentResult> {
     const originalRequest = this.task.userRequest || this.task.summary || '';
-    const roles = resolveTeamPlan(originalRequest, this.mode).roles.map(
-      (id) => TEAM_ROLES[id]!,
-    );
+    const plan = this.teamPlanOverride ?? resolveTeamPlan(originalRequest, this.mode);
+    const saved = this.task.metadata.teamRun as TeamRunState | undefined;
+    const state: TeamRunState =
+      saved && Array.isArray(saved.roles) && saved.roles.length > 0
+        ? { ...saved, revisits: saved.revisits ?? {} }
+        : {
+            roles: [...plan.roles],
+            cursor: 0,
+            revisits: {},
+            stepsUsed: 0,
+            tokensUsed: 0,
+          };
+    const queue = state.roles.slice(state.cursor);
     const handoffs: string[] = [];
     const aggregate = { inputTokens: 0, outputTokens: 0 };
     let steps = 0;
     let lastResult: AgentResult | null = null;
 
     this.hooks.onNotice?.(
-      `ComiCode Company assembled (${roles.length} departments): ${roles.map((role) => role.label).join(' → ')}.`,
+      `ComiCode Company assembled (${state.roles.length} stages): ${state.roles.map((id) => TEAM_ROLES[id]!.label).join(' → ')}.`,
     );
 
-    for (let index = 0; index < roles.length; index += 1) {
+    while (queue.length > 0) {
       if (options.signal?.aborted) {
         return this.halt('paused', 'Cancelled by user. Progress saved.');
       }
-      const role: TeamRole = roles[index]!;
+      const roleId = queue.shift()!;
+      const role: TeamRole = TEAM_ROLES[roleId]!;
+      const index = state.cursor;
 
       // Capability-aware model selection across every connected API.
       let stageModel: string | null = null;
@@ -555,7 +593,7 @@ export class CodingAgent {
 
       this.hooks.onStage?.({
         index: index + 1,
-        total: roles.length,
+        total: state.roles.length,
         roleId: role.id,
         label: role.label,
         department: role.department,
@@ -565,13 +603,13 @@ export class CodingAgent {
         model: stageModel,
       });
       this.hooks.onNotice?.(
-        `[${index + 1}/${roles.length}] ${role.icon} ${role.label} · ${role.department}` +
+        `[${index + 1}/${state.roles.length}] ${role.icon} ${role.label} · ${role.department}` +
           (stageModel ? ` · ${stageModel}` : '') +
           ` — ${role.capabilityHint}`,
       );
 
       let stageSummary = '';
-      const isLast = index === roles.length - 1;
+      const isLast = queue.length === 0;
       try {
         const stageAgent = new CodingAgent({
           store: this.store,
@@ -579,6 +617,7 @@ export class CodingAgent {
           authority: this.authority,
           settings: this.settings,
           mode: role.mode,
+          disableAutoTeam: true,
           routingOverrides: this.routingOverrides,
           adapterFactory: this.adapterFactory,
           contextFactory: this.contextFactory,
@@ -598,9 +637,13 @@ export class CodingAgent {
         steps += result.steps;
 
         if (result.status !== 'completed') {
+          state.cursor = index;
+          this.store.updateTask(this.task.id, {
+            metadata: { ...this.task.metadata, teamRun: state },
+          });
           this.hooks.onStage?.({
             index: index + 1,
-            total: roles.length,
+            total: state.roles.length,
             roleId: role.id,
             label: role.label,
             department: role.department,
@@ -624,9 +667,30 @@ export class CodingAgent {
         );
         handoffs.push(note);
         this.store.appendMessage(this.task.id, { role: 'system', content: note });
+
+        const directive = parseStageDirective(stageSummary || result.summary || '');
+        if (
+          directive.revisit &&
+          (state.revisits[directive.revisit] ?? 0) < plan.revisitLimit &&
+          state.roles.filter((id) => id === directive.revisit).length < 3 &&
+          state.roles.length < 24
+        ) {
+          state.revisits[directive.revisit] = (state.revisits[directive.revisit] ?? 0) + 1;
+          state.roles.splice(index + 1, 0, directive.revisit);
+          queue.unshift(directive.revisit);
+          this.hooks.onNotice?.(
+            `${role.label} requested a revisit of ${TEAM_ROLES[directive.revisit]!.label}.`,
+          );
+        }
+        state.cursor = index + 1;
+        state.stepsUsed += result.steps;
+        state.tokensUsed += result.usage.inputTokens + result.usage.outputTokens;
+        this.store.updateTask(this.task.id, {
+          metadata: { ...this.task.metadata, teamRun: state },
+        });
         this.hooks.onStage?.({
           index: index + 1,
-          total: roles.length,
+          total: state.roles.length,
           roleId: role.id,
           label: role.label,
           department: role.department,
@@ -640,7 +704,7 @@ export class CodingAgent {
         logger.warn(`Team stage ${role.id} failed: ${message}`);
         this.hooks.onStage?.({
           index: index + 1,
-          total: roles.length,
+          total: state.roles.length,
           roleId: role.id,
           label: role.label,
           department: role.department,
@@ -653,6 +717,9 @@ export class CodingAgent {
       }
     }
 
+    this.store.updateTask(this.task.id, {
+      metadata: { ...this.task.metadata, teamRun: null },
+    });
     return {
       status: 'completed',
       taskId: this.task.id,
