@@ -31,6 +31,14 @@ import {
   type TeamRunState,
 } from './teams.js';
 import { getPluginSkills, loadPlugins } from '../plugins/index.js';
+import { EventBus } from '../events/bus.js';
+import type { AgentEventType } from '../events/types.js';
+import {
+  closeContract,
+  createStageContracts,
+  type TaskContract,
+} from './task-contract.js';
+import { resolveAgentId } from './registry.js';
 import { createProfileContext } from '../providers/service.js';
 import { createAdapter } from '../providers/registry.js';
 import type { AdapterContext, ProviderAdapter } from '../providers/adapter.js';
@@ -120,6 +128,8 @@ export interface CodingAgentOptions {
   routingOverrides?: Partial<RoutingPolicy>;
   /** Prevent auto-team dispatch (used for individual team stages). */
   disableAutoTeam?: boolean;
+  /** Event bus for the multi-agent workspace. `null` disables emission. */
+  eventBus?: EventBus | null;
   /** Injection points used by tests and embedding hosts. */
   adapterFactory?: (profile: ProviderProfile) => ProviderAdapter;
   contextFactory?: (profile: ProviderProfile, keyIndex?: number) => Promise<AdapterContext>;
@@ -193,6 +203,7 @@ export class CodingAgent {
   private steps = 0;
   private mode: AgentMode;
   private teamPlanOverride: TeamPlan | null = null;
+  private readonly eventBus: EventBus | null;
   private readonly skills: AgentSkill[];
   private readonly effort: EffortProfile | null;
   private readonly routingOverrides?: Partial<RoutingPolicy>;
@@ -205,6 +216,7 @@ export class CodingAgent {
     if (!task) throw new Error(`Task not found: ${options.taskId}`);
     this.task = task;
     this.hooks = options.hooks ?? {};
+    this.eventBus = options.eventBus === null ? null : (options.eventBus ?? new EventBus());
     this.authority = options.authority ?? DEFAULT_AUTHORITY;
     // A model the user picked after this task last ran must be attempted
     // before any saved task model or fallback (including on resume).
@@ -523,6 +535,19 @@ export class CodingAgent {
    * SAME task thread — so each member inherits the full transcript, plan,
    * checkpoints, quota failover and context compaction of its predecessor.
    */
+  private emitEvent(
+    type: AgentEventType,
+    agentId: string | undefined,
+    payload: Record<string, unknown>,
+  ): void {
+    if (!this.eventBus) return;
+    const safe: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(payload)) {
+      safe[key] = typeof value === 'string' ? redactSecrets(value).slice(0, 2_000) : value;
+    }
+    this.eventBus.emit({ type, taskId: this.task.id, agentId, payload: safe });
+  }
+
   private async runTeam(options: AgentRunOptions): Promise<AgentResult> {
     const originalRequest = this.task.userRequest || this.task.summary || '';
     const plan = this.teamPlanOverride ?? resolveTeamPlan(originalRequest, this.mode);
@@ -538,6 +563,20 @@ export class CodingAgent {
             tokensUsed: 0,
           };
     const queue = state.roles.slice(state.cursor);
+    let contracts = (this.task.metadata.taskContracts as TaskContract[] | undefined) ?? [];
+    if (contracts.length === 0 || state.cursor === 0) {
+      contracts = createStageContracts(state.roles, originalRequest);
+      this.store.updateTask(this.task.id, {
+        metadata: { ...this.task.metadata, taskContracts: contracts },
+      });
+      for (const contract of contracts) {
+        this.emitEvent('task.created', contract.assignee, {
+          contractId: contract.id,
+          objective: contract.objective,
+          dependencies: contract.dependencies,
+        });
+      }
+    }
     const handoffs: string[] = [];
     const aggregate = { inputTokens: 0, outputTokens: 0 };
     let steps = 0;
@@ -585,7 +624,23 @@ export class CodingAgent {
       }
       const roleId = queue.shift()!;
       const role: TeamRole = TEAM_ROLES[roleId]!;
+      const agentId = resolveAgentId(roleId);
+      const contract = contracts.find((item) => item.assignee === agentId && item.status === 'ready');
       const index = state.cursor;
+      if (contract) {
+        contracts = contracts.map((item) =>
+          item.id === contract.id ? { ...item, status: 'in_progress' } : item,
+        );
+        this.emitEvent('task.assigned', agentId, {
+          contractId: contract.id,
+          objective: contract.objective,
+        });
+      }
+      this.emitEvent('agent.started', agentId, {
+        roleId,
+        label: role.label,
+        department: role.department,
+      });
 
       // Capability-aware model selection across every connected API.
       let stageModel: string | null = null;
@@ -650,12 +705,25 @@ export class CodingAgent {
           settings: this.settings,
           mode: role.mode,
           disableAutoTeam: true,
+          eventBus: null,
           routingOverrides: this.routingOverrides,
           adapterFactory: this.adapterFactory,
           contextFactory: this.contextFactory,
           hooks: {
             ...this.hooks,
             onStage: undefined,
+            onToolStart: (call) => {
+              this.hooks.onToolStart?.(call);
+              this.emitEvent('tool.started', agentId, { name: call.name, toolCallId: call.id ?? '' });
+            },
+            onToolResult: (call, result) => {
+              this.hooks.onToolResult?.(call, result);
+              this.emitEvent(result.ok ? 'tool.completed' : 'tool.failed', agentId, {
+                name: call.name,
+                ok: result.ok,
+                content: result.content.slice(0, 400),
+              });
+            },
             onTaskComplete: (summary) => {
               stageSummary = summary ?? '';
               if (isLast) this.hooks.onTaskComplete?.(summary);
@@ -669,6 +737,21 @@ export class CodingAgent {
         steps += result.steps;
 
         if (result.status !== 'completed') {
+          this.emitEvent('agent.failed', agentId, {
+            roleId,
+            reason: result.pauseReason ?? result.summary ?? 'stage did not complete',
+          });
+          if (contract) {
+            contracts = contracts.map((item) =>
+              item.id === contract.id
+                ? closeContract(item, result.pauseReason ?? result.summary ?? 'failed', false)
+                : item,
+            );
+            this.emitEvent('tool.failed', agentId, { contractId: contract.id });
+          }
+          this.store.updateTask(this.task.id, {
+            metadata: { ...this.task.metadata, taskContracts: contracts },
+          });
           state.cursor = index;
           this.store.updateTask(this.task.id, {
             metadata: { ...this.task.metadata, teamRun: state },
@@ -699,6 +782,26 @@ export class CodingAgent {
         );
         handoffs.push(note);
         this.store.appendMessage(this.task.id, { role: 'system', content: note });
+        this.emitEvent('agent.completed', agentId, {
+          roleId,
+          summary: stageSummary || result.summary || '',
+        });
+        if (contract) {
+          contracts = contracts.map((item) =>
+            item.id === contract.id
+              ? closeContract(item, stageSummary || result.summary || 'completed', true)
+              : item,
+          );
+          this.emitEvent('task.completed', agentId, { contractId: contract.id });
+        }
+        const nextRole = queue[0] ? TEAM_ROLES[queue[0]] : null;
+        if (nextRole) {
+          this.emitEvent('agent.handoff', agentId, {
+            from: role.label,
+            to: nextRole.label,
+            reason: stageSummary.slice(0, 300) || result.summary || '',
+          });
+        }
 
         const directive = parseStageDirective(stageSummary || result.summary || '');
         if (
@@ -718,7 +821,7 @@ export class CodingAgent {
         state.stepsUsed += result.steps;
         state.tokensUsed += result.usage.inputTokens + result.usage.outputTokens;
         this.store.updateTask(this.task.id, {
-          metadata: { ...this.task.metadata, teamRun: state },
+          metadata: { ...this.task.metadata, teamRun: state, taskContracts: contracts },
         });
         if (queue.length > 0) {
           compactTask(this.store, this.task.id);
@@ -738,6 +841,7 @@ export class CodingAgent {
       } catch (error) {
         const message = redactSecrets(error instanceof Error ? error.message : String(error));
         logger.warn(`Team stage ${role.id} failed: ${message}`);
+        this.emitEvent('agent.failed', agentId, { roleId, reason: message });
         this.hooks.onStage?.({
           index: index + 1,
           total: state.roles.length,
