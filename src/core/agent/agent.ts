@@ -254,7 +254,7 @@ export class CodingAgent {
     if (
       !options.disableAutoTeam &&
       plan.roles.length > 1 &&
-      (requestedMode === 'auto' || requestedMode === 'build')
+      requestedMode === 'auto'
     ) {
       this.teamPlanOverride = plan;
       this.hooks.onNotice?.(

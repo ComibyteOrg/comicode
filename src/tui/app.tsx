@@ -458,6 +458,12 @@ function App({ context }: { context: AppContext }): React.ReactElement {
           selectionMode={selectionMode}
           onToggleSelection={toggleSelectionMode}
           sidePanel={sidePanelVisible}
+          onOpenDialog={(dialog) => {
+            if (dialog) openDialog(dialog as Parameters<typeof openDialog>[0]);
+            else closeDialog();
+          }}
+          onShowOutput={_showOutput}
+          onQuit={quit}
           onStatusChange={setStatus}
           notify={notify}
           refreshData={refreshData}

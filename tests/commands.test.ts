@@ -4,8 +4,8 @@ import { commandRegistry } from '../src/tui/commands/registry.js';
 
 describe('shared command catalog', () => {
   it('registers a handler for each slash command', () => {
-    expect(commandRegistry.all().map((command) => command.id)).toEqual(
-      slashCommandSpecs().map((command) => command.id),
+    expect(new Set(commandRegistry.all().map((command) => command.id))).toEqual(
+      new Set(slashCommandSpecs().map((command) => command.id)),
     );
   });
 

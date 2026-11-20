@@ -27,6 +27,9 @@ export interface MissionControlProps {
   selectionMode?: boolean;
   onToggleSelection?: () => void;
   sidePanel?: boolean;
+  onOpenDialog?: (dialog: string | null) => void;
+  onShowOutput?: (title: string, text: string) => void;
+  onQuit?: () => void;
   onStatusChange?: (status: 'idle' | 'running' | 'completed' | 'paused' | 'failed') => void;
   notify?: (message: string) => void;
   refreshData?: () => void;
@@ -41,6 +44,9 @@ export function MissionControl({
   eventBus,
   agentMode,
   onAgentMode,
+  onOpenDialog,
+  onShowOutput,
+  onQuit,
   onStatusChange,
   notify,
   refreshData,
@@ -160,11 +166,12 @@ export function MissionControl({
             onStatusChange={onStatusChange ?? (() => {})}
             onNavigate={() => {}}
             onCycleScreen={() => {}}
-            onOpenDialog={() => {}}
-            onQuit={() => {}}
+            onOpenDialog={onOpenDialog ?? (() => {})}
+            onQuit={onQuit ?? (() => {})}
             resumeRequest={resumeRequest}
             selectionMode={selectionMode}
             onToggleSelection={onToggleSelection}
+            onShowOutput={onShowOutput}
             notify={notify ?? (() => {})}
             refreshData={refreshData ?? (() => {})}
             agentMode={agentMode}
