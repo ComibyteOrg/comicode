@@ -4,6 +4,13 @@ All notable changes to ComiCode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 semantic versioning.
 
+## [0.2.5] - 2026-11-21
+
+### Fixed
+
+- `comicode update` now invokes npm through `node.exe` and `npm-cli.js` instead
+  of spawning `npm.cmd` without a shell, which silently failed on Windows.
+
 ## [0.2.4] - 2026-11-21
 
 ### Changed

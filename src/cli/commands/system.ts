@@ -38,6 +38,14 @@ import { resolveProfile, withStore } from '../shared.js';
  * which can leave a dangling junction in the global node_modules directory and
  * fail with ENOTEMPTY while removing nested dependency folders.
  */
+import { dirname, join } from 'node:path';
+
+/** Run npm through node.exe — Windows .cmd shims cannot be spawned shell-free. */
+export function npmInstallCommand(spec: string): { command: string; args: string[] } {
+  const npmCli = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  return { command: process.execPath, args: [npmCli, 'install', '-g', spec] };
+}
+
 export function releaseInstallSpecs(
   repo: string,
   latest: string,
@@ -578,13 +586,13 @@ export function registerSystemCommands(program: Command): void {
         console.log(dim(`Run ${bold('comicode update')} to install it.`));
         return;
       }
-      const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
       // Install the exact release tarball when a tag exists; fall back to git.
       const specs = releaseInstallSpecs(repo, latest, latestRef);
       let installed = false;
       for (const spec of specs) {
         console.log(dim(`Installing ${spec} …`));
-        const result = await runProcess(npmCmd, ['install', '-g', spec], {
+        const { command, args } = npmInstallCommand(spec);
+        const result = await runProcess(command, args, {
           timeoutMs: 600_000,
         });
         if (result.code === 0) {

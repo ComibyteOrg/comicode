@@ -14,7 +14,7 @@ var VERSION, GITHUB_REPOSITORY;
 var init_version = __esm({
   "src/version.ts"() {
     "use strict";
-    VERSION = true ? "0.2.4" : "0.1.0-dev";
+    VERSION = true ? "0.2.5" : "0.1.0-dev";
     GITHUB_REPOSITORY = "https://github.com/ComibyteOrg/comicode";
   }
 });
@@ -14984,6 +14984,11 @@ var init_init = __esm({
 
 // src/cli/commands/system.ts
 import { existsSync as existsSync12, statSync as statSync11 } from "fs";
+import { dirname as dirname6, join as join18 } from "path";
+function npmInstallCommand(spec) {
+  const npmCli = join18(dirname6(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
+  return { command: process.execPath, args: [npmCli, "install", "-g", spec] };
+}
 function releaseInstallSpecs(repo, latest, latestRef) {
   if (latestRef) {
     return [
@@ -15429,12 +15434,12 @@ function registerSystemCommands(program) {
       console.log(dim(`Run ${bold("comicode update")} to install it.`));
       return;
     }
-    const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
     const specs = releaseInstallSpecs(repo, latest, latestRef);
     let installed = false;
     for (const spec of specs) {
       console.log(dim(`Installing ${spec} \u2026`));
-      const result = await runProcess(npmCmd, ["install", "-g", spec], {
+      const { command, args } = npmInstallCommand(spec);
+      const result = await runProcess(command, args, {
         timeoutMs: 6e5
       });
       if (result.code === 0) {
@@ -15818,14 +15823,14 @@ var init_default_provider = __esm({
 // src/core/server/index.ts
 import { createServer } from "http";
 import { createReadStream, existsSync as existsSync13, statSync as statSync12 } from "fs";
-import { dirname as dirname6, extname as extname4, join as join18, resolve as resolve7 } from "path";
+import { dirname as dirname7, extname as extname4, join as join19, resolve as resolve7 } from "path";
 import { fileURLToPath } from "url";
 import { spawn as spawn3 } from "child_process";
 function repoRoot() {
-  let dir = dirname6(fileURLToPath(import.meta.url));
+  let dir = dirname7(fileURLToPath(import.meta.url));
   for (let i = 0; i < 6; i += 1) {
-    if (existsSync13(join18(dir, "package.json"))) return dir;
-    const parent = dirname6(dir);
+    if (existsSync13(join19(dir, "package.json"))) return dir;
+    const parent = dirname7(dir);
     if (parent === dir) break;
     dir = parent;
   }
@@ -16033,7 +16038,7 @@ async function startServer(options = {}) {
         createReadStream(candidate).pipe(response);
         return;
       }
-      const index = join18(dist, "index.html");
+      const index = join19(dist, "index.html");
       if (existsSync13(index)) {
         response.writeHead(200, {
           "Content-Type": "text/html; charset=utf-8",
@@ -18046,13 +18051,13 @@ __export(clipboard_exports, {
 });
 import { execFile as execFile2 } from "child_process";
 import { mkdir as mkdir2, writeFile as writeFile2 } from "fs/promises";
-import { join as join19 } from "path";
+import { join as join20 } from "path";
 async function copyTextOrFile(text, cwd) {
   if (await copyToClipboard(text)) return { ok: true };
   try {
-    const dir = join19(cwd, ".comicode");
+    const dir = join20(cwd, ".comicode");
     await mkdir2(dir, { recursive: true });
-    const path = join19(dir, "selection.txt");
+    const path = join20(dir, "selection.txt");
     await writeFile2(path, text, "utf8");
     return { ok: true, path };
   } catch {
