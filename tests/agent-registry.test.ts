@@ -28,6 +28,18 @@ describe('agent registry', () => {
     expect(resolveAgentId('design')).toBe('designer');
   });
 
+  it('maps every pipeline role to the intended specialist', () => {
+    const expected = {
+      research: 'research', product: 'planner', architecture: 'research', design: 'designer',
+      frontend: 'frontend', engineering: 'backend', database: 'database', mobile: 'mobile',
+      devops: 'devops', security: 'security', qa: 'qa', review: 'reviewer', docs: 'docs',
+      marketing: 'docs', plan: 'planner', debug: 'debugger',
+    } as const;
+    for (const [role, agent] of Object.entries(expected)) {
+      expect(resolveAgentId(role as never)).toBe(agent);
+    }
+  });
+
   it('has real database and mobile runtime roles', () => {
     const database = TEAM_ROLES.database!;
     const mobile = TEAM_ROLES.mobile!;

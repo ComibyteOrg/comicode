@@ -535,6 +535,15 @@ export class CodingAgent {
    * SAME task thread — so each member inherits the full transcript, plan,
    * checkpoints, quota failover and context compaction of its predecessor.
    */
+  /** Merge metadata into the freshest task row so parallel writes are not lost. */
+  private patchMetadata(patch: Record<string, unknown>): void {
+    const fresh = this.store.getTask(this.task.id);
+    if (!fresh) return;
+    this.task = this.store.updateTask(this.task.id, {
+      metadata: { ...(fresh.metadata ?? {}), ...patch },
+    });
+  }
+
   private emitEvent(
     type: AgentEventType,
     agentId: string | undefined,
@@ -566,9 +575,7 @@ export class CodingAgent {
     let contracts = (this.task.metadata.taskContracts as TaskContract[] | undefined) ?? [];
     if (contracts.length === 0 || state.cursor === 0) {
       contracts = createStageContracts(state.roles, originalRequest);
-      this.store.updateTask(this.task.id, {
-        metadata: { ...this.task.metadata, taskContracts: contracts },
-      });
+      this.patchMetadata({ taskContracts: contracts });
       for (const contract of contracts) {
         this.emitEvent('task.created', contract.assignee, {
           contractId: contract.id,
@@ -636,12 +643,6 @@ export class CodingAgent {
           objective: contract.objective,
         });
       }
-      this.emitEvent('agent.started', agentId, {
-        roleId,
-        label: role.label,
-        department: role.department,
-      });
-
       // Capability-aware model selection across every connected API.
       let stageModel: string | null = null;
       if (role.autoModel) {
@@ -667,6 +668,13 @@ export class CodingAgent {
           });
         }
       }
+      this.emitEvent('agent.started', agentId, {
+        roleId,
+        label: role.label,
+        department: role.department,
+        model: stageModel?.split('/').at(-1) ?? null,
+        provider: stageModel?.split('/')[0] ?? null,
+      });
 
       // A previous stage ends with status=completed; reopen the task for this one.
       this.store.updateTask(this.task.id, {
@@ -749,16 +757,11 @@ export class CodingAgent {
             );
             this.emitEvent('tool.failed', agentId, { contractId: contract.id });
           }
-          this.store.updateTask(this.task.id, {
-            metadata: { ...this.task.metadata, taskContracts: contracts },
-          });
           state.cursor = index;
-          this.store.updateTask(this.task.id, {
-            metadata: {
-              ...this.task.metadata,
-              teamRun: state,
-              agentEvents: this.eventBus?.history(500) ?? [],
-            },
+          this.patchMetadata({
+            taskContracts: contracts,
+            teamRun: state,
+            agentEvents: this.eventBus?.history(500) ?? [],
           });
           this.hooks.onStage?.({
             index: index + 1,
@@ -824,13 +827,10 @@ export class CodingAgent {
         state.cursor = index + 1;
         state.stepsUsed += result.steps;
         state.tokensUsed += result.usage.inputTokens + result.usage.outputTokens;
-        this.store.updateTask(this.task.id, {
-          metadata: {
-            ...this.task.metadata,
-            teamRun: state,
-            taskContracts: contracts,
-            agentEvents: this.eventBus?.history(500) ?? [],
-          },
+        this.patchMetadata({
+          teamRun: state,
+          taskContracts: contracts,
+          agentEvents: this.eventBus?.history(500) ?? [],
         });
         if (queue.length > 0) {
           compactTask(this.store, this.task.id);
@@ -866,8 +866,10 @@ export class CodingAgent {
       }
     }
 
-    this.store.updateTask(this.task.id, {
-      metadata: { ...this.task.metadata, teamRun: null },
+    this.patchMetadata({
+      teamRun: null,
+      taskContracts: contracts,
+      agentEvents: this.eventBus?.history(500) ?? [],
     });
     return {
       status: 'completed',

@@ -188,9 +188,19 @@ export const AGENT_REGISTRY: AgentDefinition[] = [
 ];
 
 const byId = new Map(AGENT_REGISTRY.map((agent) => [agent.id, agent]));
-const byRole = new Map(
+const byRole = new Map<string, AgentId>(
   AGENT_REGISTRY.filter((agent) => agent.roleId).map((agent) => [agent.roleId!, agent.id]),
 );
+// Legacy roles from the deterministic pipelines must map to a real specialist,
+// never silently to Backend Developer.
+for (const [role, agent] of Object.entries({
+  product: 'planner',
+  architecture: 'research',
+  engineering: 'backend',
+  marketing: 'docs',
+} satisfies Partial<Record<TeamRoleId, AgentId>>)) {
+  if (!byRole.has(role)) byRole.set(role, agent);
+}
 
 export function getAgentDefinition(id: AgentId): AgentDefinition {
   const definition = byId.get(id);
@@ -224,6 +234,8 @@ export function deriveAgentStates(
       case 'agent.started':
         state.status = 'working';
         state.currentTaskId = String(event.payload.contractId ?? '') || null;
+        state.model = typeof event.payload.model === 'string' ? event.payload.model : null;
+        state.provider = typeof event.payload.provider === 'string' ? event.payload.provider : null;
         break;
       case 'agent.progress':
         state.status = 'working';
@@ -233,7 +245,6 @@ export function deriveAgentStates(
         break;
       case 'agent.completed':
         state.status = 'completed';
-        state.completedTaskCount += 1;
         break;
       case 'agent.failed':
         state.status = 'failed';

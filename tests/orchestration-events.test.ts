@@ -115,13 +115,15 @@ describe('orchestration events', () => {
   });
 
   it('emits agent.failed once and stops later stages on failure', async () => {
-    const { agent, events } = setup(true);
+    const { agent, events, store, task } = setup(true);
     await agent.run();
     const failures = events.filter((event) => event.type === 'agent.failed');
     expect(failures.length).toBe(1);
     const firstStart = events.findIndex((event) => event.type === 'agent.started');
     const laterStarts = events.slice(firstStart + 1).filter((event) => event.type === 'agent.started');
     expect(laterStarts.length).toBe(0);
+    const contracts = store.getTask(task.id)?.metadata.taskContracts as Array<{ status: string }>;
+    expect(contracts[0]!.status).toBe('failed');
   });
 
   it('persists contracts in task metadata', async () => {
@@ -130,15 +132,18 @@ describe('orchestration events', () => {
     const contracts = store.getTask(task.id)?.metadata.taskContracts;
     expect(Array.isArray(contracts)).toBe(true);
     expect((contracts as unknown[]).length).toBeGreaterThan(1);
+    expect((contracts as Array<{ status: string }>).every((c) => c.status === 'completed')).toBe(true);
   });
 
   it('persists a bounded event snapshot for restart recovery', async () => {
     const { agent, store, task } = setup(false);
     await agent.run();
-    const snapshot = store.getTask(task.id)?.metadata.agentEvents as AgentEvent[] | undefined;
+    const final = store.getTask(task.id);
+    const snapshot = final?.metadata.agentEvents as AgentEvent[] | undefined;
     expect(Array.isArray(snapshot)).toBe(true);
     expect(snapshot!.length).toBeGreaterThan(1);
     expect(snapshot!.length).toBeLessThanOrEqual(500);
     expect(snapshot!.every((event) => typeof event.timestamp === 'string')).toBe(true);
+    expect(['agent.completed', 'task.completed']).toContain(snapshot!.at(-1)!.type);
   });
 });

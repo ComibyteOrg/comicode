@@ -34,7 +34,16 @@ function renderAt(columns: number) {
     { stdin, stdout, debug: true, exitOnCtrlC: false, patchConsole: false, interactive: true },
   );
   instances.push(instance);
-  return { stdin, bus, frame: () => stripAnsi(stdout.output) };
+  return {
+    stdin,
+    bus,
+    clear: () => stdout.clear(),
+    frame: () => stripAnsi(stdout.output),
+    send: async (value: string) => {
+      stdin.write(value);
+      await flush(120);
+    },
+  };
 }
 
 afterEach(() => {
@@ -54,7 +63,16 @@ describe('mission control shell', () => {
   it('collapses the sidebar on a narrow terminal', async () => {
     const view = renderAt(80);
     await flush(120);
-    expect(view.frame()).not.toContain('TEAM LEAD');
+    expect(view.frame()).not.toContain('Team Lead');
+  });
+
+  it('does not hijack composer keys while workspace is focused', async () => {
+    const view = renderAt(130);
+    await flush(120);
+    view.clear();
+    await view.send('i');
+    await view.send('t');
+    expect(view.frame()).not.toContain('TASK BOARD');
   });
 
   it('shows real bus events in the activity feed', async () => {

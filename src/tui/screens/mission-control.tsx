@@ -41,6 +41,9 @@ export function MissionControl({
   eventBus,
   agentMode,
   onAgentMode,
+  onStatusChange,
+  notify,
+  refreshData,
   resumeRequest = null,
   selectionMode = false,
   onToggleSelection,
@@ -73,15 +76,15 @@ export function MissionControl({
         setOverlay(null);
         return;
       }
-      if (input === 'i') {
+      if (focus !== 'workspace' && input === 'i') {
         setOverlay('inspector');
         return;
       }
-      if (input === 't') {
+      if (focus !== 'workspace' && input === 't') {
         setOverlay('board');
         return;
       }
-      if (key.tab) {
+      if (focus !== 'workspace' && key.tab) {
         setFocus((current) =>
           current === 'agents' ? 'workspace' : current === 'workspace' ? 'activity' : 'agents',
         );
@@ -153,7 +156,8 @@ export function MissionControl({
           <Workspace
             context={context}
             active={active && focus === 'workspace'}
-            onStatusChange={() => {}}
+            dimmed={!active}
+            onStatusChange={onStatusChange ?? (() => {})}
             onNavigate={() => {}}
             onCycleScreen={() => {}}
             onOpenDialog={() => {}}
@@ -161,8 +165,8 @@ export function MissionControl({
             resumeRequest={resumeRequest}
             selectionMode={selectionMode}
             onToggleSelection={onToggleSelection}
-            notify={() => {}}
-            refreshData={() => {}}
+            notify={notify ?? (() => {})}
+            refreshData={refreshData ?? (() => {})}
             agentMode={agentMode}
             onAgentMode={onAgentMode}
             eventBus={eventBus}
@@ -186,8 +190,11 @@ export function MissionControl({
           </Text>
           {recent.map((event, index) => (
             <Text key={`${event.timestamp}-${index}`} color={theme.muted} wrap="truncate">
-              {event.type.replace('agent.', '').replace('task.', '').replace('tool.', '')}{' '}
-              {event.agentId ?? ''}
+              {event.type === 'agent.handoff'
+                ? `${String(event.payload.from ?? '')} → ${String(event.payload.to ?? '')}`
+                : event.type.startsWith('tool.')
+                  ? `${event.type.replace('tool.', '')} ${String(event.payload.name ?? '')}`
+                  : `${event.type.replace('agent.', '').replace('task.', '')} ${event.agentId ?? ''}`}
             </Text>
           ))}
           {recent.length === 0 ? (

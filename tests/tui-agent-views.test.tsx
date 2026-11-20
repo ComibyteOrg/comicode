@@ -32,7 +32,7 @@ describe('agent views', () => {
       [],
     );
     expect(states.qa!.status).toBe('completed');
-    expect(states.qa!.completedTaskCount).toBe(1);
+    expect(states.qa!.completedTaskCount).toBe(0);
   });
 
   it('inspector shows role details but no API key', async () => {
