@@ -14,7 +14,7 @@ var VERSION, GITHUB_REPOSITORY;
 var init_version = __esm({
   "src/version.ts"() {
     "use strict";
-    VERSION = true ? "0.2.1" : "0.1.0-dev";
+    VERSION = true ? "0.2.2" : "0.1.0-dev";
     GITHUB_REPOSITORY = "https://github.com/ComibyteOrg/comicode";
   }
 });
@@ -17027,7 +17027,8 @@ function PromptInput({
   prompt,
   promptColor = theme.accent,
   maxSuggestions = 8,
-  popupTitle = "COMMANDS"
+  popupTitle = "COMMANDS",
+  width
 }) {
   const chars = useMemo(() => Array.from(value), [value]);
   const [cursor, setCursor] = useState(chars.length);
@@ -17230,7 +17231,7 @@ function PromptInput({
     displayChars[cursor] ?? " ",
     ...displayChars.slice(cursor + 1)
   ];
-  const inputWidth = Math.max(16, columns - 12);
+  const inputWidth = Math.max(12, width ?? columns - 12);
   const wrapped = wrapText(renderedChars.join(""), inputWidth);
   const maxLines = Math.min(10, Math.max(4, Math.floor(rows / 3)));
   let cursorLine = wrapped.length - 1;
@@ -18822,6 +18823,7 @@ function Workspace({
   selectionMode = false,
   onToggleSelection,
   eventBus,
+  contentWidth,
   sidePanel = false,
   onToggleSidePanel: _onToggleSidePanel
 }) {
@@ -19322,7 +19324,7 @@ function Workspace({
     if (next.startsWith("/")) void handleCommand(next);
     else void startRequest(next);
   }, [running, queue, handleCommand, startRequest]);
-  const bodyWidth = Math.max(24, columns - (sidePanel ? 34 : 8));
+  const bodyWidth = Math.max(24, (contentWidth ?? columns) - (sidePanel ? 4 : 8));
   const renderEntries = frozenEntries ?? entries;
   const entryLayouts = useMemo2(() => {
     let line = 0;
@@ -19574,6 +19576,7 @@ function Workspace({
               history: history2,
               onCycleScreen,
               onCycleMode: (direction) => onAgentMode?.(nextAgentMode(agentMode, direction)),
+              width: Math.max(12, bodyWidth - 4),
               placeholder: status === "paused" ? "Describe the next step, /resume, or /new" : "Ask ComiCode to build, fix, test, or explain\u2026"
             }
           ),
@@ -20084,7 +20087,8 @@ function MissionControl({
               }),
               agentMode,
               onAgentMode,
-              eventBus
+              eventBus,
+              contentWidth: Math.max(24, columns - (showAgents ? 28 : 0) - 34)
             }
           )
         }

@@ -389,6 +389,8 @@ export interface PromptInputProps {
   promptColor?: string;
   maxSuggestions?: number;
   popupTitle?: string;
+  /** Available character width for the input text (defaults to terminal width). */
+  width?: number;
 }
 
 function normalizeInsertion(input: string): string {
@@ -425,6 +427,7 @@ export function PromptInput({
   promptColor = theme.accent,
   maxSuggestions = 8,
   popupTitle = 'COMMANDS',
+  width,
 }: PromptInputProps): React.ReactElement {
   const chars = useMemo(() => Array.from(value), [value]);
   const [cursor, setCursor] = useState(chars.length);
@@ -667,7 +670,7 @@ export function PromptInput({
     displayChars[cursor] ?? ' ',
     ...displayChars.slice(cursor + 1),
   ];
-  const inputWidth = Math.max(16, columns - 12);
+  const inputWidth = Math.max(12, width ?? columns - 12);
   const wrapped = wrapText(renderedChars.join(''), inputWidth);
   const maxLines = Math.min(10, Math.max(4, Math.floor(rows / 3)));
   let cursorLine = wrapped.length - 1;

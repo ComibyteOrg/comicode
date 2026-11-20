@@ -177,6 +177,7 @@ export function MissionControl({
             agentMode={agentMode}
             onAgentMode={onAgentMode}
             eventBus={eventBus}
+            contentWidth={Math.max(24, columns - (showAgents ? 28 : 0) - 34)}
           />
         </Box>
 

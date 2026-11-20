@@ -95,6 +95,8 @@ interface WorkspaceProps {
   onToggleSelection?: () => void;
   /** Shared event bus for the multi-agent workspace. */
   eventBus?: import('../../core/events/bus.js').EventBus;
+  /** Width of the pane available to the transcript and composer. */
+  contentWidth?: number;
   /** Show the collapsible teams/plan pane. */
   sidePanel?: boolean;
   onToggleSidePanel?: () => void;
@@ -396,6 +398,7 @@ export function Workspace({
   selectionMode = false,
   onToggleSelection,
   eventBus,
+  contentWidth,
   sidePanel = false,
   onToggleSidePanel: _onToggleSidePanel,
 }: WorkspaceProps): React.ReactElement {
@@ -956,7 +959,7 @@ export function Workspace({
   // ---------------------------------------------------------------- viewport
   // Measure the transcript in terminal lines. Scrolling then moves by lines,
   // so wheel/page keys feel continuous even when individual answers are tall.
-  const bodyWidth = Math.max(24, columns - (sidePanel ? 34 : 8));
+  const bodyWidth = Math.max(24, (contentWidth ?? columns) - (sidePanel ? 4 : 8));
   // Freeze the transcript while highlighting so streaming output cannot reflow
   // underneath the user's selection.
   const renderEntries = frozenEntries ?? entries;
@@ -1274,6 +1277,7 @@ export function Workspace({
           history={history}
           onCycleScreen={onCycleScreen}
           onCycleMode={(direction) => onAgentMode?.(nextAgentMode(agentMode, direction))}
+          width={Math.max(12, bodyWidth - 4)}
           placeholder={
             status === 'paused'
               ? 'Describe the next step, /resume, or /new'

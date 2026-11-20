@@ -4,6 +4,13 @@ All notable changes to ComiCode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 semantic versioning.
 
+## [0.2.2] - 2026-11-20
+
+### Fixed
+
+- Composer text now wraps to the available pane width instead of running in a
+  single truncated line when the team sidebar and activity panel are visible.
+
 ## [0.2.1] - 2026-11-20
 
 ### Fixed
