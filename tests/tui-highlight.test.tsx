@@ -60,7 +60,9 @@ describe('terminal highlighting', () => {
     await enterSelectionMode();
     stdout.clear();
     stdin.write('a');
-    await flush();
+    for (let attempt = 0; attempt < 12 && !frame().includes('SELECT MODE'); attempt += 1) {
+      await flush(100);
+    }
     expect(frame()).toContain('SELECT MODE');
     expect(frame()).not.toMatch(/❯\s*a+/);
   });

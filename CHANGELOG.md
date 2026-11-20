@@ -4,6 +4,33 @@ All notable changes to ComiCode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 semantic versioning.
 
+## [0.2.0] - 2026-11-20
+
+### Added
+
+- Mission-control terminal workspace: 14-agent sidebar, live activity feed,
+  agent inspector, task board, keyboard navigation and slash commands, all
+  driven by real runtime events.
+- Typed bounded event bus (`agent.*`, `task.*`, `tool.*`) with restart recovery.
+- 14-agent registry including real Database Architect and Mobile Developer
+  runtime roles; Team Lead coordinates without making a model call.
+- Structured task contracts with assignees, dependencies, priorities and
+  expected vs actual results.
+- Exact-model cross-provider routing: the same model is tried on other
+  connected APIs before different models.
+- Automatic specialist selection in Auto mode and revisitable multi-agent
+  teams for multi-part prompts, with a shared credit budget and stage compaction.
+- Character-level and whole-message terminal highlighting with clipboard
+  fallback, plus live follow-up prompts during a run.
+- Installable plugins, image generation and headed browser inspection with
+  user highlighting.
+- Optional web dashboard (`comicode serve`) reusing the root install.
+
+### Changed
+
+- Team runs persist event snapshots and contracts and resume from their queue.
+- Selection mode no longer arms the app quit shortcut.
+
 ## [Unreleased]
 
 ### Added
