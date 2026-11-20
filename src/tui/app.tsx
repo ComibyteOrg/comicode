@@ -406,19 +406,7 @@ function App({ context }: { context: AppContext }): React.ReactElement {
     null;
   const allowPaid = context.store.getSettings().routing.allowPaid;
 
-  const hints = isDialogOpen
-    ? ['↑/↓ navigate', 'enter select', 'esc close']
-    : [
-        '/ commands',
-        'enter send',
-        'tab mode',
-        'esc pause',
-        'ctrl+k palette',
-        'ctrl+m model',
-        'ctrl+b providers',
-        'ctrl+y select/copy',
-        'ctrl+c×2 quit',
-      ];
+  const hints: string[] = [];
 
   void tick;
 

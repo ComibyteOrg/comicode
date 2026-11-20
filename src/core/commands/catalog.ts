@@ -104,7 +104,7 @@ export const COMMAND_SPECS: CommandSpec[] = [
     description:
       'Browse all past and paused work. Search history, inspect progress, resume a task, rename it, delete entries, or start a new task.',
     usage: '/history',
-    aliases: ['history', 'sessions'],
+    aliases: ['history', 'sessions', 'session'],
     category: 'tasks',
     surfaces: ['slash', 'cli'],
     shortcut: 'ctrl+t',

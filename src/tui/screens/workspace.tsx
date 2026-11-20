@@ -420,7 +420,7 @@ export function Workspace({
   const [confirmRequest, setConfirmRequest] = useState<ConfirmationRequest | null>(null);
   const [frame, setFrame] = useState(0);
   const [pauseReason, setPauseReason] = useState<string | null>(null);
-  const [lastResult, setLastResult] = useState<string | null>(null);
+  const [_lastResult, setLastResult] = useState<string | null>(null);
   const [stages, setStages] = useState<TeamStageEvent[]>([]);
   const [selection, setSelection] = useState<{ anchor: number; focus: number } | null>(null);
   const [charSelection, setCharSelection] = useState<{
@@ -1155,7 +1155,6 @@ export function Workspace({
     { isActive: selectionMode ? !dimmed : active && !dimmed && !confirmRequest },
   );
 
-  const task = taskId ? context.store.getTask(taskId) : null;
   const selectedProfile = (() => {
     const profiles = context.store.listProfiles();
     const selectedId = context.store.getSelectedProfileId();
@@ -1308,81 +1307,33 @@ export function Workspace({
               : 'Ask ComiCode to build, fix, test, or explain…'
           }
         />
-        {suggestions.length === 0 ? (
-          <Box>
-            <Text color={theme.faint} wrap="truncate" dimColor={dimmed}>
-              enter send {glyph.bullet} / commands {glyph.bullet} ctrl+m model {glyph.bullet} ctrl+b
-              provider {glyph.bullet} ctrl+p palette {glyph.bullet} ctrl+j questions
-            </Text>
-          </Box>
-        ) : null}
+
       </Box>
     </>
   );
 
+  const statusLine =
+    status === 'running'
+      ? `${glyph.dot} ${status}`
+      : status === 'completed'
+        ? `${glyph.check} ${status}`
+        : status === 'failed'
+          ? `${glyph.cross} ${status}`
+          : `${glyph.ring} ${status}`;
+  const tokenLine =
+    usage.inputTokens + usage.outputTokens > 0
+      ? `${formatCount(usage.inputTokens)} in · ${formatCount(usage.outputTokens)} out`
+      : `${formatCount(usage.inputTokens + usage.outputTokens)} tokens`;
   const statusFooter = (
-    <Box flexDirection="column" flexShrink={0} paddingX={1} marginTop={1}>
+    <Box flexShrink={0} paddingX={1} marginTop={1}>
       <Text wrap="truncate" dimColor={dimmed}>
-        <Text color={statusColor}>
-          {status === 'running'
-            ? `${glyph.dot} ${status}`
-            : status === 'completed'
-              ? `${glyph.check} ${status}`
-              : status === 'failed'
-                ? `${glyph.cross} ${status}`
-                : `${glyph.ring} ${status}`}
-        </Text>
-        <Text
-          color={
-            agentMode === 'plan' ? theme.info : agentMode === 'debug' ? theme.warning : theme.muted
-          }
-        >
-          {'  '}
-          {glyph.route} {agentMode}
-        </Text>
-        <Text color={theme.faint}>
-          {'  '}
-          effort {effortText}
-        </Text>
-        {selectedProfile ? (
-          <Text color={theme.muted}>
-            {'  '}
-            {glyph.route} {clip(selectedProfile.name, 24)}
-          </Text>
-        ) : (
-          <Text color={theme.faint}>
-            {'  '}
-            {glyph.route} no profile
-          </Text>
-        )}
-      </Text>
-      <Text wrap="truncate" dimColor={dimmed}>
-        {route ? (
-          <Text color={theme.violet}>
-            {glyph.route} {clip(route, 54)}
-          </Text>
-        ) : (
-          <Text color={theme.faint}>{glyph.route} no route yet</Text>
-        )}
-        {task ? (
-          <Text color={theme.faint}>
-            {'  '}
-            {glyph.bullet} task {task.id.slice(0, 8)}
-          </Text>
-        ) : (
-          <Text color={theme.faint}> {glyph.bullet} no task yet</Text>
-        )}
-      </Text>
-      <Text color={theme.faint} wrap="truncate" dimColor={dimmed}>
-        {usage.inputTokens + usage.outputTokens > 0
-          ? `${formatCount(usage.inputTokens)} in · ${formatCount(usage.outputTokens)} out`
-          : `${formatCount(usage.inputTokens + usage.outputTokens)} tokens`}
-        {lastInputTokens > 0 ? ` · ctx ~${formatCount(lastInputTokens)}` : ''}
-        {pauseReason
-          ? ` ${glyph.bullet} ${clip(pauseReason, 48)}`
-          : lastResult
-            ? ` ${glyph.bullet} ${clip(lastResult, 48)}`
-            : ''}
+        <Text color={statusColor}>{statusLine}</Text>
+        <Text color={theme.muted}> {glyph.route} {agentMode}</Text>
+        <Text color={theme.faint}> effort {effortText}</Text>
+        <Text color={theme.muted}> {clip(selectedProfile?.name ?? 'no profile', 18)}</Text>
+        <Text color={theme.violet}> {clip(route ?? 'no route', 30)}</Text>
+        <Text color={theme.faint}> {tokenLine}</Text>
+        {pauseReason ? <Text color={theme.warning}> · {clip(pauseReason, 36)}</Text> : null}
       </Text>
     </Box>
   );

@@ -596,13 +596,13 @@ export class CodingAgent {
     let steps = 0;
     let lastResult: AgentResult | null = null;
 
-    const baseStep = Math.max(2, Math.min(this.settings.agent.maxSteps * 2, 8));
+    const baseStep = Math.max(12, Math.min(this.settings.agent.maxSteps * 2, 60));
     const baseToken = Math.min(
-      120_000,
+      250_000,
       Math.max(
-        20_000,
+        80_000,
         Math.round(
-          this.settings.agent.contextBudgetRatio * 120_000 * Math.min(state.roles.length, 4),
+          this.settings.agent.contextBudgetRatio * 120_000 * Math.max(state.roles.length, 1),
         ),
       ),
     );
@@ -745,7 +745,11 @@ export class CodingAgent {
             },
           },
         });
-        const result = await stageAgent.run({ ...options, skipCollaboration: true });
+        const result = await stageAgent.run({
+          ...options,
+          skipCollaboration: true,
+          maxSteps: Math.max(options.maxSteps ?? this.settings.agent.maxSteps, 30),
+        });
         lastResult = result;
         aggregate.inputTokens += result.usage.inputTokens;
         aggregate.outputTokens += result.usage.outputTokens;

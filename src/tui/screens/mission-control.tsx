@@ -55,7 +55,7 @@ export function MissionControl({
   onToggleSelection,
   sidePanel = true,
 }: MissionControlProps): React.ReactElement {
-  const { columns, rows, compact } = useLayout();
+  const { columns, compact } = useLayout();
   const [events, setEvents] = useState<AgentEvent[]>(() => {
     const tasks = context.store.listTasks({ projectPath: context.cwd, limit: 20 });
     const saved = tasks.find((task) => Array.isArray(task.metadata.agentEvents))
@@ -125,6 +125,9 @@ export function MissionControl({
     return [];
   }, [context, events.length]);
   const agentStates = useMemo(() => deriveAgentStates(events, contracts), [events, contracts]);
+  const currentAgentName =
+    AGENT_REGISTRY.find((agent) => agentStates[agent.id]?.status === 'working')?.name ??
+    'Team Lead (idle)';
 
   return (
     <Box flexDirection="column" flexGrow={1} overflow="hidden">
@@ -145,16 +148,30 @@ export function MissionControl({
             <Text color={theme.faint} dimColor>
               14 agents · {agentMode}
             </Text>
-            {AGENT_REGISTRY.map((agent, index) => (
-              <Text
-                key={agent.id}
-                color={index === selectedAgent ? theme.black : theme.muted}
-                backgroundColor={index === selectedAgent ? theme.accent : undefined}
-                wrap="truncate"
-              >
-                {agent.icon} {agent.name}
-              </Text>
-            ))}
+            <Text color={theme.violet} wrap="truncate">
+              CURRENT: {currentAgentName}
+            </Text>
+            <Box marginTop={1} flexDirection="column">
+              {AGENT_REGISTRY.map((agent, index) => (
+                <Box key={agent.id} marginBottom={1}>
+                  <Text
+                    color={
+                      agentStates[agent.id]?.status === 'working'
+                        ? theme.accent
+                        : index === selectedAgent
+                          ? theme.black
+                          : theme.muted
+                    }
+                    backgroundColor={index === selectedAgent ? theme.accent : undefined}
+                    bold={agentStates[agent.id]?.status === 'working'}
+                    wrap="truncate"
+                  >
+                    {agentStates[agent.id]?.status === 'working' ? '▸ ' : '  '}
+                    {agent.icon} {agent.name}
+                  </Text>
+                </Box>
+              ))}
+            </Box>
           </Box>
         ) : null}
 
@@ -221,11 +238,7 @@ export function MissionControl({
           </Box>
         ) : null}
       </Box>
-      <Box flexShrink={0} paddingX={1}>
-        <Text color={theme.faint} wrap="truncate">
-          tab focus {focus} · ↑/↓ agents · i inspect · t tasks · f6 team · f7 activity · esc close · {rows} rows
-        </Text>
-      </Box>
+
       {overlay === 'inspector' ? (
         <Box position="absolute" bottom={2} right={2} width={58} flexDirection="column">
           <AgentInspector

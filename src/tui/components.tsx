@@ -134,7 +134,6 @@ export function Header({
   dimmed?: boolean;
   agentMode?: import('../core/agent/modes.js').AgentMode;
 }): React.ReactElement {
-  const compact = columns < 96;
   return (
     <Box flexDirection="column" flexShrink={0} paddingX={1}>
       {/* Top line: Brand, interactive controls, status */}
@@ -156,11 +155,7 @@ export function Header({
             </Text>
           ) : null}
           <StatusPill status={status} />
-          {!compact ? (
-            <Text color={theme.faint} dimColor={dimmed}>
-              ctrl+p commands
-            </Text>
-          ) : null}
+
         </Box>
       </Box>
 
@@ -219,11 +214,7 @@ export function Header({
           {cwd}
           {branch ? <Text color={theme.violet}> ⎇ {branch}</Text> : null}
         </Text>
-        {!compact ? (
-          <Text color={theme.faint} dimColor={dimmed}>
-            / commands · ? shortcuts
-          </Text>
-        ) : null}
+
       </Box>
       <Box>
         <Divider width={Math.max(1, columns - 2)} />

@@ -4,6 +4,22 @@ All notable changes to ComiCode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 semantic versioning.
 
+## [0.2.4] - 2026-11-21
+
+### Changed
+
+- Removed all keyboard hint strips from the header, footer and composer to
+  give the transcript more height.
+- Compressed the mode/model/token status into a single line.
+- Team sidebar rows have more vertical spacing and a `CURRENT:` indicator.
+- Team credit budget is much larger so runs no longer pause in the middle.
+
+### Fixed
+
+- `/tasks`, `/history` and `/session` open the task-history popup again; a new
+  informational command no longer overrides them.
+- Composer text wraps within the available pane width.
+
 ## [0.2.3] - 2026-11-20
 
 ### Fixed

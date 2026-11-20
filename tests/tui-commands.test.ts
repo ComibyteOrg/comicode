@@ -37,6 +37,14 @@ describe('team slash commands', () => {
     );
   });
 
+  for (const command of ['tasks', 'history', 'session']) {
+    it(`/${command} opens the task history popup`, async () => {
+      const context = ctx();
+      await commandRegistry.get(command)!.handler([], context);
+      expect(context.openDialog).toHaveBeenCalledWith('tasks');
+    });
+  }
+
   it('/agents lists the roster', async () => {
     const context = ctx();
     await commandRegistry.get('agents')!.handler([], context);

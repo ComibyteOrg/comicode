@@ -14,7 +14,7 @@ var VERSION, GITHUB_REPOSITORY;
 var init_version = __esm({
   "src/version.ts"() {
     "use strict";
-    VERSION = true ? "0.2.3" : "0.1.0-dev";
+    VERSION = true ? "0.2.4" : "0.1.0-dev";
     GITHUB_REPOSITORY = "https://github.com/ComibyteOrg/comicode";
   }
 });
@@ -11643,13 +11643,13 @@ var init_agent = __esm({
         const aggregate = { inputTokens: 0, outputTokens: 0 };
         let steps = 0;
         let lastResult = null;
-        const baseStep = Math.max(2, Math.min(this.settings.agent.maxSteps * 2, 8));
+        const baseStep = Math.max(12, Math.min(this.settings.agent.maxSteps * 2, 60));
         const baseToken = Math.min(
-          12e4,
+          25e4,
           Math.max(
-            2e4,
+            8e4,
             Math.round(
-              this.settings.agent.contextBudgetRatio * 12e4 * Math.min(state.roles.length, 4)
+              this.settings.agent.contextBudgetRatio * 12e4 * Math.max(state.roles.length, 1)
             )
           )
         );
@@ -11783,7 +11783,11 @@ var init_agent = __esm({
                 }
               }
             });
-            const result = await stageAgent.run({ ...options, skipCollaboration: true });
+            const result = await stageAgent.run({
+              ...options,
+              skipCollaboration: true,
+              maxSteps: Math.max(options.maxSteps ?? this.settings.agent.maxSteps, 30)
+            });
             lastResult = result;
             aggregate.inputTokens += result.usage.inputTokens;
             aggregate.outputTokens += result.usage.outputTokens;
@@ -16852,7 +16856,6 @@ function Header({
   dimmed,
   agentMode = "build"
 }) {
-  const compact = columns < 96;
   return /* @__PURE__ */ jsxs(Box, { flexDirection: "column", flexShrink: 0, paddingX: 1, children: [
     /* @__PURE__ */ jsxs(Box, { justifyContent: "space-between", children: [
       /* @__PURE__ */ jsxs(Text, { wrap: "truncate", dimColor: dimmed, children: [
@@ -16868,8 +16871,7 @@ function Header({
       ] }),
       /* @__PURE__ */ jsxs(Box, { columnGap: 2, children: [
         allowPaid ? /* @__PURE__ */ jsx(Text, { color: theme.warning, dimColor: dimmed, children: "paid on" }) : null,
-        /* @__PURE__ */ jsx(StatusPill, { status }),
-        !compact ? /* @__PURE__ */ jsx(Text, { color: theme.faint, dimColor: dimmed, children: "ctrl+p commands" }) : null
+        /* @__PURE__ */ jsx(StatusPill, { status })
       ] })
     ] }),
     /* @__PURE__ */ jsxs(Box, { marginTop: 1, justifyContent: "space-between", width: "100%", children: [
@@ -16914,16 +16916,13 @@ function Header({
         taskId.slice(0, 8)
       ] }) : null
     ] }),
-    /* @__PURE__ */ jsxs(Box, { justifyContent: "space-between", marginTop: 1, children: [
-      /* @__PURE__ */ jsxs(Text, { color: theme.muted, wrap: "truncate-middle", dimColor: dimmed, children: [
-        cwd,
-        branch ? /* @__PURE__ */ jsxs(Text, { color: theme.violet, children: [
-          " \u2387 ",
-          branch
-        ] }) : null
-      ] }),
-      !compact ? /* @__PURE__ */ jsx(Text, { color: theme.faint, dimColor: dimmed, children: "/ commands \xB7 ? shortcuts" }) : null
-    ] }),
+    /* @__PURE__ */ jsx(Box, { justifyContent: "space-between", marginTop: 1, children: /* @__PURE__ */ jsxs(Text, { color: theme.muted, wrap: "truncate-middle", dimColor: dimmed, children: [
+      cwd,
+      branch ? /* @__PURE__ */ jsxs(Text, { color: theme.violet, children: [
+        " \u2387 ",
+        branch
+      ] }) : null
+    ] }) }),
     /* @__PURE__ */ jsx(Box, { children: /* @__PURE__ */ jsx(Divider, { width: Math.max(1, columns - 2) }) })
   ] });
 }
@@ -17730,7 +17729,7 @@ var init_catalog2 = __esm({
         summary: "Open task history (also /history)",
         description: "Browse all past and paused work. Search history, inspect progress, resume a task, rename it, delete entries, or start a new task.",
         usage: "/history",
-        aliases: ["history", "sessions"],
+        aliases: ["history", "sessions", "session"],
         category: "tasks",
         surfaces: ["slash", "cli"],
         shortcut: "ctrl+t"
@@ -18104,7 +18103,6 @@ var init_registry3 = __esm({
         const simple = [
           { id: "agents", summary: "Show the 14-agent roster", text: AGENT_REGISTRY.map((a) => `${a.icon} ${a.name}`).join(" \xB7 ") },
           { id: "plan", summary: "Show the current plan", text: "Use /tasks to inspect the active plan." },
-          { id: "tasks", summary: "Show the task board", text: "Press t in the workspace to open the task board." },
           { id: "activity", summary: "Show live activity", text: "The activity panel is on the right of the workspace." },
           { id: "review", summary: "Run a review stage", text: "Reviewer will be assigned after implementation." },
           { id: "test", summary: "Run a QA stage", text: "QA Engineer will be assigned after implementation." }
@@ -18850,7 +18848,7 @@ function Workspace({
   const [confirmRequest, setConfirmRequest] = useState3(null);
   const [frame, setFrame] = useState3(0);
   const [pauseReason, setPauseReason] = useState3(null);
-  const [lastResult, setLastResult] = useState3(null);
+  const [_lastResult, setLastResult] = useState3(null);
   const [stages, setStages] = useState3([]);
   const [selection, setSelection] = useState3(null);
   const [charSelection, setCharSelection] = useState3(null);
@@ -19111,14 +19109,14 @@ function Workspace({
             [...request.matchAll(/@([^\s@]+)/g)].map((match) => match[1]).filter((path) => fileIndex.length === 0 || fileIndex.includes(path))
           )
         ];
-        const withMentions = (task3) => {
+        const withMentions = (task2) => {
           if (!mentions.length) return;
-          context.store.updateTask(task3.id, {
-            relevantFiles: [.../* @__PURE__ */ new Set([...task3.relevantFiles ?? [], ...mentions])]
+          context.store.updateTask(task2.id, {
+            relevantFiles: [.../* @__PURE__ */ new Set([...task2.relevantFiles ?? [], ...mentions])]
           });
         };
         if (!taskId) {
-          const task3 = context.store.createTask({
+          const task2 = context.store.createTask({
             projectPath: context.cwd,
             projectName: context.cwd.split(/[\\/]/).filter(Boolean).pop() ?? "project",
             userRequest: request,
@@ -19127,13 +19125,13 @@ function Workspace({
             currentModelId: model?.modelId ?? profile.defaultModel ?? null,
             metadata: { createdBy: "tui", source: "comicode" }
           });
-          withMentions(task3);
-          setTaskId(task3.id);
-          await execute(task3.id, false);
+          withMentions(task2);
+          setTaskId(task2.id);
+          await execute(task2.id, false);
           return;
         }
-        const task2 = context.store.getTask(taskId);
-        if (!task2) {
+        const task = context.store.getTask(taskId);
+        if (!task) {
           setTaskId(null);
           addEntry({
             kind: "error",
@@ -19141,14 +19139,14 @@ function Workspace({
           });
           return;
         }
-        context.store.appendMessage(task2.id, { role: "user", content: request });
-        withMentions(task2);
-        context.store.updateTask(task2.id, {
+        context.store.appendMessage(task.id, { role: "user", content: request });
+        withMentions(task);
+        context.store.updateTask(task.id, {
           status: "running",
-          phase: task2.phase === "done" ? "implement" : task2.phase,
+          phase: task.phase === "done" ? "implement" : task.phase,
           completedAt: null
         });
-        await execute(task2.id, task2.status === "paused" || task2.status === "failed");
+        await execute(task.id, task.status === "paused" || task.status === "failed");
       } catch (error) {
         addEntry({
           kind: "error",
@@ -19160,21 +19158,21 @@ function Workspace({
   );
   const adopt = useCallback(
     async (request) => {
-      const task2 = context.store.getTask(request.taskId);
-      if (!task2) {
+      const task = context.store.getTask(request.taskId);
+      if (!task) {
         notify("Task not found.");
         return;
       }
-      setTaskId(task2.id);
-      setPlan(task2.plan);
-      setPauseReason(task2.error ?? null);
-      setEntries(taskToEntries(context, task2));
+      setTaskId(task.id);
+      setPlan(task.plan);
+      setPauseReason(task.error ?? null);
+      setEntries(taskToEntries(context, task));
       setUsage({ inputTokens: 0, outputTokens: 0 });
       setLastInputTokens(0);
-      setLastResult(task2.summary);
+      setLastResult(task.summary);
       setScrollOffset(0);
-      if (request.resume) await execute(task2.id, true);
-      else updateStatus(task2.status === "completed" ? "completed" : "idle");
+      if (request.resume) await execute(task.id, true);
+      else updateStatus(task.status === "completed" ? "completed" : "idle");
     },
     [context, execute, notify, updateStatus]
   );
@@ -19492,7 +19490,6 @@ function Workspace({
     // prompt is open, but a modal dialog still owns the keyboard.
     { isActive: selectionMode ? !dimmed : active && !dimmed && !confirmRequest }
   );
-  const task = taskId ? context.store.getTask(taskId) : null;
   const selectedProfile = (() => {
     const profiles = context.store.listProfiles();
     const selectedId = context.store.getSelectedProfileId();
@@ -19588,7 +19585,7 @@ function Workspace({
         "type to add live \xB7 esc pauses"
       ] })
     ] }) }) : null,
-    /* @__PURE__ */ jsxs5(
+    /* @__PURE__ */ jsx5(
       Box5,
       {
         flexDirection: "column",
@@ -19596,96 +19593,55 @@ function Workspace({
         borderStyle: "round",
         borderColor: status === "paused" ? theme.warning : theme.accentDim,
         paddingX: 1,
-        children: [
-          /* @__PURE__ */ jsx5(
-            PromptInput,
-            {
-              value: input,
-              onChange: setInput,
-              onSubmit: submit,
-              focus: active && !dimmed && !selectionMode,
-              suggestions,
-              history: history2,
-              onCycleScreen,
-              onCycleMode: (direction) => onAgentMode?.(nextAgentMode(agentMode, direction)),
-              width: Math.max(12, bodyWidth - 4),
-              placeholder: status === "paused" ? "Describe the next step, /resume, or /new" : "Ask ComiCode to build, fix, test, or explain\u2026"
-            }
-          ),
-          suggestions.length === 0 ? /* @__PURE__ */ jsx5(Box5, { children: /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, wrap: "truncate", dimColor: dimmed, children: [
-            "enter send ",
-            glyph.bullet,
-            " / commands ",
-            glyph.bullet,
-            " ctrl+m model ",
-            glyph.bullet,
-            " ctrl+b provider ",
-            glyph.bullet,
-            " ctrl+p palette ",
-            glyph.bullet,
-            " ctrl+j questions"
-          ] }) }) : null
-        ]
+        children: /* @__PURE__ */ jsx5(
+          PromptInput,
+          {
+            value: input,
+            onChange: setInput,
+            onSubmit: submit,
+            focus: active && !dimmed && !selectionMode,
+            suggestions,
+            history: history2,
+            onCycleScreen,
+            onCycleMode: (direction) => onAgentMode?.(nextAgentMode(agentMode, direction)),
+            width: Math.max(12, bodyWidth - 4),
+            placeholder: status === "paused" ? "Describe the next step, /resume, or /new" : "Ask ComiCode to build, fix, test, or explain\u2026"
+          }
+        )
       }
     )
   ] });
-  const statusFooter = /* @__PURE__ */ jsxs5(Box5, { flexDirection: "column", flexShrink: 0, paddingX: 1, marginTop: 1, children: [
-    /* @__PURE__ */ jsxs5(Text5, { wrap: "truncate", dimColor: dimmed, children: [
-      /* @__PURE__ */ jsx5(Text5, { color: statusColor2, children: status === "running" ? `${glyph.dot} ${status}` : status === "completed" ? `${glyph.check} ${status}` : status === "failed" ? `${glyph.cross} ${status}` : `${glyph.ring} ${status}` }),
-      /* @__PURE__ */ jsxs5(
-        Text5,
-        {
-          color: agentMode === "plan" ? theme.info : agentMode === "debug" ? theme.warning : theme.muted,
-          children: [
-            "  ",
-            glyph.route,
-            " ",
-            agentMode
-          ]
-        }
-      ),
-      /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, children: [
-        "  ",
-        "effort ",
-        effortText
-      ] }),
-      selectedProfile ? /* @__PURE__ */ jsxs5(Text5, { color: theme.muted, children: [
-        "  ",
-        glyph.route,
-        " ",
-        clip2(selectedProfile.name, 24)
-      ] }) : /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, children: [
-        "  ",
-        glyph.route,
-        " no profile"
-      ] })
+  const statusLine = status === "running" ? `${glyph.dot} ${status}` : status === "completed" ? `${glyph.check} ${status}` : status === "failed" ? `${glyph.cross} ${status}` : `${glyph.ring} ${status}`;
+  const tokenLine = usage2.inputTokens + usage2.outputTokens > 0 ? `${formatCount(usage2.inputTokens)} in \xB7 ${formatCount(usage2.outputTokens)} out` : `${formatCount(usage2.inputTokens + usage2.outputTokens)} tokens`;
+  const statusFooter = /* @__PURE__ */ jsx5(Box5, { flexShrink: 0, paddingX: 1, marginTop: 1, children: /* @__PURE__ */ jsxs5(Text5, { wrap: "truncate", dimColor: dimmed, children: [
+    /* @__PURE__ */ jsx5(Text5, { color: statusColor2, children: statusLine }),
+    /* @__PURE__ */ jsxs5(Text5, { color: theme.muted, children: [
+      " ",
+      glyph.route,
+      " ",
+      agentMode
     ] }),
-    /* @__PURE__ */ jsxs5(Text5, { wrap: "truncate", dimColor: dimmed, children: [
-      route ? /* @__PURE__ */ jsxs5(Text5, { color: theme.violet, children: [
-        glyph.route,
-        " ",
-        clip2(route, 54)
-      ] }) : /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, children: [
-        glyph.route,
-        " no route yet"
-      ] }),
-      task ? /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, children: [
-        "  ",
-        glyph.bullet,
-        " task ",
-        task.id.slice(0, 8)
-      ] }) : /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, children: [
-        " ",
-        glyph.bullet,
-        " no task yet"
-      ] })
+    /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, children: [
+      " effort ",
+      effortText
     ] }),
-    /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, wrap: "truncate", dimColor: dimmed, children: [
-      usage2.inputTokens + usage2.outputTokens > 0 ? `${formatCount(usage2.inputTokens)} in \xB7 ${formatCount(usage2.outputTokens)} out` : `${formatCount(usage2.inputTokens + usage2.outputTokens)} tokens`,
-      lastInputTokens > 0 ? ` \xB7 ctx ~${formatCount(lastInputTokens)}` : "",
-      pauseReason ? ` ${glyph.bullet} ${clip2(pauseReason, 48)}` : lastResult ? ` ${glyph.bullet} ${clip2(lastResult, 48)}` : ""
-    ] })
-  ] });
+    /* @__PURE__ */ jsxs5(Text5, { color: theme.muted, children: [
+      " ",
+      clip2(selectedProfile?.name ?? "no profile", 18)
+    ] }),
+    /* @__PURE__ */ jsxs5(Text5, { color: theme.violet, children: [
+      " ",
+      clip2(route ?? "no route", 30)
+    ] }),
+    /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, children: [
+      " ",
+      tokenLine
+    ] }),
+    pauseReason ? /* @__PURE__ */ jsxs5(Text5, { color: theme.warning, children: [
+      " \xB7 ",
+      clip2(pauseReason, 36)
+    ] }) : null
+  ] }) });
   const selectionBanner = selectionMode ? /* @__PURE__ */ jsx5(Box5, { flexShrink: 0, paddingTop: 1, children: /* @__PURE__ */ jsxs5(Text5, { color: theme.success, wrap: "truncate", children: [
     "\u2318 SELECT MODE ",
     glyph.bullet,
@@ -19987,7 +19943,7 @@ function MissionControl({
   onToggleSelection,
   sidePanel = true
 }) {
-  const { columns, rows, compact } = useLayout();
+  const { columns, compact } = useLayout();
   const [events, setEvents] = useState4(() => {
     const tasks = context.store.listTasks({ projectPath: context.cwd, limit: 20 });
     const saved = tasks.find((task) => Array.isArray(task.metadata.agentEvents))?.metadata.agentEvents;
@@ -20053,6 +20009,7 @@ function MissionControl({
     return [];
   }, [context, events.length]);
   const agentStates = useMemo3(() => deriveAgentStates(events, contracts), [events, contracts]);
+  const currentAgentName = AGENT_REGISTRY.find((agent) => agentStates[agent.id]?.status === "working")?.name ?? "Team Lead (idle)";
   return /* @__PURE__ */ jsxs7(Box7, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children: [
     /* @__PURE__ */ jsxs7(Box7, { flexDirection: "row", flexGrow: 1, overflow: "hidden", children: [
       showAgents ? /* @__PURE__ */ jsxs7(
@@ -20074,20 +20031,25 @@ function MissionControl({
               "14 agents \xB7 ",
               agentMode
             ] }),
-            AGENT_REGISTRY.map((agent, index) => /* @__PURE__ */ jsxs7(
+            /* @__PURE__ */ jsxs7(Text7, { color: theme.violet, wrap: "truncate", children: [
+              "CURRENT: ",
+              currentAgentName
+            ] }),
+            /* @__PURE__ */ jsx7(Box7, { marginTop: 1, flexDirection: "column", children: AGENT_REGISTRY.map((agent, index) => /* @__PURE__ */ jsx7(Box7, { marginBottom: 1, children: /* @__PURE__ */ jsxs7(
               Text7,
               {
-                color: index === selectedAgent ? theme.black : theme.muted,
+                color: agentStates[agent.id]?.status === "working" ? theme.accent : index === selectedAgent ? theme.black : theme.muted,
                 backgroundColor: index === selectedAgent ? theme.accent : void 0,
+                bold: agentStates[agent.id]?.status === "working",
                 wrap: "truncate",
                 children: [
+                  agentStates[agent.id]?.status === "working" ? "\u25B8 " : "  ",
                   agent.icon,
                   " ",
                   agent.name
                 ]
-              },
-              agent.id
-            ))
+              }
+            ) }, agent.id)) })
           ]
         }
       ) : null,
@@ -20157,13 +20119,6 @@ function MissionControl({
         }
       ) : null
     ] }),
-    /* @__PURE__ */ jsx7(Box7, { flexShrink: 0, paddingX: 1, children: /* @__PURE__ */ jsxs7(Text7, { color: theme.faint, wrap: "truncate", children: [
-      "tab focus ",
-      focus,
-      " \xB7 \u2191/\u2193 agents \xB7 i inspect \xB7 t tasks \xB7 f6 team \xB7 f7 activity \xB7 esc close \xB7 ",
-      rows,
-      " rows"
-    ] }) }),
     overlay === "inspector" ? /* @__PURE__ */ jsx7(Box7, { position: "absolute", bottom: 2, right: 2, width: 58, flexDirection: "column", children: /* @__PURE__ */ jsx7(
       AgentInspector,
       {
@@ -24036,17 +23991,7 @@ function App({ context }) {
   const profiles = context.store.listProfiles();
   const selectedProfile = profiles.find((profile) => profile.id === context.store.getSelectedProfileId()) ?? profiles.find((profile) => profile.enabled) ?? null;
   const allowPaid = context.store.getSettings().routing.allowPaid;
-  const hints = isDialogOpen ? ["\u2191/\u2193 navigate", "enter select", "esc close"] : [
-    "/ commands",
-    "enter send",
-    "tab mode",
-    "esc pause",
-    "ctrl+k palette",
-    "ctrl+m model",
-    "ctrl+b providers",
-    "ctrl+y select/copy",
-    "ctrl+c\xD72 quit"
-  ];
+  const hints = [];
   void tick;
   const paletteRows = Math.max(4, rows - 14);
   const paletteStart = Math.max(

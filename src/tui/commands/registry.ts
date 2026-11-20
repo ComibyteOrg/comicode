@@ -73,7 +73,6 @@ class CommandRegistry {
     const simple: Array<{ id: string; summary: string; text: string }> = [
       { id: 'agents', summary: 'Show the 14-agent roster', text: AGENT_REGISTRY.map((a) => `${a.icon} ${a.name}`).join(' · ') },
       { id: 'plan', summary: 'Show the current plan', text: 'Use /tasks to inspect the active plan.' },
-      { id: 'tasks', summary: 'Show the task board', text: 'Press t in the workspace to open the task board.' },
       { id: 'activity', summary: 'Show live activity', text: 'The activity panel is on the right of the workspace.' },
       { id: 'review', summary: 'Run a review stage', text: 'Reviewer will be assigned after implementation.' },
       { id: 'test', summary: 'Run a QA stage', text: 'QA Engineer will be assigned after implementation.' },

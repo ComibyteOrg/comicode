@@ -124,11 +124,23 @@ describe('team credit budget', () => {
   });
 
   it('stops at the shared step budget and pauses', async () => {
-    const { makeAgent, stages } = setup(1); const agent = makeAgent();
-    const result = await agent.run();
+    const { store, task, stages, makeAgent } = setup(1);
+    store.updateTask(task.id, {
+      metadata: {
+        teamRun: {
+          roles: ['plan', 'frontend', 'backend'],
+          cursor: 1,
+          revisits: {},
+          stepsUsed: 100,
+          tokensUsed: 100,
+          stepBudget: 2,
+          tokenBudget: 8000,
+        },
+      },
+    });
+    const result = await makeAgent().run();
     expect(result.status).toBe('paused');
-    const starts = stages.filter((event) => event.status === 'start');
-    expect(starts.length).toBeLessThanOrEqual(2);
+    expect(stages.filter((event) => event.status === 'start')).toHaveLength(0);
   });
 
   it('grants a fresh allowance when resuming a budget-paused team', async () => {
@@ -151,6 +163,6 @@ describe('team credit budget', () => {
   it('uses a realistic per-stage token budget', async () => {
     const { makeAgent, estimates } = setup(); const agent = makeAgent();
     await agent.run();
-    expect(estimates[0]!.tokenBudget).toBeGreaterThanOrEqual(20_000);
+    expect(estimates[0]!.tokenBudget).toBeGreaterThanOrEqual(80_000);
   });
 });
