@@ -79,6 +79,13 @@ export interface AgentHooks {
   onReview?: (review: string) => void;
   /** Team/department pipeline progress (only fires in `team` mode). */
   onStage?: (stage: TeamStageEvent) => void;
+  /** Fired once before a team run with its estimated size and budget. */
+  onEstimate?: (info: {
+    stages: number;
+    estimatedTokens: number;
+    tokenBudget: number;
+    stepBudget: number;
+  }) => void;
 }
 
 export interface AgentResult {
@@ -95,6 +102,8 @@ export interface AgentRunOptions {
   resume?: boolean;
   signal?: AbortSignal;
   maxSteps?: number;
+  /** Skip planner/reviewer/tester passes for an individual team stage. */
+  skipCollaboration?: boolean;
 }
 
 export interface ChatTurn {

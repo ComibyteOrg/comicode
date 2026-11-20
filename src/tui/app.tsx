@@ -6,7 +6,9 @@ import type { TaskRecord } from '../core/types.js';
 import { refreshProfileModels } from '../core/providers/service.js';
 import { gitBranch } from '../core/git/repository.js';
 import { Footer, Header, PromptInput, useLayout, type AgentStatus } from './components.js';
-import { Workspace, type ResumeRequest } from './screens/workspace.js';
+import type { ResumeRequest } from './screens/workspace.js';
+import { MissionControl } from './screens/mission-control.js';
+import { EventBus } from '../core/events/bus.js';
 import { ProvidersDialog } from './dialogs/providers-dialog.js';
 import { ModelPicker } from './dialogs/model-picker.js';
 import { ConnectDialog } from './dialogs/connect-dialog.js';
@@ -65,6 +67,12 @@ function App({ context }: { context: AppContext }): React.ReactElement {
   const [paletteIndex, setPaletteIndex] = useState(0);
   const [branch, setBranch] = useState<string | null>(null);
   const [agentMode, setAgentMode] = useState<AgentMode>('auto');
+  const [sidePanelVisible, setSidePanelVisible] = useState<boolean>(() => columns >= 112);
+  const [eventBus] = useState(() => new EventBus());
+
+  useEffect(() => {
+    setSidePanelVisible(columns >= 112);
+  }, [columns]);
   const [outputContent, setOutputContent] = useState<{ title: string; text: string } | null>(null);
   const [selectionMode, setSelectionMode] = useState(false);
   const quitArmedAt = useRef(0);
@@ -78,7 +86,7 @@ function App({ context }: { context: AppContext }): React.ReactElement {
     setDialogStack((stack) => stack.slice(0, -1));
   }, []);
   const closeAllDialogs = useCallback(() => setDialogStack([]), []);
-  const showOutput = useCallback(
+  const _showOutput = useCallback(
     (title: string, text: string) => {
       setOutputContent({ title, text });
       openDialog('output');
@@ -98,7 +106,7 @@ function App({ context }: { context: AppContext }): React.ReactElement {
     setSelectionMode(next);
     notify(
       next
-        ? 'Select mode on — drag to highlight text and copy anywhere. Esc or ctrl+y returns to wheel scrolling.'
+        ? 'Select mode — shift+↑/↓ entries, shift+←/→ characters, a all, ctrl+c copy, esc clear.'
         : 'Wheel scrolling restored.',
     );
   }, [notify, selectionMode]);
@@ -292,6 +300,12 @@ function App({ context }: { context: AppContext }): React.ReactElement {
   }, [filteredActions.length]);
 
   useInput((input, key) => {
+    // F6 has stable keyboard encoding across terminals, unlike ctrl+shift combos.
+    if (input === '\u001b[17~') {
+      setSidePanelVisible((visible) => !visible);
+      notify(sidePanelVisible ? 'Side panel hidden.' : 'Side panel shown.');
+      return;
+    }
     const shortcutOverrides = context.store.getSettings().ui.shortcuts;
     // Selection mode works even while a dialog is open: release mouse capture
     // so the terminal can highlight/copy any visible text.
@@ -303,7 +317,7 @@ function App({ context }: { context: AppContext }): React.ReactElement {
     // While a modal is open it owns the keyboard; nothing else leaks into the chat.
     if (isDialogOpen) return;
 
-    if (shortcutMatches('quit', input, key, shortcutOverrides)) {
+    if (!selectionMode && shortcutMatches('quit', input, key, shortcutOverrides)) {
       if (status === 'running') {
         notify('Pause the run with esc before quitting.');
         return;
@@ -434,26 +448,25 @@ function App({ context }: { context: AppContext }): React.ReactElement {
 
       <Box flexDirection="column" flexGrow={1} overflow="hidden" paddingX={1}>
         {/* The chat workspace stays mounted and visible behind every dialog. */}
-        <Workspace
+        <MissionControl
           context={context}
           active={!isDialogOpen}
-          dimmed={isDialogOpen}
-          onStatusChange={setStatus}
-          onNavigate={() => {}}
-          onCycleScreen={() => {}}
-          onOpenDialog={(d) => {
-            if (d) openDialog(d);
-            else closeDialog();
-          }}
-          onQuit={quit}
-          resumeRequest={resumeRequest}
-          notify={notify}
-          refreshData={refreshData}
+          eventBus={eventBus}
           agentMode={agentMode}
           onAgentMode={setAgentMode}
-          onShowOutput={showOutput}
+          resumeRequest={resumeRequest}
           selectionMode={selectionMode}
           onToggleSelection={toggleSelectionMode}
+          sidePanel={sidePanelVisible}
+          onOpenDialog={(dialog) => {
+            if (dialog) openDialog(dialog as Parameters<typeof openDialog>[0]);
+            else closeDialog();
+          }}
+          onShowOutput={_showOutput}
+          onQuit={quit}
+          onStatusChange={setStatus}
+          notify={notify}
+          refreshData={refreshData}
         />
       </Box>
 

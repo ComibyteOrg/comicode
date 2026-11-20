@@ -22,13 +22,21 @@ import {
   type AgentStatus,
   type ScreenId,
 } from '../components.js';
+import { SidePanel } from './side-panel.js';
 import { ConfirmDialog } from '../dialogs/confirm-dialog.js';
 import { ModalWindow } from '../dialogs/modal.js';
 import { glyph, theme } from '../theme.js';
 import { commandRegistry, type CommandContext } from '../commands/registry.js';
 import { listProjectFiles } from '../../core/safety/files.js';
 import { disableMouseTracking, enableMouseWheel, isMouseSequence, isSuppressedInput } from '../mouse.js';
-import { copyToClipboard } from '../../core/clipboard.js';
+import { copyTextOrFile } from '../../core/clipboard.js';
+
+/** Exact substring for character-level selection. */
+export function sliceSelection(text: string, start: number, end: number): string {
+  const from = Math.max(0, Math.min(start, end, text.length));
+  const to = Math.max(from, Math.min(Math.max(start, end), text.length));
+  return text.slice(from, to);
+}
 
 interface Entry {
   id: number;
@@ -85,6 +93,11 @@ interface WorkspaceProps {
   /** Release mouse capture so the terminal can highlight and copy text. */
   selectionMode?: boolean;
   onToggleSelection?: () => void;
+  /** Shared event bus for the multi-agent workspace. */
+  eventBus?: import('../../core/events/bus.js').EventBus;
+  /** Show the collapsible teams/plan pane. */
+  sidePanel?: boolean;
+  onToggleSidePanel?: () => void;
 }
 
 function taskToEntries(context: AppContext, task: TaskRecord): Entry[] {
@@ -292,6 +305,7 @@ function EntryCard({
   showHeader = true,
   showMargin = true,
   selected = false,
+  charRange,
 }: {
   entry: Entry;
   dimmed?: boolean;
@@ -301,6 +315,7 @@ function EntryCard({
   showHeader?: boolean;
   showMargin?: boolean;
   selected?: boolean;
+  charRange?: { start: number; end: number } | null;
 }): React.ReactElement {
   const role = roleFor(entry);
   const lines = bodyLines ?? wrapBodyLines(entryDisplay(entry), 80);
@@ -322,17 +337,41 @@ function EntryCard({
       ) : null}
       {visible.length > 0 ? (
         <Box paddingLeft={2} flexDirection="column">
-          {visible.map((line, index) => (
-            <Text
-              key={`${start + index}`}
-              color={selected ? theme.black : role.bodyColor}
-              backgroundColor={selected ? theme.accent : undefined}
-              wrap="truncate"
-              dimColor={dimmed && !selected}
-            >
-              {line.length > 0 ? line : ' '}
-            </Text>
-          ))}
+          {visible.map((line, index) => {
+            const lineOffset = lines
+              .slice(0, start + index)
+              .reduce((sum, prior) => sum + prior.length + 1, 0);
+            const from = charRange
+              ? Math.max(0, Math.min(line.length, charRange.start - lineOffset))
+              : 0;
+            const to = charRange
+              ? Math.max(from, Math.min(line.length, charRange.end - lineOffset))
+              : 0;
+            const hasChars = Boolean(charRange && to > from);
+            return (
+              <Text
+                key={`${start + index}`}
+                color={selected ? theme.black : role.bodyColor}
+                backgroundColor={selected ? theme.accent : undefined}
+                wrap="truncate"
+                dimColor={dimmed && !selected}
+              >
+                {hasChars ? (
+                  <>
+                    {line.slice(0, from)}
+                    <Text backgroundColor={theme.accent} color={theme.black}>
+                      {line.slice(from, to)}
+                    </Text>
+                    {line.slice(to)}
+                  </>
+                ) : line.length > 0 ? (
+                  line
+                ) : (
+                  ' '
+                )}
+              </Text>
+            );
+          })}
         </Box>
       ) : null}
     </Box>
@@ -356,6 +395,9 @@ export function Workspace({
   onShowOutput,
   selectionMode = false,
   onToggleSelection,
+  eventBus,
+  sidePanel = false,
+  onToggleSidePanel: _onToggleSidePanel,
 }: WorkspaceProps): React.ReactElement {
   const { rows, columns } = useLayout();
   const [entries, setEntries] = useState<Entry[]>([]);
@@ -378,6 +420,11 @@ export function Workspace({
   const [lastResult, setLastResult] = useState<string | null>(null);
   const [stages, setStages] = useState<TeamStageEvent[]>([]);
   const [selection, setSelection] = useState<{ anchor: number; focus: number } | null>(null);
+  const [charSelection, setCharSelection] = useState<{
+    entryId: number;
+    start: number;
+    end: number;
+  } | null>(null);
   const [frozenEntries, setFrozenEntries] = useState<Entry[] | null>(null);
 
   const nextId = useRef(1);
@@ -593,6 +640,7 @@ export function Workspace({
       setRoute(null);
       setScrollOffset(0);
       setSelection(null);
+      setCharSelection(null);
       setFrozenEntries(null);
       setStages([]);
       streamingId.current = null;
@@ -606,6 +654,7 @@ export function Workspace({
           authority: { ...DEFAULT_AUTHORITY },
           settings: context.store.getSettings(),
           mode: agentMode,
+          eventBus,
         });
         agentRef.current = agent;
         const result = await agent.run({
@@ -636,7 +685,7 @@ export function Workspace({
         refreshData();
       }
     },
-    [addEntry, agentMode, askConfirm, context, makeHooks, refreshData, running, updateStatus],
+    [addEntry, agentMode, askConfirm, context, eventBus, makeHooks, refreshData, running, updateStatus],
   );
 
   const startRequest = useCallback(
@@ -907,7 +956,7 @@ export function Workspace({
   // ---------------------------------------------------------------- viewport
   // Measure the transcript in terminal lines. Scrolling then moves by lines,
   // so wheel/page keys feel continuous even when individual answers are tall.
-  const bodyWidth = Math.max(24, columns - 8);
+  const bodyWidth = Math.max(24, columns - (sidePanel ? 34 : 8));
   // Freeze the transcript while highlighting so streaming output cannot reflow
   // underneath the user's selection.
   const renderEntries = frozenEntries ?? entries;
@@ -953,6 +1002,7 @@ export function Workspace({
         if (key.escape) {
           if (selection) {
             setSelection(null);
+            setCharSelection(null);
             setFrozenEntries(null);
           } else {
             onToggleSelection?.();
@@ -988,8 +1038,54 @@ export function Workspace({
           }
           return;
         }
+        if (
+          (key.shift && key.leftArrow) ||
+          (key.shift && key.rightArrow) ||
+          (key.shift && key.home) ||
+          (key.shift && key.end)
+        ) {
+          const source = frozenEntries ?? entries;
+          if (!frozenEntries) setFrozenEntries([...source]);
+          const entry =
+            source.find((item) => item.id === (selection?.focus ?? -1)) ?? source[source.length - 1];
+          if (!entry) return;
+          const text = entryDisplay(entry);
+          const active =
+            charSelection?.entryId === entry.id
+              ? charSelection
+              : { entryId: entry.id, start: text.length, end: text.length };
+          const next =
+            key.home
+              ? 0
+              : key.end
+                ? text.length
+                : Math.max(0, Math.min(text.length, active.end + (key.leftArrow ? -1 : 1)));
+          setCharSelection({
+            entryId: entry.id,
+            start: Math.min(active.start, next),
+            end: Math.max(active.start, next),
+          });
+          setSelection({ anchor: entry.id, focus: entry.id });
+          return;
+        }
         if (key.ctrl && input === 'c') {
           const source = frozenEntries ?? entries;
+          if (charSelection) {
+            const entry = source.find((item) => item.id === charSelection.entryId);
+            const text = entry
+              ? sliceSelection(entryDisplay(entry), charSelection.start, charSelection.end)
+              : '';
+            void copyTextOrFile(text, context.cwd).then((result) =>
+              notify(
+                result.ok
+                  ? result.path
+                    ? `Copied selection — clipboard unavailable, saved to ${result.path}`
+                    : 'Copied selected characters.'
+                  : 'Clipboard unavailable — select with your terminal instead.',
+              ),
+            );
+            return;
+          }
           const selected = selection
             ? source.filter((entry) => {
                 const ids = [selection.anchor, selection.focus];
@@ -997,8 +1093,14 @@ export function Workspace({
               })
             : source;
           const text = selected.map((entry) => entryDisplay(entry)).join('\n');
-          void copyToClipboard(text).then((ok) =>
-            notify(ok ? `Copied ${selected.length} entr${selected.length === 1 ? 'y' : 'ies'}.` : 'Clipboard unavailable — select with your terminal instead.'),
+          void copyTextOrFile(text, context.cwd).then((result) =>
+            notify(
+              result.ok
+                ? result.path
+                  ? `Copied ${selected.length} entries to ${result.path}`
+                  : `Copied ${selected.length} entr${selected.length === 1 ? 'y' : 'ies'}.`
+                : 'Clipboard unavailable — select with your terminal instead.',
+            ),
           );
           return;
         }
@@ -1167,7 +1269,7 @@ export function Workspace({
           value={input}
           onChange={setInput}
           onSubmit={submit}
-          focus={active && !dimmed}
+          focus={active && !dimmed && !selectionMode}
           suggestions={suggestions}
           history={history}
           onCycleScreen={onCycleScreen}
@@ -1270,7 +1372,20 @@ export function Workspace({
     return (
       <Box flexDirection="column" flexGrow={1} paddingX={2}>
         {selectionBanner}
-        <Box flexDirection="column" flexGrow={1} justifyContent="center">
+        {sidePanel ? (
+          <Box flexDirection="row" flexGrow={1} overflow="hidden">
+            <Box flexDirection="column" flexGrow={1} justifyContent="center" overflow="hidden">
+              <SidePanel
+                stages={stages}
+                plan={plan}
+                route={route}
+                usage={usage}
+                agentMode={agentMode}
+              />
+            </Box>
+          </Box>
+        ) : null}
+        <Box flexDirection="column" flexGrow={sidePanel ? 0 : 1} justifyContent="center">
           <Box flexDirection="column" alignItems="center" width="100%">
             <Box flexDirection="column" alignItems="center" marginBottom={1}>
               <Text color={theme.accent} bold wrap="truncate">
@@ -1328,6 +1443,11 @@ export function Workspace({
                 layout.entry.id >= Math.min(selection.anchor, selection.focus) &&
                 layout.entry.id <= Math.max(selection.anchor, selection.focus)
               }
+              charRange={
+                charSelection?.entryId === layout.entry.id
+                  ? { start: charSelection.start, end: charSelection.end }
+                  : null
+              }
             />
           ))}
           {visibleOffset > 0 && visibleLayouts.length === 0 ? (
@@ -1335,6 +1455,15 @@ export function Workspace({
           ) : null}
         </Box>
         {scrollbar}
+        {sidePanel ? (
+          <SidePanel
+            stages={stages}
+            plan={plan}
+            route={route}
+            usage={usage}
+            agentMode={agentMode}
+          />
+        ) : null}
       </Box>
 
       {stages.length ? (

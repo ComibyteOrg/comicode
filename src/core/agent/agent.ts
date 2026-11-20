@@ -23,10 +23,22 @@ import { Collaborator, planFromCollaborator } from './collaboration.js';
 import {
   buildHandoffNote,
   buildStagePrompt,
-  selectTeamRoles,
+  parseStageDirective,
+  resolveTeamPlan,
+  TEAM_ROLES,
+  type TeamPlan,
   type TeamRole,
+  type TeamRunState,
 } from './teams.js';
 import { getPluginSkills, loadPlugins } from '../plugins/index.js';
+import { EventBus } from '../events/bus.js';
+import type { AgentEventType } from '../events/types.js';
+import {
+  closeContract,
+  createStageContracts,
+  type TaskContract,
+} from './task-contract.js';
+import { resolveAgentId } from './registry.js';
 import { createProfileContext } from '../providers/service.js';
 import { createAdapter } from '../providers/registry.js';
 import type { AdapterContext, ProviderAdapter } from '../providers/adapter.js';
@@ -34,7 +46,7 @@ import { classifyThrown, describeCategory, ProviderError } from '../providers/er
 import type { ErrorCategory } from '../types.js';
 import { redactSecrets } from '../security/redact.js';
 import { logger } from '../logger.js';
-import { compactionOf } from './compaction.js';
+import { compactTask, compactionOf } from './compaction.js';
 import { captureGitBaseline, recordGitFinalMetadata } from '../git/repository.js';
 
 export const DEFAULT_AUTHORITY: AgentAuthority = {
@@ -114,6 +126,10 @@ export interface CodingAgentOptions {
   mode?: AgentMode;
   /** One-run overrides that do not persist to the database. */
   routingOverrides?: Partial<RoutingPolicy>;
+  /** Prevent auto-team dispatch (used for individual team stages). */
+  disableAutoTeam?: boolean;
+  /** Event bus for the multi-agent workspace. `null` disables emission. */
+  eventBus?: EventBus | null;
   /** Injection points used by tests and embedding hosts. */
   adapterFactory?: (profile: ProviderProfile) => ProviderAdapter;
   contextFactory?: (profile: ProviderProfile, keyIndex?: number) => Promise<AdapterContext>;
@@ -185,7 +201,9 @@ export class CodingAgent {
     [];
   private usage = { inputTokens: 0, outputTokens: 0 };
   private steps = 0;
-  private readonly mode: AgentMode;
+  private mode: AgentMode;
+  private teamPlanOverride: TeamPlan | null = null;
+  private readonly eventBus: EventBus | null;
   private readonly skills: AgentSkill[];
   private readonly effort: EffortProfile | null;
   private readonly routingOverrides?: Partial<RoutingPolicy>;
@@ -198,6 +216,7 @@ export class CodingAgent {
     if (!task) throw new Error(`Task not found: ${options.taskId}`);
     this.task = task;
     this.hooks = options.hooks ?? {};
+    this.eventBus = options.eventBus === null ? null : (options.eventBus ?? new EventBus());
     this.authority = options.authority ?? DEFAULT_AUTHORITY;
     // A model the user picked after this task last ran must be attempted
     // before any saved task model or fallback (including on resume).
@@ -229,8 +248,28 @@ export class CodingAgent {
     this.contextFactory =
       options.contextFactory ?? ((profile, keyIndex) => createProfileContext(profile, keyIndex));
     const requestedMode = options.mode ?? 'build';
-    this.mode = requestedMode === 'auto' ? classifyAgentMode(task.summary ?? '') : requestedMode;
-    if (requestedMode === 'auto' && this.mode !== 'auto') {
+    const requestText = task.userRequest || task.summary || '';
+    const plan = resolveTeamPlan(requestText, requestedMode);
+    this.mode = requestedMode === 'auto' ? classifyAgentMode(requestText) : requestedMode;
+    if (
+      !options.disableAutoTeam &&
+      plan.roles.length > 1 &&
+      requestedMode === 'auto'
+    ) {
+      this.teamPlanOverride = plan;
+      this.hooks.onNotice?.(
+        `Auto-selected ${plan.roles.length}-agent team: ${plan.roles.map((id) => TEAM_ROLES[id]!.label).join(' → ')}.`,
+      );
+    } else if (plan.roles.length === 1) {
+      const specialist = TEAM_ROLES[plan.roles[0]!]!;
+      if (requestedMode === 'auto') {
+        this.mode = specialist.mode;
+        this.hooks.onNotice?.(
+          `Auto-selected ${specialist.label.toLowerCase()} specialist for this task.`,
+        );
+      }
+    }
+    if (requestedMode === 'auto' && !this.teamPlanOverride && plan.roles.length !== 1) {
       this.hooks.onNotice?.(`Auto mode selected ${this.mode} for this task.`);
     }
     const installedPlugins = loadPlugins({
@@ -342,12 +381,12 @@ export class CodingAgent {
   async run(options: AgentRunOptions = {}): Promise<AgentResult> {
     // Team mode runs a full virtual organization as a sequence of specialized
     // stages, each reusing the normal agent loop with its own mode and model.
-    if (this.mode === 'team') return this.runTeam(options);
+    if (this.mode === 'team' || this.teamPlanOverride) return this.runTeam(options);
     const maxSteps = Math.max(1, Math.min(options.maxSteps ?? this.settings.agent.maxSteps, 200));
     try {
       await this.prepare(options);
       if (options.signal?.aborted) return this.halt('paused', 'Cancelled by user. Progress saved.');
-      await this.runPlannerIfEnabled();
+      if (!options.skipCollaboration) await this.runPlannerIfEnabled();
       this.setPhase('inspect');
       this.checkpoint('run-start');
 
@@ -412,7 +451,7 @@ export class CodingAgent {
             return this.halt('paused', 'Cancelled by user. Progress saved.');
           }
           if (completed || this.completionSummary) {
-            if (this.shouldRequestVerification()) {
+            if (!options.skipCollaboration && this.shouldRequestVerification()) {
               this.verificationNudged = true;
               this.completionSummary = null;
               this.finalResponse = null;
@@ -424,7 +463,7 @@ export class CodingAgent {
               this.checkpoint('verification-nudge');
               continue;
             }
-            const continueAfterTest = await this.testIfEnabled();
+            const continueAfterTest = options.skipCollaboration ? false : await this.testIfEnabled();
             if (continueAfterTest) {
               this.completionSummary = null;
               this.finalResponse = null;
@@ -432,7 +471,7 @@ export class CodingAgent {
               this.checkpoint('after-test');
               continue;
             }
-            const continueAfterReview = await this.reviewIfEnabled();
+            const continueAfterReview = options.skipCollaboration ? false : await this.reviewIfEnabled();
             if (continueAfterReview) {
               this.completionSummary = null;
               this.finalResponse = null;
@@ -465,7 +504,7 @@ export class CodingAgent {
         emptyResponses = 0;
         this.finalResponse = response.content;
         this.completionSummary = this.completionSummary ?? response.content.slice(0, 8000);
-        const continueAfterReview = await this.reviewIfEnabled();
+        const continueAfterReview = options.skipCollaboration ? false : await this.reviewIfEnabled();
         if (continueAfterReview) {
           this.completionSummary = null;
           this.finalResponse = null;
@@ -496,24 +535,114 @@ export class CodingAgent {
    * SAME task thread — so each member inherits the full transcript, plan,
    * checkpoints, quota failover and context compaction of its predecessor.
    */
+  /** Merge metadata into the freshest task row so parallel writes are not lost. */
+  private patchMetadata(patch: Record<string, unknown>): void {
+    const fresh = this.store.getTask(this.task.id);
+    if (!fresh) return;
+    this.task = this.store.updateTask(this.task.id, {
+      metadata: { ...(fresh.metadata ?? {}), ...patch },
+    });
+  }
+
+  private emitEvent(
+    type: AgentEventType,
+    agentId: string | undefined,
+    payload: Record<string, unknown>,
+  ): void {
+    if (!this.eventBus) return;
+    const safe: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(payload)) {
+      safe[key] = typeof value === 'string' ? redactSecrets(value).slice(0, 2_000) : value;
+    }
+    this.eventBus.emit({ type, taskId: this.task.id, agentId, payload: safe });
+  }
+
   private async runTeam(options: AgentRunOptions): Promise<AgentResult> {
     const originalRequest = this.task.userRequest || this.task.summary || '';
-    const roles = selectTeamRoles(originalRequest, this.mode);
+    const plan = this.teamPlanOverride ?? resolveTeamPlan(originalRequest, this.mode);
+    const saved = this.task.metadata.teamRun as TeamRunState | undefined;
+    const state: TeamRunState =
+      saved && Array.isArray(saved.roles) && saved.roles.length > 0
+        ? { ...saved, revisits: saved.revisits ?? {} }
+        : {
+            roles: [...plan.roles],
+            cursor: 0,
+            revisits: {},
+            stepsUsed: 0,
+            tokensUsed: 0,
+          };
+    const queue = state.roles.slice(state.cursor);
+    let contracts = (this.task.metadata.taskContracts as TaskContract[] | undefined) ?? [];
+    if (contracts.length === 0 || state.cursor === 0) {
+      contracts = createStageContracts(state.roles, originalRequest);
+      this.patchMetadata({ taskContracts: contracts });
+      for (const contract of contracts) {
+        this.emitEvent('task.created', contract.assignee, {
+          contractId: contract.id,
+          objective: contract.objective,
+          dependencies: contract.dependencies,
+        });
+      }
+    }
     const handoffs: string[] = [];
     const aggregate = { inputTokens: 0, outputTokens: 0 };
     let steps = 0;
     let lastResult: AgentResult | null = null;
 
+    const baseStep = Math.max(2, Math.min(this.settings.agent.maxSteps * 2, 8));
+    const baseToken = Math.min(
+      120_000,
+      Math.max(
+        20_000,
+        Math.round(
+          this.settings.agent.contextBudgetRatio * 120_000 * Math.min(state.roles.length, 4),
+        ),
+      ),
+    );
+    const remaining = saved ? Math.max(0, state.roles.length - state.cursor) : 0;
+    state.stepBudget = (saved?.stepBudget ?? 0) + baseStep + remaining;
+    state.tokenBudget = (saved?.tokenBudget ?? 0) + baseToken;
+    const estimatedTokens = Math.min(baseToken, state.roles.length * 1_500);
+    const tokenBudget = state.tokenBudget!;
+    const stepBudget = state.stepBudget!;
+    this.hooks.onEstimate?.({
+      stages: state.roles.length,
+      estimatedTokens,
+      tokenBudget,
+      stepBudget,
+    });
+
     this.hooks.onNotice?.(
-      `ComiCode Company assembled (${roles.length} departments): ${roles.map((role) => role.label).join(' → ')}.`,
+      `ComiCode Company assembled (${state.roles.length} stages): ${state.roles.map((id) => TEAM_ROLES[id]!.label).join(' → ')}.`,
     );
 
-    for (let index = 0; index < roles.length; index += 1) {
+    while (queue.length > 0) {
       if (options.signal?.aborted) {
         return this.halt('paused', 'Cancelled by user. Progress saved.');
       }
-      const role: TeamRole = roles[index]!;
-
+      if (state.stepsUsed >= stepBudget || state.tokensUsed >= tokenBudget) {
+        this.store.updateTask(this.task.id, {
+          metadata: { ...this.task.metadata, teamRun: state },
+        });
+        return this.halt(
+          'paused',
+          `Team credit budget reached (${state.stepsUsed}/${stepBudget} steps, ${state.tokensUsed}/${tokenBudget} tokens). Progress saved — resume to continue.`,
+        );
+      }
+      const roleId = queue.shift()!;
+      const role: TeamRole = TEAM_ROLES[roleId]!;
+      const agentId = resolveAgentId(roleId);
+      const contract = contracts.find((item) => item.assignee === agentId && item.status === 'ready');
+      const index = state.cursor;
+      if (contract) {
+        contracts = contracts.map((item) =>
+          item.id === contract.id ? { ...item, status: 'in_progress' } : item,
+        );
+        this.emitEvent('task.assigned', agentId, {
+          contractId: contract.id,
+          objective: contract.objective,
+        });
+      }
       // Capability-aware model selection across every connected API.
       let stageModel: string | null = null;
       if (role.autoModel) {
@@ -539,6 +668,13 @@ export class CodingAgent {
           });
         }
       }
+      this.emitEvent('agent.started', agentId, {
+        roleId,
+        label: role.label,
+        department: role.department,
+        model: stageModel?.split('/').at(-1) ?? null,
+        provider: stageModel?.split('/')[0] ?? null,
+      });
 
       // A previous stage ends with status=completed; reopen the task for this one.
       this.store.updateTask(this.task.id, {
@@ -547,12 +683,12 @@ export class CodingAgent {
         error: null,
         completedAt: null,
       });
-      const stagePrompt = buildStagePrompt(role, originalRequest, handoffs);
+      const stagePrompt = buildStagePrompt(role, originalRequest, handoffs.at(-1) ?? null);
       this.store.appendMessage(this.task.id, { role: 'user', content: stagePrompt });
 
       this.hooks.onStage?.({
         index: index + 1,
-        total: roles.length,
+        total: state.roles.length,
         roleId: role.id,
         label: role.label,
         department: role.department,
@@ -562,13 +698,13 @@ export class CodingAgent {
         model: stageModel,
       });
       this.hooks.onNotice?.(
-        `[${index + 1}/${roles.length}] ${role.icon} ${role.label} · ${role.department}` +
+        `[${index + 1}/${state.roles.length}] ${role.icon} ${role.label} · ${role.department}` +
           (stageModel ? ` · ${stageModel}` : '') +
           ` — ${role.capabilityHint}`,
       );
 
       let stageSummary = '';
-      const isLast = index === roles.length - 1;
+      const isLast = queue.length === 0;
       try {
         const stageAgent = new CodingAgent({
           store: this.store,
@@ -576,28 +712,60 @@ export class CodingAgent {
           authority: this.authority,
           settings: this.settings,
           mode: role.mode,
+          disableAutoTeam: true,
+          eventBus: null,
           routingOverrides: this.routingOverrides,
           adapterFactory: this.adapterFactory,
           contextFactory: this.contextFactory,
           hooks: {
             ...this.hooks,
             onStage: undefined,
+            onToolStart: (call) => {
+              this.hooks.onToolStart?.(call);
+              this.emitEvent('tool.started', agentId, { name: call.name, toolCallId: call.id ?? '' });
+            },
+            onToolResult: (call, result) => {
+              this.hooks.onToolResult?.(call, result);
+              this.emitEvent(result.ok ? 'tool.completed' : 'tool.failed', agentId, {
+                name: call.name,
+                ok: result.ok,
+                content: result.content.slice(0, 400),
+              });
+            },
             onTaskComplete: (summary) => {
               stageSummary = summary ?? '';
               if (isLast) this.hooks.onTaskComplete?.(summary);
             },
           },
         });
-        const result = await stageAgent.run(options);
+        const result = await stageAgent.run({ ...options, skipCollaboration: true });
         lastResult = result;
         aggregate.inputTokens += result.usage.inputTokens;
         aggregate.outputTokens += result.usage.outputTokens;
         steps += result.steps;
 
         if (result.status !== 'completed') {
+          this.emitEvent('agent.failed', agentId, {
+            roleId,
+            reason: result.pauseReason ?? result.summary ?? 'stage did not complete',
+          });
+          if (contract) {
+            contracts = contracts.map((item) =>
+              item.id === contract.id
+                ? closeContract(item, result.pauseReason ?? result.summary ?? 'failed', false)
+                : item,
+            );
+            this.emitEvent('tool.failed', agentId, { contractId: contract.id });
+          }
+          state.cursor = index;
+          this.patchMetadata({
+            taskContracts: contracts,
+            teamRun: state,
+            agentEvents: this.eventBus?.history(500) ?? [],
+          });
           this.hooks.onStage?.({
             index: index + 1,
-            total: roles.length,
+            total: state.roles.length,
             roleId: role.id,
             label: role.label,
             department: role.department,
@@ -621,9 +789,56 @@ export class CodingAgent {
         );
         handoffs.push(note);
         this.store.appendMessage(this.task.id, { role: 'system', content: note });
+        this.emitEvent('agent.completed', agentId, {
+          roleId,
+          summary: stageSummary || result.summary || '',
+        });
+        if (contract) {
+          contracts = contracts.map((item) =>
+            item.id === contract.id
+              ? closeContract(item, stageSummary || result.summary || 'completed', true)
+              : item,
+          );
+          this.emitEvent('task.completed', agentId, { contractId: contract.id });
+        }
+        const nextRole = queue[0] ? TEAM_ROLES[queue[0]] : null;
+        if (nextRole) {
+          this.emitEvent('agent.handoff', agentId, {
+            from: role.label,
+            to: nextRole.label,
+            reason: stageSummary.slice(0, 300) || result.summary || '',
+          });
+        }
+
+        const directive = parseStageDirective(stageSummary || result.summary || '');
+        if (
+          directive.revisit &&
+          (state.revisits[directive.revisit] ?? 0) < plan.revisitLimit &&
+          state.roles.filter((id) => id === directive.revisit).length < 3 &&
+          state.roles.length < 24
+        ) {
+          state.revisits[directive.revisit] = (state.revisits[directive.revisit] ?? 0) + 1;
+          state.roles.splice(index + 1, 0, directive.revisit);
+          queue.unshift(directive.revisit);
+          this.hooks.onNotice?.(
+            `${role.label} requested a revisit of ${TEAM_ROLES[directive.revisit]!.label}.`,
+          );
+        }
+        state.cursor = index + 1;
+        state.stepsUsed += result.steps;
+        state.tokensUsed += result.usage.inputTokens + result.usage.outputTokens;
+        this.patchMetadata({
+          teamRun: state,
+          taskContracts: contracts,
+          agentEvents: this.eventBus?.history(500) ?? [],
+        });
+        if (queue.length > 0) {
+          compactTask(this.store, this.task.id);
+          this.task = this.store.getTask(this.task.id) ?? this.task;
+        }
         this.hooks.onStage?.({
           index: index + 1,
-          total: roles.length,
+          total: state.roles.length,
           roleId: role.id,
           label: role.label,
           department: role.department,
@@ -635,9 +850,10 @@ export class CodingAgent {
       } catch (error) {
         const message = redactSecrets(error instanceof Error ? error.message : String(error));
         logger.warn(`Team stage ${role.id} failed: ${message}`);
+        this.emitEvent('agent.failed', agentId, { roleId, reason: message });
         this.hooks.onStage?.({
           index: index + 1,
-          total: roles.length,
+          total: state.roles.length,
           roleId: role.id,
           label: role.label,
           department: role.department,
@@ -650,6 +866,11 @@ export class CodingAgent {
       }
     }
 
+    this.patchMetadata({
+      teamRun: null,
+      taskContracts: contracts,
+      agentEvents: this.eventBus?.history(500) ?? [],
+    });
     return {
       status: 'completed',
       taskId: this.task.id,

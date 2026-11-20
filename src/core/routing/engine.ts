@@ -96,6 +96,7 @@ interface CandidateMeta {
   access: AccessClassification;
   isDefaultModel: boolean;
   sameModel: boolean;
+  exactModel: boolean;
   profile: ProviderProfile;
   model: ModelInfo;
 }
@@ -259,7 +260,7 @@ export function buildRoutingOutcome(request: RoutingRequest): RoutingOutcome {
   const addCandidate = (
     profile: ProviderProfile,
     model: ModelInfo,
-    options: { explicit: boolean; isDefaultModel: boolean; sameModel: boolean },
+    options: { explicit: boolean; isDefaultModel: boolean; sameModel: boolean; exactModel?: boolean },
   ): void => {
     if (!eligibleProfileIds.has(profile.id)) return;
     const key = candidateKey(profile.id, model.modelId);
@@ -291,6 +292,7 @@ export function buildRoutingOutcome(request: RoutingRequest): RoutingOutcome {
       access,
       isDefaultModel: options.isDefaultModel,
       sameModel: options.sameModel,
+      exactModel: options.exactModel === true,
       profile,
       model,
     });
@@ -312,6 +314,38 @@ export function buildRoutingOutcome(request: RoutingRequest): RoutingOutcome {
         explicit: true,
         isDefaultModel: true,
         sameModel: true,
+      });
+    }
+  }
+
+  // 1b) The exact same model on ANY connected provider outranks a different
+  // model on the current provider. Profiles where that model id was never
+  // discovered still get a synthetic candidate so a quota failure can be
+  // recovered on a different API that serves the same model.
+  if (currentModelId) {
+    const normalized = currentModelId.trim().toLowerCase();
+    for (const profile of eligibleProfiles) {
+      const discovered =
+        findModel(request, profile, currentModelId) ??
+        request.models.find(
+          (candidate) =>
+            candidate.providerId === profile.providerId &&
+            candidate.modelId.trim().toLowerCase() === normalized &&
+            (candidate.profileId === null || candidate.profileId === profile.id),
+        ) ??
+        null;
+      // Only custom/OpenAI-compatible gateways accept arbitrary model ids.
+      // Fixed catalogs (gemini, groq, openai) cannot serve a model they never
+      // advertised, so a synthetic candidate there would produce a bad request.
+      if (!discovered && profile.providerId !== 'custom' && profile.providerId !== 'openrouter') {
+        continue;
+      }
+      const model = discovered ?? syntheticModel(profile, currentModelId);
+      addCandidate(profile, model, {
+        explicit: false,
+        isDefaultModel: profile.defaultModel === currentModelId,
+        sameModel: true,
+        exactModel: true,
       });
     }
   }
@@ -456,7 +490,8 @@ export function buildRoutingOutcome(request: RoutingRequest): RoutingOutcome {
     const preferredIndex = request.policy.preferredProviders.indexOf(entry.profile.providerId);
     if (preferredIndex !== -1) score += 50_000 - preferredIndex * 100;
     score += accessBucket(entry.access, request.policy.preferFree) * 5_000;
-    if (entry.sameModel && entry.profile.providerId === sameProviderId) score += 2_000;
+    if (entry.exactModel) score += 150_000;
+    else if (entry.sameModel) score += 2_000;
     if (entry.isDefaultModel) score += 800;
     score += modelScore(entry.model, request.taskType, request.policy.preferCoding);
     score += Math.max(0, 300 - profilePriority(entry.profile));
@@ -469,6 +504,12 @@ export function buildRoutingOutcome(request: RoutingRequest): RoutingOutcome {
       const rankValue = rank(entry);
       let reason: string;
       if (entry.explicit) reason = 'Explicitly selected model';
+      else if (entry.exactModel) {
+        reason =
+          entry.profile.providerId === sameProviderId
+            ? `Same-provider exact model fallback: ${profileDisplay(entry.profile)}`
+            : `Same model on another provider: ${profileDisplay(entry.profile)}`;
+      }
       else if (entry.profile.providerId === sameProviderId) {
         reason = `Same-provider fallback: ${profileDisplay(entry.profile)}`;
       } else {
@@ -487,8 +528,14 @@ export function buildRoutingOutcome(request: RoutingRequest): RoutingOutcome {
     })
     .sort((a, b) => b.rank - a.rank || a.key.localeCompare(b.key));
 
-  const limit =
-    Math.max(1, request.policy.maxFallbacks) + (currentProfile && currentModelId ? 1 : 0);
+  const providerCount = new Set(eligibleProfiles.map((profile) => profile.providerId)).size;
+  const limit = Math.min(
+    24,
+    Math.max(
+      Math.max(1, request.policy.maxFallbacks) + (currentProfile && currentModelId ? 1 : 0),
+      providerCount,
+    ),
+  );
   const chain = ranked.slice(0, limit);
 
   if (chain.length === 0) {

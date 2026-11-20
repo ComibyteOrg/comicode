@@ -33,9 +33,11 @@ describe('virtual company teams', () => {
   });
 
   it('builds a stage prompt that carries the previous handoff', () => {
-    const prompt = buildStagePrompt(TEAM_ROLES.engineering!, 'Build a feature', [
+    const prompt = buildStagePrompt(
+      TEAM_ROLES.engineering!,
+      'Build a feature',
       'Previous stage stopped after designing the schema.',
-    ]);
+    );
     expect(prompt).toContain('Build a feature');
     expect(prompt).toContain('Previous stage stopped after designing the schema.');
     expect(prompt).toContain('SENIOR ENGINEER');

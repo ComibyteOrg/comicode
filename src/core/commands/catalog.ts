@@ -277,7 +277,7 @@ export const COMMAND_SPECS: CommandSpec[] = [
     description:
       'Choose how the agent behaves: auto (classify), build, plan, debug, architect, review, refactor, test, docs, design, security, or explain. Tab also cycles modes.',
     usage: '/mode [mode]',
-    aliases: ['agent'],
+    aliases: [],
     arguments: [
       {
         name: 'mode',
@@ -327,6 +327,54 @@ export const COMMAND_SPECS: CommandSpec[] = [
     usage: '/workspace',
     aliases: ['home'],
     category: 'navigation',
+    surfaces: ['slash'],
+  },
+  {
+    id: 'agents',
+    summary: 'Show the 14-agent roster',
+    description: 'List every specialist available in the workspace team.',
+    usage: '/agents',
+    category: 'agent',
+    surfaces: ['slash'],
+  },
+  {
+    id: 'agent',
+    summary: 'Inspect a specialist agent',
+    description: 'Select an agent by id or name without running it.',
+    usage: '/agent <name>',
+    category: 'agent',
+    surfaces: ['slash'],
+  },
+  {
+    id: 'plan',
+    summary: 'Show the current plan',
+    description: 'Describe how to inspect the active implementation plan.',
+    usage: '/plan',
+    category: 'agent',
+    surfaces: ['slash'],
+  },
+  {
+    id: 'activity',
+    summary: 'Show live agent activity',
+    description: 'Describe where the real-time activity feed is located.',
+    usage: '/activity',
+    category: 'agent',
+    surfaces: ['slash'],
+  },
+  {
+    id: 'review',
+    summary: 'Request a review stage',
+    description: 'Explain when the Code Reviewer will be assigned.',
+    usage: '/review',
+    category: 'agent',
+    surfaces: ['slash'],
+  },
+  {
+    id: 'test',
+    summary: 'Request a QA stage',
+    description: 'Explain when the QA Engineer will be assigned.',
+    usage: '/test',
+    category: 'agent',
     surfaces: ['slash'],
   },
   {

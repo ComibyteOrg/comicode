@@ -65,6 +65,8 @@ describe('TUI application', () => {
       await send(ESC);
       if (!frame().includes('esc close')) return;
     }
+    // Clear any composer text left from a previous test.
+    await send(String.fromCharCode(127).repeat(48));
   };
 
   it('renders the workspace composer', () => {
@@ -180,7 +182,7 @@ describe('TUI application', () => {
     stdout.clear();
     await send(String.fromCharCode(25));
     expect(frame()).toContain('SELECT MODE');
-    expect(frame()).toContain('drag to highlight');
+    expect(frame()).toContain('shift+←/→ characters');
     stdout.clear();
     await send(ESC);
     expect(frame()).not.toContain('SELECT MODE');
