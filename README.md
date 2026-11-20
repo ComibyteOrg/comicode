@@ -62,6 +62,33 @@ optional web dashboard reuses the same `node_modules` — no second install.
 
 ---
 
+## The multi-agent workspace
+
+`comicode` opens a **mission-control workspace** built around a real 14-agent
+team. Every status in the interface comes from a runtime event — nothing is
+decorative:
+
+- **Team sidebar** (wide terminals): Team Lead, Planner, Research, UI/UX
+  Designer, Frontend, Backend, Database Architect, Mobile, Debugging
+  Specialist, QA, Security, Code Reviewer, DevOps and Documentation Writer.
+- **Activity panel**: live `agent.started`, `agent.progress`, `agent.handoff`,
+  `agent.completed`, `agent.failed`, `task.*` and `tool.*` events, including
+  real handoffs such as `Frontend → QA`.
+- **Agent inspector** (`i`): role, status, configured model/provider (never
+  API keys), tools, assigned/completed tasks and recent events.
+- **Task board** (`t`): structured contracts with assignee, dependencies,
+  priority, status and expected vs actual result.
+- **Keyboard**: `tab` cycles focus between agents, workspace and activity;
+  `↑/↓` selects an agent; `esc` closes overlays.
+
+Slash commands: `/agents`, `/agent <name>`, `/plan`, `/tasks`, `/activity`,
+`/review`, `/test`, `/models`, `/providers`, `/settings`. In Auto mode a
+single-focus prompt picks one specialist; multi-part prompts assemble the team
+with the Team Lead coordinating (it makes no model call of its own). Execution
+is sequential — ComiCode never claims agents ran in parallel.
+
+---
+
 ## Connect your APIs
 
 ComiCode needs at least one provider before it can do anything.

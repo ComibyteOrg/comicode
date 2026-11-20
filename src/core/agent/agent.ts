@@ -754,7 +754,11 @@ export class CodingAgent {
           });
           state.cursor = index;
           this.store.updateTask(this.task.id, {
-            metadata: { ...this.task.metadata, teamRun: state },
+            metadata: {
+              ...this.task.metadata,
+              teamRun: state,
+              agentEvents: this.eventBus?.history(500) ?? [],
+            },
           });
           this.hooks.onStage?.({
             index: index + 1,
@@ -821,7 +825,12 @@ export class CodingAgent {
         state.stepsUsed += result.steps;
         state.tokensUsed += result.usage.inputTokens + result.usage.outputTokens;
         this.store.updateTask(this.task.id, {
-          metadata: { ...this.task.metadata, teamRun: state, taskContracts: contracts },
+          metadata: {
+            ...this.task.metadata,
+            teamRun: state,
+            taskContracts: contracts,
+            agentEvents: this.eventBus?.history(500) ?? [],
+          },
         });
         if (queue.length > 0) {
           compactTask(this.store, this.task.id);

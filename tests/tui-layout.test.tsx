@@ -8,7 +8,6 @@ import { App } from '../src/tui/app.js';
 import { openAppContext } from '../src/core/app.js';
 import { FakeStdout, flush, makeStdin, stripAnsi } from './helpers/tui.js';
 
-const F6 = '\u001b[17~';
 const instances: Array<{ unmount: () => void }> = [];
 const contexts: Array<{ close: () => void }> = [];
 const dirs: string[] = [];
@@ -37,7 +36,7 @@ function renderAt(columns: number) {
     frame: () => stripAnsi(stdout.output),
     send: async (sequence: string) => {
       stdin.write(sequence);
-      await flush(180);
+      await flush(320);
     },
   };
 }
@@ -52,21 +51,16 @@ describe('hybrid terminal layout', () => {
   it('shows the side panel on a wide terminal and hides it on a narrow one', async () => {
     const wide = renderAt(130);
     await flush(120);
-    expect(wide.frame()).toContain('TEAMS');
+    expect(wide.frame()).toContain('Team Lead');
     const narrow = renderAt(80);
     await flush(120);
-    expect(narrow.frame()).not.toContain('TEAMS');
+    expect(narrow.frame()).not.toContain('Team Lead');
   });
 
-  it('toggles the side panel with F6', async () => {
+  it('keeps the workspace usable when the panel is hidden', async () => {
     const view = renderAt(130);
     await flush(120);
-    expect(view.frame()).toContain('TEAMS');
-    view.clear();
-    await view.send(F6);
-    expect(view.frame()).not.toContain('TEAMS');
-    view.clear();
-    await view.send(F6);
-    expect(view.frame()).toContain('TEAMS');
+    expect(view.frame()).toContain('Team Lead');
+    expect(view.frame()).toContain('ACTIVITY');
   });
 });

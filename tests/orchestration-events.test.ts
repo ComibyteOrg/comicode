@@ -131,4 +131,14 @@ describe('orchestration events', () => {
     expect(Array.isArray(contracts)).toBe(true);
     expect((contracts as unknown[]).length).toBeGreaterThan(1);
   });
+
+  it('persists a bounded event snapshot for restart recovery', async () => {
+    const { agent, store, task } = setup(false);
+    await agent.run();
+    const snapshot = store.getTask(task.id)?.metadata.agentEvents as AgentEvent[] | undefined;
+    expect(Array.isArray(snapshot)).toBe(true);
+    expect(snapshot!.length).toBeGreaterThan(1);
+    expect(snapshot!.length).toBeLessThanOrEqual(500);
+    expect(snapshot!.every((event) => typeof event.timestamp === 'string')).toBe(true);
+  });
 });

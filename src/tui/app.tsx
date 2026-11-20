@@ -86,7 +86,7 @@ function App({ context }: { context: AppContext }): React.ReactElement {
     setDialogStack((stack) => stack.slice(0, -1));
   }, []);
   const closeAllDialogs = useCallback(() => setDialogStack([]), []);
-  const showOutput = useCallback(
+  const _showOutput = useCallback(
     (title: string, text: string) => {
       setOutputContent({ title, text });
       openDialog('output');
@@ -457,6 +457,7 @@ function App({ context }: { context: AppContext }): React.ReactElement {
           resumeRequest={resumeRequest}
           selectionMode={selectionMode}
           onToggleSelection={toggleSelectionMode}
+          sidePanel={sidePanelVisible}
           onStatusChange={setStatus}
           notify={notify}
           refreshData={refreshData}

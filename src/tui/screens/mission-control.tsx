@@ -26,6 +26,7 @@ export interface MissionControlProps {
   resumeRequest?: ResumeRequest | null;
   selectionMode?: boolean;
   onToggleSelection?: () => void;
+  sidePanel?: boolean;
   onStatusChange?: (status: 'idle' | 'running' | 'completed' | 'paused' | 'failed') => void;
   notify?: (message: string) => void;
   refreshData?: () => void;
@@ -43,12 +44,19 @@ export function MissionControl({
   resumeRequest = null,
   selectionMode = false,
   onToggleSelection,
+  sidePanel = true,
 }: MissionControlProps): React.ReactElement {
   const { columns, rows, compact } = useLayout();
-  const [events, setEvents] = useState<AgentEvent[]>(() => eventBus.history(40));
+  const [events, setEvents] = useState<AgentEvent[]>(() => {
+    const tasks = context.store.listTasks({ projectPath: context.cwd, limit: 20 });
+    const saved = tasks.find((task) => Array.isArray(task.metadata.agentEvents))
+      ?.metadata.agentEvents as AgentEvent[] | undefined;
+    return [...(saved ?? []), ...eventBus.history(40)].slice(-200);
+  });
   const [focus, setFocus] = useState<FocusArea>('workspace');
   const [selectedAgent, setSelectedAgent] = useState(0);
   const [overlay, setOverlay] = useState<'inspector' | 'board' | null>(null);
+  const [agentsVisible, setAgentsVisible] = useState(sidePanel);
 
   useEffect(() => eventBus.subscribe((event) => {
     setEvents((previous) => [...previous.slice(-199), event]);
@@ -57,6 +65,10 @@ export function MissionControl({
   useInput(
     (input, key) => {
       if (!active) return;
+      if (input === '\u001b[17~') {
+        setAgentsVisible((visible) => !visible);
+        return;
+      }
       if (key.escape) {
         setOverlay(null);
         return;
@@ -86,7 +98,7 @@ export function MissionControl({
     { isActive: active },
   );
 
-  const showAgents = !compact && columns >= 112;
+  const showAgents = agentsVisible && !compact && columns >= 112;
   const recent = useMemo(() => events.slice(-12).reverse(), [events]);
   const contracts = useMemo<TaskContract[]>(() => {
     const tasks = context.store.listTasks({ projectPath: context.cwd, limit: 20 });
