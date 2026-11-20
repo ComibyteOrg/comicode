@@ -11356,7 +11356,7 @@ var init_agent = __esm({
         const requestText = task.userRequest || task.summary || "";
         const plan = resolveTeamPlan(requestText, requestedMode);
         this.mode = requestedMode === "auto" ? classifyAgentMode(requestText) : requestedMode;
-        if (!options.disableAutoTeam && plan.roles.length > 1 && (requestedMode === "auto" || requestedMode === "build")) {
+        if (!options.disableAutoTeam && plan.roles.length > 1 && requestedMode === "auto") {
           this.teamPlanOverride = plan;
           this.hooks.onNotice?.(
             `Auto-selected ${plan.roles.length}-agent team: ${plan.roles.map((id) => TEAM_ROLES[id].label).join(" \u2192 ")}.`
@@ -17930,6 +17930,54 @@ var init_catalog2 = __esm({
         surfaces: ["slash"]
       },
       {
+        id: "agents",
+        summary: "Show the 14-agent roster",
+        description: "List every specialist available in the workspace team.",
+        usage: "/agents",
+        category: "agent",
+        surfaces: ["slash"]
+      },
+      {
+        id: "agent",
+        summary: "Inspect a specialist agent",
+        description: "Select an agent by id or name without running it.",
+        usage: "/agent <name>",
+        category: "agent",
+        surfaces: ["slash"]
+      },
+      {
+        id: "plan",
+        summary: "Show the current plan",
+        description: "Describe how to inspect the active implementation plan.",
+        usage: "/plan",
+        category: "agent",
+        surfaces: ["slash"]
+      },
+      {
+        id: "activity",
+        summary: "Show live agent activity",
+        description: "Describe where the real-time activity feed is located.",
+        usage: "/activity",
+        category: "agent",
+        surfaces: ["slash"]
+      },
+      {
+        id: "review",
+        summary: "Request a review stage",
+        description: "Explain when the Code Reviewer will be assigned.",
+        usage: "/review",
+        category: "agent",
+        surfaces: ["slash"]
+      },
+      {
+        id: "test",
+        summary: "Request a QA stage",
+        description: "Explain when the QA Engineer will be assigned.",
+        usage: "/test",
+        category: "agent",
+        surfaces: ["slash"]
+      },
+      {
         id: "exit",
         summary: "Quit ComiCode",
         description: "Close the terminal UI cleanly.",
@@ -19883,6 +19931,9 @@ function MissionControl({
   eventBus,
   agentMode,
   onAgentMode,
+  onOpenDialog,
+  onShowOutput,
+  onQuit,
   onStatusChange,
   notify,
   refreshData,
@@ -20009,13 +20060,14 @@ function MissionControl({
               },
               onCycleScreen: () => {
               },
-              onOpenDialog: () => {
-              },
-              onQuit: () => {
-              },
+              onOpenDialog: onOpenDialog ?? (() => {
+              }),
+              onQuit: onQuit ?? (() => {
+              }),
               resumeRequest,
               selectionMode,
               onToggleSelection,
+              onShowOutput,
               notify: notify ?? (() => {
               }),
               refreshData: refreshData ?? (() => {
@@ -23979,6 +24031,12 @@ function App({ context }) {
         selectionMode,
         onToggleSelection: toggleSelectionMode,
         sidePanel: sidePanelVisible,
+        onOpenDialog: (dialog) => {
+          if (dialog) openDialog(dialog);
+          else closeDialog();
+        },
+        onShowOutput: _showOutput,
+        onQuit: quit,
         onStatusChange: setStatus,
         notify,
         refreshData

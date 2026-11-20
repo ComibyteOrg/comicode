@@ -49,10 +49,15 @@ describe('terminal highlighting', () => {
   });
 
   const frame = (): string => stripAnsi(stdout.output);
+  const enterSelectionMode = async (): Promise<void> => {
+    stdin.write(CTRL_Y);
+    for (let attempt = 0; attempt < 12 && !frame().includes('SELECT MODE'); attempt += 1) {
+      await flush(80);
+    }
+  };
 
   it('sends the select-all key to the selection, not the composer', async () => {
-    stdin.write(CTRL_Y);
-    await flush();
+    await enterSelectionMode();
     stdout.clear();
     stdin.write('a');
     await flush();
@@ -61,8 +66,7 @@ describe('terminal highlighting', () => {
   });
 
   it('does not arm quit when copying with ctrl+c in select mode', async () => {
-    stdin.write(CTRL_Y);
-    await flush();
+    await enterSelectionMode();
     stdout.clear();
     stdin.write(String.fromCharCode(3));
     await flush();
