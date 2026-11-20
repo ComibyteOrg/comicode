@@ -4,6 +4,15 @@ All notable changes to ComiCode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 semantic versioning.
 
+## [0.2.1] - 2026-11-20
+
+### Fixed
+
+- `comicode update` now installs GitHub release tarballs instead of `github:`
+  specs, avoiding Windows `ENOTEMPTY`/dangling-junction failures during git
+  dependency preparation.
+- Documented the manual recovery steps in the README.
+
 ## [0.2.0] - 2026-11-20
 
 ### Added

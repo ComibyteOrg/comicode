@@ -484,6 +484,23 @@ a demo mode (`?demo=1`). See [web/README.md](web/README.md).
 | `comicode settings ...` | Routing, agent and UI settings |
 | `comicode doctor` | Diagnose Node, storage, credentials, providers |
 | `comicode update [--check]` | Install the latest release |
+
+### Troubleshooting an update on Windows
+
+If `comicode update` reports an error like `ENOTEMPTY ... rmdir ... es-toolkit`
+or `git dep preparation failed`, a previous global install left a broken
+junction in `%APPDATA%\npm\node_modules\comicode`. Clean it and install the
+release tarball directly — no npm publish or fresh clone is needed:
+
+```bat
+npm uninstall -g comicode
+rmdir "%APPDATA%\npm\node_modules\comicode"
+npm install -g https://github.com/ComibyteOrg/comicode/archive/refs/tags/v0.2.0.tar.gz
+comicode --version
+```
+
+`comicode update` uses release tarballs from v0.2.1 onward, so this situation
+should not recur after you have upgraded once with the command above.
 | `comicode data ...` | Storage stats, cleanup, full data deletion |
 
 Most commands accept `--json`. Run `comicode <command> --help` for flags.

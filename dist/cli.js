@@ -14,7 +14,7 @@ var VERSION, GITHUB_REPOSITORY;
 var init_version = __esm({
   "src/version.ts"() {
     "use strict";
-    VERSION = true ? "0.2.0" : "0.1.0-dev";
+    VERSION = true ? "0.2.1" : "0.1.0-dev";
     GITHUB_REPOSITORY = "https://github.com/ComibyteOrg/comicode";
   }
 });
@@ -14975,6 +14975,16 @@ var init_init = __esm({
 
 // src/cli/commands/system.ts
 import { existsSync as existsSync12, statSync as statSync11 } from "fs";
+function releaseInstallSpecs(repo, latest, latestRef) {
+  if (latestRef) {
+    return [
+      `https://github.com/${repo}/archive/refs/tags/${latestRef}.tar.gz`,
+      `github:${repo}#${latestRef}`,
+      `github:${repo}`
+    ];
+  }
+  return [`comicode@${latest}`, `github:${repo}`];
+}
 function compareVersions(left, right) {
   const a = left.split(".").map((part) => Number(part.replace(/\D/g, "")) || 0);
   const b = right.split(".").map((part) => Number(part.replace(/\D/g, "")) || 0);
@@ -15411,7 +15421,7 @@ function registerSystemCommands(program) {
       return;
     }
     const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
-    const specs = latestRef ? [`github:${repo}#${latestRef}`, `github:${repo}`] : [`comicode@${latest}`, `github:${repo}`];
+    const specs = releaseInstallSpecs(repo, latest, latestRef);
     let installed = false;
     for (const spec of specs) {
       console.log(dim(`Installing ${spec} \u2026`));

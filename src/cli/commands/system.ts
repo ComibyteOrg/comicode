@@ -32,6 +32,27 @@ import {
 import { isInteractive, promptSecret, promptText } from '../prompt.js';
 import { resolveProfile, withStore } from '../shared.js';
 
+/**
+ * Install specs for an update. GitHub release tarballs are preferred over
+ * `github:` specs: the latter run npm's git-dependency preparation on Windows,
+ * which can leave a dangling junction in the global node_modules directory and
+ * fail with ENOTEMPTY while removing nested dependency folders.
+ */
+export function releaseInstallSpecs(
+  repo: string,
+  latest: string,
+  latestRef: string | null,
+): string[] {
+  if (latestRef) {
+    return [
+      `https://github.com/${repo}/archive/refs/tags/${latestRef}.tar.gz`,
+      `github:${repo}#${latestRef}`,
+      `github:${repo}`,
+    ];
+  }
+  return [`comicode@${latest}`, `github:${repo}`];
+}
+
 function compareVersions(left: string, right: string): number {
   const a = left.split('.').map((part) => Number(part.replace(/\D/g, '')) || 0);
   const b = right.split('.').map((part) => Number(part.replace(/\D/g, '')) || 0);
@@ -558,10 +579,8 @@ export function registerSystemCommands(program: Command): void {
         return;
       }
       const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-      // Install the exact release tag when one exists; fall back to main HEAD.
-      const specs = latestRef
-        ? [`github:${repo}#${latestRef}`, `github:${repo}`]
-        : [`comicode@${latest}`, `github:${repo}`];
+      // Install the exact release tarball when a tag exists; fall back to git.
+      const specs = releaseInstallSpecs(repo, latest, latestRef);
       let installed = false;
       for (const spec of specs) {
         console.log(dim(`Installing ${spec} …`));
