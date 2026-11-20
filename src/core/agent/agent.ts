@@ -251,10 +251,17 @@ export class CodingAgent {
     const requestText = task.userRequest || task.summary || '';
     const plan = resolveTeamPlan(requestText, requestedMode);
     this.mode = requestedMode === 'auto' ? classifyAgentMode(requestText) : requestedMode;
+    const words = requestText.trim().split(/\s+/).filter(Boolean);
+    const explicitTeam = /\b(full team|whole team|full organization|all teams|marketing team|ecommerce|e-commerce)\b/i.test(requestText);
+    const multiPart =
+      explicitTeam ||
+      (words.length >= 6 &&
+        /\b(build|create|implement|add|design|fix|debug|audit|deploy|document|write)\b/i.test(requestText));
     if (
       !options.disableAutoTeam &&
       plan.roles.length > 1 &&
-      requestedMode === 'auto'
+      requestedMode === 'auto' &&
+      multiPart
     ) {
       this.teamPlanOverride = plan;
       this.hooks.onNotice?.(

@@ -66,6 +66,7 @@ export function MissionControl({
   const [selectedAgent, setSelectedAgent] = useState(0);
   const [overlay, setOverlay] = useState<'inspector' | 'board' | null>(null);
   const [agentsVisible, setAgentsVisible] = useState(sidePanel);
+  const [activityVisible, setActivityVisible] = useState(columns >= 130);
 
   useEffect(() => eventBus.subscribe((event) => {
     setEvents((previous) => [...previous.slice(-199), event]);
@@ -76,6 +77,10 @@ export function MissionControl({
       if (!active) return;
       if (input === '\u001b[17~') {
         setAgentsVisible((visible) => !visible);
+        return;
+      }
+      if (input === '\u001b[18~') {
+        setActivityVisible((visible) => !visible);
         return;
       }
       if (key.escape) {
@@ -108,6 +113,8 @@ export function MissionControl({
   );
 
   const showAgents = agentsVisible && !compact && columns >= 112;
+  const showActivity = activityVisible && !compact && columns >= 100;
+  const sideWidths = (showAgents ? 24 : 0) + (showActivity ? 26 : 0);
   const recent = useMemo(() => events.slice(-12).reverse(), [events]);
   const contracts = useMemo<TaskContract[]>(() => {
     const tasks = context.store.listTasks({ projectPath: context.cwd, limit: 20 });
@@ -124,7 +131,7 @@ export function MissionControl({
       <Box flexDirection="row" flexGrow={1} overflow="hidden">
         {showAgents ? (
           <Box
-            width={26}
+            width={22}
             flexDirection="column"
             flexShrink={0}
             borderStyle="round"
@@ -177,44 +184,46 @@ export function MissionControl({
             agentMode={agentMode}
             onAgentMode={onAgentMode}
             eventBus={eventBus}
-            contentWidth={Math.max(24, columns - (showAgents ? 28 : 0) - 34)}
+            contentWidth={Math.max(24, columns - sideWidths - 6)}
           />
         </Box>
 
-        <Box
-          width={30}
-          flexDirection="column"
-          flexShrink={0}
-          borderStyle="round"
-          borderColor={focus === 'activity' ? theme.accent : theme.border}
-          paddingX={1}
-          overflow="hidden"
-        >
-          <Text color={theme.accent} bold>
-            {glyph.dot} ACTIVITY
-          </Text>
-          <Text color={theme.faint} dimColor>
-            {events.length} events · real runtime
-          </Text>
-          {recent.map((event, index) => (
-            <Text key={`${event.timestamp}-${index}`} color={theme.muted} wrap="truncate">
-              {event.type === 'agent.handoff'
-                ? `${String(event.payload.from ?? '')} → ${String(event.payload.to ?? '')}`
-                : event.type.startsWith('tool.')
-                  ? `${event.type.replace('tool.', '')} ${String(event.payload.name ?? '')}`
-                  : `${event.type.replace('agent.', '').replace('task.', '')} ${event.agentId ?? ''}`}
+        {showActivity ? (
+          <Box
+            width={24}
+            flexDirection="column"
+            flexShrink={0}
+            borderStyle="round"
+            borderColor={focus === 'activity' ? theme.accent : theme.border}
+            paddingX={1}
+            overflow="hidden"
+          >
+            <Text color={theme.accent} bold>
+              {glyph.dot} ACTIVITY
             </Text>
-          ))}
-          {recent.length === 0 ? (
             <Text color={theme.faint} dimColor>
-              Waiting for agent activity…
+              {events.length} events · real runtime
             </Text>
-          ) : null}
-        </Box>
+            {recent.map((event, index) => (
+              <Text key={`${event.timestamp}-${index}`} color={theme.muted} wrap="truncate">
+                {event.type === 'agent.handoff'
+                  ? `${String(event.payload.from ?? '')} → ${String(event.payload.to ?? '')}`
+                  : event.type.startsWith('tool.')
+                    ? `${event.type.replace('tool.', '')} ${String(event.payload.name ?? '')}`
+                    : `${event.type.replace('agent.', '').replace('task.', '')} ${event.agentId ?? ''}`}
+              </Text>
+            ))}
+            {recent.length === 0 ? (
+              <Text color={theme.faint} dimColor>
+                Waiting for agent activity…
+              </Text>
+            ) : null}
+          </Box>
+        ) : null}
       </Box>
       <Box flexShrink={0} paddingX={1}>
         <Text color={theme.faint} wrap="truncate">
-          tab focus {focus} · ↑/↓ agents · i inspect · t tasks · esc close · {rows} rows
+          tab focus {focus} · ↑/↓ agents · i inspect · t tasks · f6 team · f7 activity · esc close · {rows} rows
         </Text>
       </Box>
       {overlay === 'inspector' ? (

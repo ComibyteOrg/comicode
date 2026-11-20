@@ -14,7 +14,7 @@ var VERSION, GITHUB_REPOSITORY;
 var init_version = __esm({
   "src/version.ts"() {
     "use strict";
-    VERSION = true ? "0.2.2" : "0.1.0-dev";
+    VERSION = true ? "0.2.3" : "0.1.0-dev";
     GITHUB_REPOSITORY = "https://github.com/ComibyteOrg/comicode";
   }
 });
@@ -2954,7 +2954,9 @@ var init_settings = __esm({
          * (pgup/pgdn, ctrl+↑/↓) always works. Enable it in settings if wheel
          * scrolling matters more — then use Shift+drag or ctrl+y to copy.
          */
-        mouseScroll: z2.boolean().default(true)
+        // Off by default so terminal-native click-drag text selection works.
+        // Wheel scrolling still works through DECSET 1007 alternate scroll.
+        mouseScroll: z2.boolean().default(false)
       }).prefault({}),
       routing: RoutingPolicySchema.prefault({}),
       agent: AgentSettingsSchema.prefault({}),
@@ -11356,7 +11358,10 @@ var init_agent = __esm({
         const requestText = task.userRequest || task.summary || "";
         const plan = resolveTeamPlan(requestText, requestedMode);
         this.mode = requestedMode === "auto" ? classifyAgentMode(requestText) : requestedMode;
-        if (!options.disableAutoTeam && plan.roles.length > 1 && requestedMode === "auto") {
+        const words = requestText.trim().split(/\s+/).filter(Boolean);
+        const explicitTeam = /\b(full team|whole team|full organization|all teams|marketing team|ecommerce|e-commerce)\b/i.test(requestText);
+        const multiPart = explicitTeam || words.length >= 6 && /\b(build|create|implement|add|design|fix|debug|audit|deploy|document|write)\b/i.test(requestText);
+        if (!options.disableAutoTeam && plan.roles.length > 1 && requestedMode === "auto" && multiPart) {
           this.teamPlanOverride = plan;
           this.hooks.onNotice?.(
             `Auto-selected ${plan.roles.length}-agent team: ${plan.roles.map((id) => TEAM_ROLES[id].label).join(" \u2192 ")}.`
@@ -19360,6 +19365,13 @@ function Workspace({
   useInput3(
     (input2, key) => {
       if (isMouseSequence(input2) || isSuppressedInput()) return;
+      if (key.meta && key.upArrow && queue.length > 0) {
+        const [first, ...rest] = queue;
+        setQueue(rest);
+        setInput(first);
+        notify("Editing queued message \u2014 press enter to send the edited version.");
+        return;
+      }
       if (selectionMode) {
         if (key.escape) {
           if (selection) {
@@ -19542,7 +19554,27 @@ function Workspace({
   const jumpBase = jumpTargets.length - jumpShown.length;
   const jumpSel = Math.min(jumpIndex, Math.max(0, jumpTargets.length - 1));
   const statusColor2 = status === "running" ? theme.accent : status === "completed" ? theme.success : status === "paused" ? theme.warning : status === "failed" ? theme.danger : theme.faint;
+  const queuePanel = queue.length > 0 ? /* @__PURE__ */ jsxs5(Box5, { flexDirection: "column", flexShrink: 0, borderStyle: "round", borderColor: theme.violet, paddingX: 1, children: [
+    /* @__PURE__ */ jsxs5(Text5, { color: theme.violet, bold: true, children: [
+      "QUEUED (",
+      queue.length,
+      ") ",
+      glyph.bullet,
+      " alt+\u2191 edits the first message"
+    ] }),
+    queue.slice(0, 3).map((message, index) => /* @__PURE__ */ jsxs5(Text5, { color: theme.muted, wrap: "truncate", children: [
+      index + 1,
+      ". ",
+      message
+    ] }, `${index}-${message}`)),
+    queue.length > 3 ? /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, children: [
+      "+",
+      queue.length - 3,
+      " more"
+    ] }) : null
+  ] }) : null;
   const composerArea = confirmRequest ? /* @__PURE__ */ jsx5(ConfirmDialog, { request: confirmRequest, onDecision: respondConfirm }) : /* @__PURE__ */ jsxs5(Fragment, { children: [
+    queuePanel,
     running ? /* @__PURE__ */ jsx5(Box5, { flexDirection: "column", flexShrink: 0, borderStyle: "round", borderColor: theme.border, children: /* @__PURE__ */ jsxs5(Box5, { paddingX: 1, justifyContent: "space-between", children: [
       /* @__PURE__ */ jsx5(Spinner, { frame, label: route ? `working ${glyph.route} ${route}` : "working" }),
       /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, dimColor: dimmed, children: [
@@ -19965,6 +19997,7 @@ function MissionControl({
   const [selectedAgent, setSelectedAgent] = useState4(0);
   const [overlay, setOverlay] = useState4(null);
   const [agentsVisible, setAgentsVisible] = useState4(sidePanel);
+  const [activityVisible, setActivityVisible] = useState4(columns >= 130);
   useEffect4(() => eventBus.subscribe((event) => {
     setEvents((previous) => [...previous.slice(-199), event]);
   }), [eventBus]);
@@ -19973,6 +20006,10 @@ function MissionControl({
       if (!active) return;
       if (input === "\x1B[17~") {
         setAgentsVisible((visible) => !visible);
+        return;
+      }
+      if (input === "\x1B[18~") {
+        setActivityVisible((visible) => !visible);
         return;
       }
       if (key.escape) {
@@ -20004,6 +20041,8 @@ function MissionControl({
     { isActive: active }
   );
   const showAgents = agentsVisible && !compact && columns >= 112;
+  const showActivity = activityVisible && !compact && columns >= 100;
+  const sideWidths = (showAgents ? 24 : 0) + (showActivity ? 26 : 0);
   const recent = useMemo3(() => events.slice(-12).reverse(), [events]);
   const contracts = useMemo3(() => {
     const tasks = context.store.listTasks({ projectPath: context.cwd, limit: 20 });
@@ -20019,7 +20058,7 @@ function MissionControl({
       showAgents ? /* @__PURE__ */ jsxs7(
         Box7,
         {
-          width: 26,
+          width: 22,
           flexDirection: "column",
           flexShrink: 0,
           borderStyle: "round",
@@ -20088,15 +20127,15 @@ function MissionControl({
               agentMode,
               onAgentMode,
               eventBus,
-              contentWidth: Math.max(24, columns - (showAgents ? 28 : 0) - 34)
+              contentWidth: Math.max(24, columns - sideWidths - 6)
             }
           )
         }
       ),
-      /* @__PURE__ */ jsxs7(
+      showActivity ? /* @__PURE__ */ jsxs7(
         Box7,
         {
-          width: 30,
+          width: 24,
           flexDirection: "column",
           flexShrink: 0,
           borderStyle: "round",
@@ -20116,12 +20155,12 @@ function MissionControl({
             recent.length === 0 ? /* @__PURE__ */ jsx7(Text7, { color: theme.faint, dimColor: true, children: "Waiting for agent activity\u2026" }) : null
           ]
         }
-      )
+      ) : null
     ] }),
     /* @__PURE__ */ jsx7(Box7, { flexShrink: 0, paddingX: 1, children: /* @__PURE__ */ jsxs7(Text7, { color: theme.faint, wrap: "truncate", children: [
       "tab focus ",
       focus,
-      " \xB7 \u2191/\u2193 agents \xB7 i inspect \xB7 t tasks \xB7 esc close \xB7 ",
+      " \xB7 \u2191/\u2193 agents \xB7 i inspect \xB7 t tasks \xB7 f6 team \xB7 f7 activity \xB7 esc close \xB7 ",
       rows,
       " rows"
     ] }) }),

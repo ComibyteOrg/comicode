@@ -1001,6 +1001,13 @@ export function Workspace({
   useInput(
     (input, key) => {
       if (isMouseSequence(input) || isSuppressedInput()) return;
+      if (key.meta && key.upArrow && queue.length > 0) {
+        const [first, ...rest] = queue;
+        setQueue(rest);
+        setInput(first!);
+        notify('Editing queued message — press enter to send the edited version.');
+        return;
+      }
       if (selectionMode) {
         if (key.escape) {
           if (selection) {
@@ -1244,10 +1251,27 @@ export function Workspace({
             ? theme.danger
             : theme.faint;
 
+  const queuePanel = queue.length > 0 ? (
+    <Box flexDirection="column" flexShrink={0} borderStyle="round" borderColor={theme.violet} paddingX={1}>
+      <Text color={theme.violet} bold>
+        QUEUED ({queue.length}) {glyph.bullet} alt+↑ edits the first message
+      </Text>
+      {queue.slice(0, 3).map((message, index) => (
+        <Text key={`${index}-${message}`} color={theme.muted} wrap="truncate">
+          {index + 1}. {message}
+        </Text>
+      ))}
+      {queue.length > 3 ? (
+        <Text color={theme.faint}>+{queue.length - 3} more</Text>
+      ) : null}
+    </Box>
+  ) : null;
+
   const composerArea = confirmRequest ? (
     <ConfirmDialog request={confirmRequest} onDecision={respondConfirm} />
   ) : (
     <>
+      {queuePanel}
       {running ? (
         <Box flexDirection="column" flexShrink={0} borderStyle="round" borderColor={theme.border}>
           <Box paddingX={1} justifyContent="space-between">

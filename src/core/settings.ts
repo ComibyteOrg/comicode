@@ -106,7 +106,9 @@ export const SettingsSchema = z.object({
        * (pgup/pgdn, ctrl+↑/↓) always works. Enable it in settings if wheel
        * scrolling matters more — then use Shift+drag or ctrl+y to copy.
        */
-      mouseScroll: z.boolean().default(true),
+      // Off by default so terminal-native click-drag text selection works.
+      // Wheel scrolling still works through DECSET 1007 alternate scroll.
+      mouseScroll: z.boolean().default(false),
     })
     .prefault({}),
   routing: RoutingPolicySchema.prefault({}),

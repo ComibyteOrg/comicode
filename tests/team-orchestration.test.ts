@@ -93,6 +93,13 @@ function setup(request: string, mode: AgentMode, summaries: string[]) {
 }
 
 describe('dynamic team orchestration', () => {
+  it('does not assemble a team for a short greeting', async () => {
+    const { makeAgent, stages, notices } = setup('hi', 'auto', ['STAGE_STATUS: done']);
+    await makeAgent().run();
+    expect(stages).toHaveLength(0);
+    expect(notices.join(' ')).not.toMatch(/Auto-selected \d+-agent team/i);
+  });
+
   it('runs a debug prompt in debug mode without a team', async () => {
     const { makeAgent, stages, notices } = setup('fix this crash', 'auto', ['STAGE_STATUS: fixed']);
     await makeAgent().run();

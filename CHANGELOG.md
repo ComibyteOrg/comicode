@@ -4,6 +4,17 @@ All notable changes to ComiCode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 semantic versioning.
 
+## [0.2.3] - 2026-11-20
+
+### Fixed
+
+- Native terminal text selection works by default (mouse capture is now off).
+- Team sidebar and activity panel are narrower, and the activity panel is
+  collapsible (F7), leaving more room for the transcript.
+- Short prompts such as "hi" no longer assemble a full agent team.
+- Queued messages are shown in the composer and the first can be pulled back
+  for editing with alt+up before it runs.
+
 ## [0.2.2] - 2026-11-20
 
 ### Fixed
