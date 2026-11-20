@@ -10,6 +10,7 @@ coverage/
 
 # ComiCode local state
 .comicode/
+.superpowers/
 comicode.db
 comicode.db-*
 credentials*

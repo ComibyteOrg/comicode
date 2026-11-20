@@ -2680,8 +2680,8 @@ async function testProfileConnection(store, profile, options = {}) {
         store.updateProfile(profile.id, { lastError: null, lastErrorAt: null });
         store.clearLimitsForProfile(profile.id);
       } else {
-        const safe = redactSecrets(result.message);
-        store.recordProfileError(profile.id, safe);
+        const safe2 = redactSecrets(result.message);
+        store.recordProfileError(profile.id, safe2);
       }
     }
     return { ...result, message: redactSecrets(result.message) };
@@ -6036,6 +6036,7 @@ function buildRoutingOutcome(request) {
       access,
       isDefaultModel: options.isDefaultModel,
       sameModel: options.sameModel,
+      exactModel: options.exactModel === true,
       profile,
       model
     });
@@ -6053,6 +6054,24 @@ function buildRoutingOutcome(request) {
         explicit: true,
         isDefaultModel: true,
         sameModel: true
+      });
+    }
+  }
+  if (currentModelId) {
+    const normalized = currentModelId.trim().toLowerCase();
+    for (const profile of eligibleProfiles) {
+      const discovered = findModel(request, profile, currentModelId) ?? request.models.find(
+        (candidate) => candidate.providerId === profile.providerId && candidate.modelId.trim().toLowerCase() === normalized && (candidate.profileId === null || candidate.profileId === profile.id)
+      ) ?? null;
+      if (!discovered && profile.providerId !== "custom" && profile.providerId !== "openrouter") {
+        continue;
+      }
+      const model = discovered ?? syntheticModel(profile, currentModelId);
+      addCandidate(profile, model, {
+        explicit: false,
+        isDefaultModel: profile.defaultModel === currentModelId,
+        sameModel: true,
+        exactModel: true
       });
     }
   }
@@ -6147,7 +6166,8 @@ function buildRoutingOutcome(request) {
     const preferredIndex = request.policy.preferredProviders.indexOf(entry.profile.providerId);
     if (preferredIndex !== -1) score += 5e4 - preferredIndex * 100;
     score += accessBucket(entry.access, request.policy.preferFree) * 5e3;
-    if (entry.sameModel && entry.profile.providerId === sameProviderId) score += 2e3;
+    if (entry.exactModel) score += 15e4;
+    else if (entry.sameModel) score += 2e3;
     if (entry.isDefaultModel) score += 800;
     score += modelScore(entry.model, request.taskType, request.policy.preferCoding);
     score += Math.max(0, 300 - profilePriority(entry.profile));
@@ -6158,7 +6178,9 @@ function buildRoutingOutcome(request) {
     const rankValue = rank(entry);
     let reason;
     if (entry.explicit) reason = "Explicitly selected model";
-    else if (entry.profile.providerId === sameProviderId) {
+    else if (entry.exactModel) {
+      reason = entry.profile.providerId === sameProviderId ? `Same-provider exact model fallback: ${profileDisplay(entry.profile)}` : `Same model on another provider: ${profileDisplay(entry.profile)}`;
+    } else if (entry.profile.providerId === sameProviderId) {
       reason = `Same-provider fallback: ${profileDisplay(entry.profile)}`;
     } else {
       reason = `Cross-provider fallback: ${profileDisplay(entry.profile)} (${providerDisplayName(
@@ -6174,7 +6196,14 @@ function buildRoutingOutcome(request) {
       rank: rankValue
     };
   }).sort((a, b) => b.rank - a.rank || a.key.localeCompare(b.key));
-  const limit = Math.max(1, request.policy.maxFallbacks) + (currentProfile && currentModelId ? 1 : 0);
+  const providerCount = new Set(eligibleProfiles.map((profile) => profile.providerId)).size;
+  const limit = Math.min(
+    24,
+    Math.max(
+      Math.max(1, request.policy.maxFallbacks) + (currentProfile && currentModelId ? 1 : 0),
+      providerCount
+    )
+  );
   const chain = ranked.slice(0, limit);
   if (chain.length === 0) {
     if (request.profiles.length === 0) {
@@ -9477,30 +9506,57 @@ ${clipped}`);
 });
 
 // src/core/agent/teams.ts
-function selectTeamRoles(text, mode) {
+function resolveTeamPlan(text, mode) {
   const lower = ` ${text.toLowerCase()} `;
-  let ids;
-  if (ORG_WORDS.some((word) => lower.includes(word))) {
-    ids = TEAM_PIPELINES.fullOrganization;
-  } else {
-    let best = "build";
-    let bestScore = 0;
-    for (const entry of PIPELINE_KEYWORDS) {
-      const score = entry.words.reduce((sum, word) => sum + (lower.includes(word) ? 1 : 0), 0);
-      if (score > bestScore) {
-        bestScore = score;
-        best = entry.id;
-      }
-    }
-    if (mode === "security") best = "security";
-    else if (mode === "test") best = "test";
-    else if (mode === "design") best = "design";
-    else if (mode === "docs") best = "docs";
-    else if (mode === "explain") best = "explain";
-    else if (mode === "architect") best = "build";
-    ids = TEAM_PIPELINES[best] ?? TEAM_PIPELINES.build;
+  const has = (words) => words.some((word) => lower.includes(word));
+  if (mode === "debug" || has(DEBUG_WORDS)) {
+    return { roles: ["debug"], source: "rules", revisitLimit: 2 };
   }
-  return ids.map((id) => TEAM_ROLES[id]);
+  if (has(ECOMMERCE_WORDS)) {
+    return {
+      roles: ["plan", "frontend", "backend", "security", "review"],
+      source: "rules",
+      revisitLimit: 2
+    };
+  }
+  if (ORG_WORDS.some((word) => lower.includes(word))) {
+    return { roles: [...TEAM_PIPELINES.fullOrganization], source: "rules", revisitLimit: 2 };
+  }
+  if (has(["security", "vulnerab", "exploit", "injection", "xss", "csrf"]) || mode === "security") {
+    return { roles: ["research", "security", "review"], source: "rules", revisitLimit: 2 };
+  }
+  if (has(["test", "coverage", "e2e", "flaky"]) || mode === "test") {
+    return { roles: ["research", "qa", "review"], source: "rules", revisitLimit: 2 };
+  }
+  if (has(["document", "readme", "docs", "guide"]) || mode === "docs") {
+    return { roles: ["research", "docs", "marketing"], source: "rules", revisitLimit: 2 };
+  }
+  if (has(["explain", "what does", "how does", "walk me through"]) || mode === "explain") {
+    return { roles: ["research", "review"], source: "rules", revisitLimit: 2 };
+  }
+  if (has(["deploy", "docker", "ci/cd", "pipeline", "infra", "devops"])) {
+    return { roles: ["research", "devops", "security", "qa"], source: "rules", revisitLimit: 2 };
+  }
+  if (has(["marketing", "campaign", "landing page", "brand"])) {
+    return { roles: ["plan", "design", "frontend", "marketing"], source: "rules", revisitLimit: 2 };
+  }
+  if (has(["design", "ui", "ux", "layout", "mockup"]) || mode === "design") {
+    return { roles: ["research", "design", "engineering", "qa"], source: "rules", revisitLimit: 2 };
+  }
+  if (has(["build", "implement", "add ", "feature", "refactor", "create"])) {
+    return { roles: [...TEAM_PIPELINES.build], source: "rules", revisitLimit: 2 };
+  }
+  return {
+    roles: ["research", "architecture", "engineering", "security", "review"],
+    source: "planner",
+    revisitLimit: 2
+  };
+}
+function parseStageDirective(text) {
+  const status = /\bSTAGE_STATUS:\s*(.+)/i.exec(text)?.[1]?.trim().slice(0, 300) ?? null;
+  const revisitRaw = /\bNEEDS_REVISIT:\s*([a-z-]+)/i.exec(text)?.[1]?.toLowerCase();
+  const revisit = revisitRaw && revisitRaw in TEAM_ROLES ? revisitRaw : null;
+  return { status, revisit };
 }
 function buildHandoffNote(role, summary, changedFiles) {
   const parts = [
@@ -9514,7 +9570,7 @@ ${clip(summary, 2e3)}`,
   }
   return parts.join("\n\n").slice(0, 3500);
 }
-function buildStagePrompt(role, originalRequest, handoffs) {
+function buildStagePrompt(role, originalRequest, latestHandoff) {
   const parts = [
     `# Team assignment: ${role.label} \u2014 ${role.department}`,
     role.instructions,
@@ -9522,8 +9578,8 @@ function buildStagePrompt(role, originalRequest, handoffs) {
     `## Original user request
 ${originalRequest.slice(0, 12e3)}`
   ];
-  if (handoffs.length) {
-    parts.push("", "## Handoffs from previous team members (read carefully)", handoffs.join("\n\n---\n\n"));
+  if (latestHandoff) {
+    parts.push("", "## Handoff from the previous team member (read carefully)", latestHandoff);
   }
   parts.push(
     "",
@@ -9536,11 +9592,100 @@ function clip(text, max) {
   return value.length <= max ? value : `${value.slice(0, max)}
 \u2026 [truncated]`;
 }
-var TEAM_ROLES, TEAM_PIPELINES, ORG_WORDS, PIPELINE_KEYWORDS;
+var TEAM_ROLES, TEAM_PIPELINES, ORG_WORDS, DEBUG_WORDS, ECOMMERCE_WORDS;
 var init_teams = __esm({
   "src/core/agent/teams.ts"() {
     "use strict";
     TEAM_ROLES = {
+      plan: {
+        id: "plan",
+        label: "Plan",
+        department: "Product & Planning",
+        icon: "\u25A4",
+        mode: "plan",
+        taskType: "reasoning",
+        capabilityHint: "planning model with read-only tools",
+        autoModel: true,
+        instructions: `You are the PLANNING AGENT. Break the request into an ordered, testable plan.
+- Inspect what exists with read-only tools; define scope, acceptance criteria and non-goals.
+- Call update_plan with concrete steps the delivery agents will follow. Do not implement.
+- End with: STAGE_STATUS: <what is planned and where the next agent should start>.`
+      },
+      frontend: {
+        id: "frontend",
+        label: "Frontend",
+        department: "Engineering / Frontend",
+        icon: "\u25C8",
+        mode: "design",
+        taskType: "vision",
+        capabilityHint: "vision-capable model for UI, layout and assets",
+        autoModel: true,
+        instructions: `You are the FRONTEND AGENT. Own the user-facing side of the product.
+- Implement UI, layout, states and accessibility from the handed-off plan.
+- If an image/illustration/logo is needed, call generate_image and reference the saved path.
+- Verify with the project's build/lint where possible.
+- End with: STAGE_STATUS: <what you built, files changed, and what backend/security must do>.`
+      },
+      backend: {
+        id: "backend",
+        label: "Backend",
+        department: "Engineering / Backend",
+        icon: "\u2B21",
+        mode: "build",
+        taskType: "coding",
+        capabilityHint: "strong coding model for services, data and APIs",
+        autoModel: true,
+        instructions: `You are the BACKEND AGENT. Own server logic, data models, APIs and integrations.
+- Implement against the handed-off plan and the frontend's stated needs.
+- Keep interfaces explicit; add or update tests for behaviour you add.
+- Verify with the project's test/build commands.
+- End with: STAGE_STATUS: <what you built, files changed, and what remains>.`
+      },
+      database: {
+        id: "database",
+        label: "Database",
+        department: "Engineering / Data",
+        icon: "\u25A6",
+        mode: "architect",
+        taskType: "reasoning",
+        capabilityHint: "schema and query design model",
+        autoModel: true,
+        instructions: `You are the DATABASE ARCHITECT. Own schemas, migrations, indexes and queries.
+- Inspect the existing data model and conventions before proposing changes.
+- Design safe, incremental migrations; call out data-backfill and rollback steps.
+- Add or update queries and tests for behaviour you change.
+- End with: STAGE_STATUS: <schema decisions, files changed, and what remains>.`
+      },
+      mobile: {
+        id: "mobile",
+        label: "Mobile",
+        department: "Engineering / Mobile",
+        icon: "\u25A4",
+        mode: "design",
+        taskType: "vision",
+        capabilityHint: "mobile UI and responsive layout model",
+        autoModel: true,
+        instructions: `You are the MOBILE DEVELOPER. Own mobile screens, navigation and responsive behaviour.
+- Reuse the project's design tokens and platform conventions.
+- Handle loading, empty, error and offline states; verify with available builds.
+- If a visual asset is needed, call generate_image and reference the saved path.
+- End with: STAGE_STATUS: <screens built, files changed, and what remains>.`
+      },
+      debug: {
+        id: "debug",
+        label: "Debug",
+        department: "Engineering / Diagnostics",
+        icon: "\u2301",
+        mode: "debug",
+        taskType: "reasoning",
+        capabilityHint: "diagnosis-first model with full tool use",
+        autoModel: true,
+        instructions: `You are the DEBUG AGENT. Find and fix the reported failure.
+- Reproduce or isolate the failure from real output before changing anything.
+- Trace the code path, identify the root cause, apply the smallest fix, add a regression test.
+- Prove the fix with the project's test/lint/build commands.
+- End with: STAGE_STATUS: <root cause, fix, verification result, and any remaining risk>.`
+      },
       research: {
         id: "research",
         label: "Research",
@@ -9747,16 +9892,16 @@ var init_teams = __esm({
       "complete product",
       "whole product"
     ];
-    PIPELINE_KEYWORDS = [
-      { id: "security", words: ["security", "vulnerab", "audit", "exploit", "injection", "secret leak", "xss", "csrf"] },
-      { id: "website", words: ["website", "landing page", "marketing site", "web app", "homepage", "brand", "website requires", "image", "logo", "illustration"] },
-      { id: "marketing", words: ["marketing", "campaign", "copy", "release notes", "changelog", "positioning", "social"] },
-      { id: "design", words: ["design", "ui", "ux", "css", "layout", "style", "mockup", "visual"] },
-      { id: "devops", words: ["deploy", "docker", "ci", "pipeline", "infra", "devops", "release script"] },
-      { id: "test", words: ["test", "coverage", "spec", "e2e", "flaky"] },
-      { id: "docs", words: ["document", "readme", "docs", "guide", "changelog"] },
-      { id: "explain", words: ["explain", "what does", "how does", "walk me through", "understand"] },
-      { id: "build", words: ["build", "fix", "implement", "add", "feature", "refactor", "bug", "create"] }
+    DEBUG_WORDS = ["debug", "crash", "exception", "stack trace", "not working", "broken", "error"];
+    ECOMMERCE_WORDS = [
+      "ecommerce",
+      "e-commerce",
+      "online shop",
+      "storefront",
+      "checkout",
+      "shopping cart",
+      "product catalog",
+      "online store"
     ];
   }
 });
@@ -9918,23 +10063,23 @@ function scanPluginRoot(baseDir, scope, options) {
 }
 function loadPlugins(options = {}) {
   const cwd = options.cwd ?? process.cwd();
-  const byId2 = /* @__PURE__ */ new Map();
+  const byId3 = /* @__PURE__ */ new Map();
   const userDir = join14(getComicodeHome(), "plugins");
   for (const plugin of scanPluginRoot(userDir, "user", options)) {
-    byId2.set(plugin.id, plugin);
+    byId3.set(plugin.id, plugin);
   }
   const projectDir = join14(getProjectStateDir(cwd), "plugins");
   for (const plugin of scanPluginRoot(projectDir, "project", options)) {
-    const existing = byId2.get(plugin.id);
+    const existing = byId3.get(plugin.id);
     if (existing) {
       warn(
         `[plugins] project plugin "${plugin.id}" overrides ${existing.scope} plugin at ${existing.root}`,
         options
       );
     }
-    byId2.set(plugin.id, plugin);
+    byId3.set(plugin.id, plugin);
   }
-  return [...byId2.values()].sort((a, b) => a.id.localeCompare(b.id));
+  return [...byId3.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 function getPluginSkills(plugins) {
   const skills = [];
@@ -10120,6 +10265,318 @@ var init_plugins = __esm({
     init_manifest();
     init_loader();
     init_install();
+  }
+});
+
+// src/core/events/bus.ts
+var EventBus;
+var init_bus = __esm({
+  "src/core/events/bus.ts"() {
+    "use strict";
+    EventBus = class {
+      constructor(options = {}) {
+        this.options = options;
+        this.maxHistory = Math.max(1, options.maxHistory ?? 500);
+      }
+      options;
+      listeners = /* @__PURE__ */ new Set();
+      events = [];
+      maxHistory;
+      subscribe(listener) {
+        this.listeners.add(listener);
+        return () => this.listeners.delete(listener);
+      }
+      emit(input) {
+        const event = { ...input, timestamp: (/* @__PURE__ */ new Date()).toISOString() };
+        this.events.push(event);
+        if (this.events.length > this.maxHistory) {
+          this.events.splice(0, this.events.length - this.maxHistory);
+        }
+        for (const listener of this.listeners) listener(event);
+        this.options.onEmit?.(event);
+        return event;
+      }
+      history(limit) {
+        const size = Math.max(0, Math.min(this.events.length, limit ?? this.events.length));
+        return size === this.events.length ? [...this.events] : this.events.slice(-size);
+      }
+      clear() {
+        this.events.length = 0;
+      }
+    };
+  }
+});
+
+// src/core/agent/registry.ts
+function getAgentDefinition(id) {
+  const definition = byId.get(id);
+  if (!definition) throw new Error(`Unknown agent: ${id}`);
+  return definition;
+}
+function resolveAgentId(roleId) {
+  return byRole.get(roleId) ?? "backend";
+}
+function deriveAgentStates(events, contracts) {
+  const states = Object.fromEntries(
+    AGENT_REGISTRY.map((agent) => [agent.id, idleAgentState()])
+  );
+  for (const contract of contracts) {
+    const state = states[contract.assignee];
+    if (!state) continue;
+    state.assignedTaskCount += 1;
+    if (contract.status === "completed") state.completedTaskCount += 1;
+  }
+  for (const event of events) {
+    if (!event.agentId) continue;
+    const state = states[event.agentId];
+    if (!state) continue;
+    switch (event.type) {
+      case "agent.started":
+        state.status = "working";
+        state.currentTaskId = String(event.payload.contractId ?? "") || null;
+        state.model = typeof event.payload.model === "string" ? event.payload.model : null;
+        state.provider = typeof event.payload.provider === "string" ? event.payload.provider : null;
+        break;
+      case "agent.progress":
+        state.status = "working";
+        break;
+      case "agent.handoff":
+        state.status = "completed";
+        break;
+      case "agent.completed":
+        state.status = "completed";
+        break;
+      case "agent.failed":
+        state.status = "failed";
+        state.lastError = String(event.payload.reason ?? "").slice(0, 200);
+        break;
+      case "agent.needs_input":
+        state.status = "needs_input";
+        break;
+      case "agent.waiting":
+        state.status = "waiting";
+        break;
+      default:
+        break;
+    }
+  }
+  return states;
+}
+function idleAgentState() {
+  return {
+    status: "idle",
+    currentTaskId: null,
+    assignedTaskCount: 0,
+    completedTaskCount: 0,
+    model: null,
+    provider: null,
+    lastError: null
+  };
+}
+var AGENT_REGISTRY, byId, byRole;
+var init_registry2 = __esm({
+  "src/core/agent/registry.ts"() {
+    "use strict";
+    AGENT_REGISTRY = [
+      {
+        id: "team_lead",
+        name: "Team Lead",
+        icon: "\u25C8",
+        description: "Coordinates the team, assigns work and consolidates results.",
+        responsibilities: ["Understand the request", "Build the plan", "Assign specialists", "Collect results"],
+        roleId: null,
+        mode: null,
+        toolScope: "read-only"
+      },
+      {
+        id: "planner",
+        name: "Project Planner",
+        icon: "\u25A4",
+        description: "Turns requests into ordered, testable plans.",
+        responsibilities: ["Scope the work", "Define acceptance criteria", "Set step order"],
+        roleId: "plan",
+        mode: "plan",
+        toolScope: "read-only"
+      },
+      {
+        id: "research",
+        name: "Research Agent",
+        icon: "\u25C9",
+        description: "Maps the codebase and constraints before implementation.",
+        responsibilities: ["Inspect existing code", "Identify risks", "Recommend approach"],
+        roleId: "research",
+        mode: "explain",
+        toolScope: "read-only"
+      },
+      {
+        id: "designer",
+        name: "UI/UX Designer",
+        icon: "\u2726",
+        description: "Defines layout, tokens, states and visual assets.",
+        responsibilities: ["Design system tokens", "Responsive states", "Image assets"],
+        roleId: "design",
+        mode: "design",
+        toolScope: "frontend"
+      },
+      {
+        id: "frontend",
+        name: "Frontend Developer",
+        icon: "\u25C7",
+        description: "Implements client-side UI and interactions.",
+        responsibilities: ["Build screens", "Handle states", "Verify client builds"],
+        roleId: "frontend",
+        mode: "build",
+        toolScope: "frontend"
+      },
+      {
+        id: "backend",
+        name: "Backend Developer",
+        icon: "\u2B21",
+        description: "Implements APIs, services and business rules.",
+        responsibilities: ["Build endpoints", "Business logic", "Service tests"],
+        roleId: "backend",
+        mode: "build",
+        toolScope: "backend"
+      },
+      {
+        id: "database",
+        name: "Database Architect",
+        icon: "\u25A6",
+        description: "Owns schemas, migrations, indexes and queries.",
+        responsibilities: ["Design schema", "Safe migrations", "Query performance"],
+        roleId: "database",
+        mode: "architect",
+        toolScope: "database"
+      },
+      {
+        id: "mobile",
+        name: "Mobile Developer",
+        icon: "\u25A4",
+        description: "Builds mobile screens and responsive behaviour.",
+        responsibilities: ["Mobile UI", "Navigation", "Offline states"],
+        roleId: "mobile",
+        mode: "design",
+        toolScope: "mobile"
+      },
+      {
+        id: "debugger",
+        name: "Debugging Specialist",
+        icon: "\u2301",
+        description: "Isolates root causes and lands minimal fixes.",
+        responsibilities: ["Reproduce", "Root-cause analysis", "Regression tests"],
+        roleId: "debug",
+        mode: "debug",
+        toolScope: "all"
+      },
+      {
+        id: "qa",
+        name: "QA / Testing Engineer",
+        icon: "\u25C9",
+        description: "Validates behaviour with real tests.",
+        responsibilities: ["Write tests", "Run suites", "Report gaps"],
+        roleId: "qa",
+        mode: "test",
+        toolScope: "all"
+      },
+      {
+        id: "security",
+        name: "Security Specialist",
+        icon: "\u2B22",
+        description: "Audits changes for security and secrets.",
+        responsibilities: ["Auth review", "Injection review", "Secret handling"],
+        roleId: "security",
+        mode: "security",
+        toolScope: "read-only"
+      },
+      {
+        id: "reviewer",
+        name: "Code Reviewer",
+        icon: "\u2713",
+        description: "Reviews correctness and maintainability.",
+        responsibilities: ["Find bugs", "Check conventions", "Verdict"],
+        roleId: "review",
+        mode: "review",
+        toolScope: "read-only"
+      },
+      {
+        id: "devops",
+        name: "DevOps Engineer",
+        icon: "\u21E7",
+        description: "Handles builds, CI, containers and releases.",
+        responsibilities: ["CI config", "Build scripts", "Deployment safety"],
+        roleId: "devops",
+        mode: "build",
+        toolScope: "all"
+      },
+      {
+        id: "docs",
+        name: "Documentation Writer",
+        icon: "\u25A4",
+        description: "Keeps docs accurate and runnable.",
+        responsibilities: ["Update README", "Guides", "Examples"],
+        roleId: "docs",
+        mode: "docs",
+        toolScope: "all"
+      }
+    ];
+    byId = new Map(AGENT_REGISTRY.map((agent) => [agent.id, agent]));
+    byRole = new Map(
+      AGENT_REGISTRY.filter((agent) => agent.roleId).map((agent) => [agent.roleId, agent.id])
+    );
+    for (const [role, agent] of Object.entries({
+      product: "planner",
+      architecture: "research",
+      engineering: "backend",
+      marketing: "docs"
+    })) {
+      if (!byRole.has(role)) byRole.set(role, agent);
+    }
+  }
+});
+
+// src/core/agent/task-contract.ts
+function sanitize(text) {
+  return redactSecrets(
+    text.replace(/\b(?:sk|ghp|gho|glpat|AIza)[A-Za-z0-9_-]{8,}/gi, "[redacted]")
+  );
+}
+function createStageContracts(roles, request) {
+  const safeRequest = sanitize(request).slice(0, 4e3);
+  let previous = null;
+  return roles.map((roleId, index) => {
+    const id = `contract-${index}-${roleId}`;
+    const contract = {
+      id,
+      objective: `${safeRequest} \u2014 ${roleId} stage`,
+      assignee: resolveAgentId(roleId),
+      status: "ready",
+      dependencies: previous ? [previous] : [],
+      priority: "normal",
+      relevantFiles: [],
+      expectedOutput: `A completed ${roleId} stage report with changed files and verification.`,
+      restrictions: ["Do not modify files outside the agreed task scope."],
+      completionCriteria: ["Stage returned completed", "Verification checks passed"],
+      actualResult: null,
+      error: null
+    };
+    previous = id;
+    return contract;
+  });
+}
+function closeContract(contract, result, ok2) {
+  const safeResult = sanitize(result).slice(0, 4e3);
+  return {
+    ...contract,
+    status: ok2 ? "completed" : "failed",
+    actualResult: ok2 ? safeResult : null,
+    error: ok2 ? null : safeResult
+  };
+}
+var init_task_contract = __esm({
+  "src/core/agent/task-contract.ts"() {
+    "use strict";
+    init_registry2();
+    init_redact();
   }
 });
 
@@ -10457,10 +10914,10 @@ function safeRelative(root, path) {
   return rel;
 }
 function hashFile(root, path) {
-  const safe = safeRelative(root, path);
-  if (!safe) return null;
+  const safe2 = safeRelative(root, path);
+  if (!safe2) return null;
   try {
-    return createHash4("sha256").update(readFileSync10(join16(root, safe))).digest("hex");
+    return createHash4("sha256").update(readFileSync10(join16(root, safe2))).digest("hex");
   } catch {
     return null;
   }
@@ -10468,8 +10925,8 @@ function hashFile(root, path) {
 function hashFiles(root, files) {
   const hashes = {};
   for (const path of files) {
-    const safe = safeRelative(root, path);
-    if (safe) hashes[safe] = hashFile(root, safe);
+    const safe2 = safeRelative(root, path);
+    if (safe2) hashes[safe2] = hashFile(root, safe2);
   }
   return hashes;
 }
@@ -10511,26 +10968,26 @@ function recordGitFinalMetadata(root, task) {
   };
 }
 function untrackedDiff(root, path) {
-  const safe = safeRelative(root, path);
-  if (!safe) return "";
+  const safe2 = safeRelative(root, path);
+  if (!safe2) return "";
   try {
-    const buffer = readFileSync10(join16(root, safe));
+    const buffer = readFileSync10(join16(root, safe2));
     if (buffer.length > 24e4)
       return `--- /dev/null
-+++ b/${safe}
++++ b/${safe2}
 [binary or large file omitted]
 `;
     const text = buffer.toString("utf8");
     if (text.includes("\0")) {
       return `--- /dev/null
-+++ b/${safe}
++++ b/${safe2}
 [binary file omitted]
 `;
     }
     const lines = text.split(/\r?\n/);
     return [
       "--- /dev/null",
-      `+++ b/${safe}`,
+      `+++ b/${safe2}`,
       `@@ untracked file (${lines.length} lines) @@`,
       ...lines.map((line) => `+${line}`)
     ].join("\n");
@@ -10764,6 +11221,9 @@ var init_agent = __esm({
     init_collaboration();
     init_teams();
     init_plugins();
+    init_bus();
+    init_task_contract();
+    init_registry2();
     init_service();
     init_registry();
     init_errors();
@@ -10853,6 +11313,8 @@ var init_agent = __esm({
       usage = { inputTokens: 0, outputTokens: 0 };
       steps = 0;
       mode;
+      teamPlanOverride = null;
+      eventBus;
       skills;
       effort;
       routingOverrides;
@@ -10864,6 +11326,7 @@ var init_agent = __esm({
         if (!task) throw new Error(`Task not found: ${options.taskId}`);
         this.task = task;
         this.hooks = options.hooks ?? {};
+        this.eventBus = options.eventBus === null ? null : options.eventBus ?? new EventBus();
         this.authority = options.authority ?? DEFAULT_AUTHORITY;
         this.applySavedModelSelection();
         const baseSettings = options.settings ?? options.store.getSettings();
@@ -10890,8 +11353,24 @@ var init_agent = __esm({
         this.adapterFactory = options.adapterFactory ?? ((profile) => createAdapter(profile));
         this.contextFactory = options.contextFactory ?? ((profile, keyIndex) => createProfileContext(profile, keyIndex));
         const requestedMode = options.mode ?? "build";
-        this.mode = requestedMode === "auto" ? classifyAgentMode(task.summary ?? "") : requestedMode;
-        if (requestedMode === "auto" && this.mode !== "auto") {
+        const requestText = task.userRequest || task.summary || "";
+        const plan = resolveTeamPlan(requestText, requestedMode);
+        this.mode = requestedMode === "auto" ? classifyAgentMode(requestText) : requestedMode;
+        if (!options.disableAutoTeam && plan.roles.length > 1 && (requestedMode === "auto" || requestedMode === "build")) {
+          this.teamPlanOverride = plan;
+          this.hooks.onNotice?.(
+            `Auto-selected ${plan.roles.length}-agent team: ${plan.roles.map((id) => TEAM_ROLES[id].label).join(" \u2192 ")}.`
+          );
+        } else if (plan.roles.length === 1) {
+          const specialist = TEAM_ROLES[plan.roles[0]];
+          if (requestedMode === "auto") {
+            this.mode = specialist.mode;
+            this.hooks.onNotice?.(
+              `Auto-selected ${specialist.label.toLowerCase()} specialist for this task.`
+            );
+          }
+        }
+        if (requestedMode === "auto" && !this.teamPlanOverride && plan.roles.length !== 1) {
           this.hooks.onNotice?.(`Auto mode selected ${this.mode} for this task.`);
         }
         const installedPlugins = loadPlugins({
@@ -10910,7 +11389,7 @@ var init_agent = __esm({
           skills: this.skills,
           getSettings: () => this.store.getSettings(),
           onGrant: (request) => this.persistGrant(request),
-          onPlan: (plan) => this.applyPlan(plan),
+          onPlan: (plan2) => this.applyPlan(plan2),
           onTaskComplete: (summary) => {
             this.completionSummary = summary;
           },
@@ -10974,12 +11453,12 @@ var init_agent = __esm({
         this.pendingInjections.push(text);
       }
       async run(options = {}) {
-        if (this.mode === "team") return this.runTeam(options);
+        if (this.mode === "team" || this.teamPlanOverride) return this.runTeam(options);
         const maxSteps2 = Math.max(1, Math.min(options.maxSteps ?? this.settings.agent.maxSteps, 200));
         try {
           await this.prepare(options);
           if (options.signal?.aborted) return this.halt("paused", "Cancelled by user. Progress saved.");
-          await this.runPlannerIfEnabled();
+          if (!options.skipCollaboration) await this.runPlannerIfEnabled();
           this.setPhase("inspect");
           this.checkpoint("run-start");
           let emptyResponses = 0;
@@ -11037,7 +11516,7 @@ var init_agent = __esm({
                 return this.halt("paused", "Cancelled by user. Progress saved.");
               }
               if (completed || this.completionSummary) {
-                if (this.shouldRequestVerification()) {
+                if (!options.skipCollaboration && this.shouldRequestVerification()) {
                   this.verificationNudged = true;
                   this.completionSummary = null;
                   this.finalResponse = null;
@@ -11048,7 +11527,7 @@ var init_agent = __esm({
                   this.checkpoint("verification-nudge");
                   continue;
                 }
-                const continueAfterTest = await this.testIfEnabled();
+                const continueAfterTest = options.skipCollaboration ? false : await this.testIfEnabled();
                 if (continueAfterTest) {
                   this.completionSummary = null;
                   this.finalResponse = null;
@@ -11056,7 +11535,7 @@ var init_agent = __esm({
                   this.checkpoint("after-test");
                   continue;
                 }
-                const continueAfterReview2 = await this.reviewIfEnabled();
+                const continueAfterReview2 = options.skipCollaboration ? false : await this.reviewIfEnabled();
                 if (continueAfterReview2) {
                   this.completionSummary = null;
                   this.finalResponse = null;
@@ -11086,7 +11565,7 @@ var init_agent = __esm({
             emptyResponses = 0;
             this.finalResponse = response.content;
             this.completionSummary = this.completionSummary ?? response.content.slice(0, 8e3);
-            const continueAfterReview = await this.reviewIfEnabled();
+            const continueAfterReview = options.skipCollaboration ? false : await this.reviewIfEnabled();
             if (continueAfterReview) {
               this.completionSummary = null;
               this.finalResponse = null;
@@ -11115,21 +11594,102 @@ var init_agent = __esm({
        * SAME task thread — so each member inherits the full transcript, plan,
        * checkpoints, quota failover and context compaction of its predecessor.
        */
+      /** Merge metadata into the freshest task row so parallel writes are not lost. */
+      patchMetadata(patch) {
+        const fresh = this.store.getTask(this.task.id);
+        if (!fresh) return;
+        this.task = this.store.updateTask(this.task.id, {
+          metadata: { ...fresh.metadata ?? {}, ...patch }
+        });
+      }
+      emitEvent(type, agentId, payload) {
+        if (!this.eventBus) return;
+        const safe2 = {};
+        for (const [key, value] of Object.entries(payload)) {
+          safe2[key] = typeof value === "string" ? redactSecrets(value).slice(0, 2e3) : value;
+        }
+        this.eventBus.emit({ type, taskId: this.task.id, agentId, payload: safe2 });
+      }
       async runTeam(options) {
         const originalRequest = this.task.userRequest || this.task.summary || "";
-        const roles = selectTeamRoles(originalRequest, this.mode);
+        const plan = this.teamPlanOverride ?? resolveTeamPlan(originalRequest, this.mode);
+        const saved = this.task.metadata.teamRun;
+        const state = saved && Array.isArray(saved.roles) && saved.roles.length > 0 ? { ...saved, revisits: saved.revisits ?? {} } : {
+          roles: [...plan.roles],
+          cursor: 0,
+          revisits: {},
+          stepsUsed: 0,
+          tokensUsed: 0
+        };
+        const queue = state.roles.slice(state.cursor);
+        let contracts = this.task.metadata.taskContracts ?? [];
+        if (contracts.length === 0 || state.cursor === 0) {
+          contracts = createStageContracts(state.roles, originalRequest);
+          this.patchMetadata({ taskContracts: contracts });
+          for (const contract of contracts) {
+            this.emitEvent("task.created", contract.assignee, {
+              contractId: contract.id,
+              objective: contract.objective,
+              dependencies: contract.dependencies
+            });
+          }
+        }
         const handoffs = [];
         const aggregate = { inputTokens: 0, outputTokens: 0 };
         let steps = 0;
         let lastResult = null;
-        this.hooks.onNotice?.(
-          `ComiCode Company assembled (${roles.length} departments): ${roles.map((role) => role.label).join(" \u2192 ")}.`
+        const baseStep = Math.max(2, Math.min(this.settings.agent.maxSteps * 2, 8));
+        const baseToken = Math.min(
+          12e4,
+          Math.max(
+            2e4,
+            Math.round(
+              this.settings.agent.contextBudgetRatio * 12e4 * Math.min(state.roles.length, 4)
+            )
+          )
         );
-        for (let index = 0; index < roles.length; index += 1) {
+        const remaining = saved ? Math.max(0, state.roles.length - state.cursor) : 0;
+        state.stepBudget = (saved?.stepBudget ?? 0) + baseStep + remaining;
+        state.tokenBudget = (saved?.tokenBudget ?? 0) + baseToken;
+        const estimatedTokens = Math.min(baseToken, state.roles.length * 1500);
+        const tokenBudget = state.tokenBudget;
+        const stepBudget = state.stepBudget;
+        this.hooks.onEstimate?.({
+          stages: state.roles.length,
+          estimatedTokens,
+          tokenBudget,
+          stepBudget
+        });
+        this.hooks.onNotice?.(
+          `ComiCode Company assembled (${state.roles.length} stages): ${state.roles.map((id) => TEAM_ROLES[id].label).join(" \u2192 ")}.`
+        );
+        while (queue.length > 0) {
           if (options.signal?.aborted) {
             return this.halt("paused", "Cancelled by user. Progress saved.");
           }
-          const role = roles[index];
+          if (state.stepsUsed >= stepBudget || state.tokensUsed >= tokenBudget) {
+            this.store.updateTask(this.task.id, {
+              metadata: { ...this.task.metadata, teamRun: state }
+            });
+            return this.halt(
+              "paused",
+              `Team credit budget reached (${state.stepsUsed}/${stepBudget} steps, ${state.tokensUsed}/${tokenBudget} tokens). Progress saved \u2014 resume to continue.`
+            );
+          }
+          const roleId = queue.shift();
+          const role = TEAM_ROLES[roleId];
+          const agentId = resolveAgentId(roleId);
+          const contract = contracts.find((item) => item.assignee === agentId && item.status === "ready");
+          const index = state.cursor;
+          if (contract) {
+            contracts = contracts.map(
+              (item) => item.id === contract.id ? { ...item, status: "in_progress" } : item
+            );
+            this.emitEvent("task.assigned", agentId, {
+              contractId: contract.id,
+              objective: contract.objective
+            });
+          }
           let stageModel = null;
           if (role.autoModel) {
             const picked = this.router.select({
@@ -11154,17 +11714,24 @@ var init_agent = __esm({
               });
             }
           }
+          this.emitEvent("agent.started", agentId, {
+            roleId,
+            label: role.label,
+            department: role.department,
+            model: stageModel?.split("/").at(-1) ?? null,
+            provider: stageModel?.split("/")[0] ?? null
+          });
           this.store.updateTask(this.task.id, {
             status: "running",
             phase: "inspect",
             error: null,
             completedAt: null
           });
-          const stagePrompt = buildStagePrompt(role, originalRequest, handoffs);
+          const stagePrompt = buildStagePrompt(role, originalRequest, handoffs.at(-1) ?? null);
           this.store.appendMessage(this.task.id, { role: "user", content: stagePrompt });
           this.hooks.onStage?.({
             index: index + 1,
-            total: roles.length,
+            total: state.roles.length,
             roleId: role.id,
             label: role.label,
             department: role.department,
@@ -11174,10 +11741,10 @@ var init_agent = __esm({
             model: stageModel
           });
           this.hooks.onNotice?.(
-            `[${index + 1}/${roles.length}] ${role.icon} ${role.label} \xB7 ${role.department}` + (stageModel ? ` \xB7 ${stageModel}` : "") + ` \u2014 ${role.capabilityHint}`
+            `[${index + 1}/${state.roles.length}] ${role.icon} ${role.label} \xB7 ${role.department}` + (stageModel ? ` \xB7 ${stageModel}` : "") + ` \u2014 ${role.capabilityHint}`
           );
           let stageSummary = "";
-          const isLast = index === roles.length - 1;
+          const isLast = queue.length === 0;
           try {
             const stageAgent = new _CodingAgent({
               store: this.store,
@@ -11185,27 +11752,57 @@ var init_agent = __esm({
               authority: this.authority,
               settings: this.settings,
               mode: role.mode,
+              disableAutoTeam: true,
+              eventBus: null,
               routingOverrides: this.routingOverrides,
               adapterFactory: this.adapterFactory,
               contextFactory: this.contextFactory,
               hooks: {
                 ...this.hooks,
                 onStage: void 0,
+                onToolStart: (call) => {
+                  this.hooks.onToolStart?.(call);
+                  this.emitEvent("tool.started", agentId, { name: call.name, toolCallId: call.id ?? "" });
+                },
+                onToolResult: (call, result2) => {
+                  this.hooks.onToolResult?.(call, result2);
+                  this.emitEvent(result2.ok ? "tool.completed" : "tool.failed", agentId, {
+                    name: call.name,
+                    ok: result2.ok,
+                    content: result2.content.slice(0, 400)
+                  });
+                },
                 onTaskComplete: (summary) => {
                   stageSummary = summary ?? "";
                   if (isLast) this.hooks.onTaskComplete?.(summary);
                 }
               }
             });
-            const result = await stageAgent.run(options);
+            const result = await stageAgent.run({ ...options, skipCollaboration: true });
             lastResult = result;
             aggregate.inputTokens += result.usage.inputTokens;
             aggregate.outputTokens += result.usage.outputTokens;
             steps += result.steps;
             if (result.status !== "completed") {
+              this.emitEvent("agent.failed", agentId, {
+                roleId,
+                reason: result.pauseReason ?? result.summary ?? "stage did not complete"
+              });
+              if (contract) {
+                contracts = contracts.map(
+                  (item) => item.id === contract.id ? closeContract(item, result.pauseReason ?? result.summary ?? "failed", false) : item
+                );
+                this.emitEvent("tool.failed", agentId, { contractId: contract.id });
+              }
+              state.cursor = index;
+              this.patchMetadata({
+                taskContracts: contracts,
+                teamRun: state,
+                agentEvents: this.eventBus?.history(500) ?? []
+              });
               this.hooks.onStage?.({
                 index: index + 1,
-                total: roles.length,
+                total: state.roles.length,
                 roleId: role.id,
                 label: role.label,
                 department: role.department,
@@ -11228,9 +11825,48 @@ var init_agent = __esm({
             );
             handoffs.push(note);
             this.store.appendMessage(this.task.id, { role: "system", content: note });
+            this.emitEvent("agent.completed", agentId, {
+              roleId,
+              summary: stageSummary || result.summary || ""
+            });
+            if (contract) {
+              contracts = contracts.map(
+                (item) => item.id === contract.id ? closeContract(item, stageSummary || result.summary || "completed", true) : item
+              );
+              this.emitEvent("task.completed", agentId, { contractId: contract.id });
+            }
+            const nextRole = queue[0] ? TEAM_ROLES[queue[0]] : null;
+            if (nextRole) {
+              this.emitEvent("agent.handoff", agentId, {
+                from: role.label,
+                to: nextRole.label,
+                reason: stageSummary.slice(0, 300) || result.summary || ""
+              });
+            }
+            const directive = parseStageDirective(stageSummary || result.summary || "");
+            if (directive.revisit && (state.revisits[directive.revisit] ?? 0) < plan.revisitLimit && state.roles.filter((id) => id === directive.revisit).length < 3 && state.roles.length < 24) {
+              state.revisits[directive.revisit] = (state.revisits[directive.revisit] ?? 0) + 1;
+              state.roles.splice(index + 1, 0, directive.revisit);
+              queue.unshift(directive.revisit);
+              this.hooks.onNotice?.(
+                `${role.label} requested a revisit of ${TEAM_ROLES[directive.revisit].label}.`
+              );
+            }
+            state.cursor = index + 1;
+            state.stepsUsed += result.steps;
+            state.tokensUsed += result.usage.inputTokens + result.usage.outputTokens;
+            this.patchMetadata({
+              teamRun: state,
+              taskContracts: contracts,
+              agentEvents: this.eventBus?.history(500) ?? []
+            });
+            if (queue.length > 0) {
+              compactTask(this.store, this.task.id);
+              this.task = this.store.getTask(this.task.id) ?? this.task;
+            }
             this.hooks.onStage?.({
               index: index + 1,
-              total: roles.length,
+              total: state.roles.length,
               roleId: role.id,
               label: role.label,
               department: role.department,
@@ -11242,9 +11878,10 @@ var init_agent = __esm({
           } catch (error) {
             const message = redactSecrets(error instanceof Error ? error.message : String(error));
             logger.warn(`Team stage ${role.id} failed: ${message}`);
+            this.emitEvent("agent.failed", agentId, { roleId, reason: message });
             this.hooks.onStage?.({
               index: index + 1,
-              total: roles.length,
+              total: state.roles.length,
               roleId: role.id,
               label: role.label,
               department: role.department,
@@ -11256,6 +11893,11 @@ var init_agent = __esm({
             return this.halt("failed", `Team stage ${role.label} failed: ${message}`);
           }
         }
+        this.patchMetadata({
+          teamRun: null,
+          taskContracts: contracts,
+          agentEvents: this.eventBus?.history(500) ?? []
+        });
         return {
           status: "completed",
           taskId: this.task.id,
@@ -12294,6 +12936,14 @@ ${dim("\u2192")} ${bold(call.name)} ${dim(args.length > 160 ? `${args.slice(0, 1
           `  tokens: ${formatTokens(usage2.inputTokens)} in / ${formatTokens(
             usage2.outputTokens
           )} out \xB7 ${candidate.profile.name}/${candidate.model.modelId}`
+        )
+      );
+    },
+    onEstimate: (info) => {
+      if (json) return;
+      console.log(
+        dim(
+          `  estimate: ${info.stages} stages \xB7 ~${formatTokens(info.estimatedTokens)} tokens \xB7 budget ${formatTokens(info.tokenBudget)} / ${info.stepBudget} steps`
         )
       );
     },
@@ -16677,10 +17327,92 @@ var init_components = __esm({
   }
 });
 
+// src/tui/screens/side-panel.tsx
+import "react";
+import { Box as Box2, Text as Text2 } from "ink";
+import { jsx as jsx2, jsxs as jsxs2 } from "react/jsx-runtime";
+function SidePanel({
+  stages,
+  plan,
+  route,
+  usage: usage2,
+  agentMode
+}) {
+  const done = stages.filter((stage) => stage.status === "done").length;
+  return /* @__PURE__ */ jsxs2(
+    Box2,
+    {
+      width: 26,
+      flexDirection: "column",
+      flexShrink: 0,
+      borderStyle: "round",
+      borderColor: theme.border,
+      paddingX: 1,
+      overflow: "hidden",
+      children: [
+        /* @__PURE__ */ jsxs2(Text2, { color: theme.accent, bold: true, children: [
+          glyph.brand,
+          " TEAMS"
+        ] }),
+        /* @__PURE__ */ jsxs2(Text2, { color: theme.faint, dimColor: true, children: [
+          agentMode,
+          " \xB7 ",
+          done,
+          "/",
+          stages.length || 0,
+          " done"
+        ] }),
+        /* @__PURE__ */ jsx2(Box2, { marginTop: 1, flexDirection: "column", children: stages.length === 0 ? /* @__PURE__ */ jsx2(Text2, { color: theme.faint, dimColor: true, wrap: "truncate", children: "No active team" }) : stages.slice(-8).map((stage) => /* @__PURE__ */ jsxs2(
+          Text2,
+          {
+            color: stage.status === "done" ? theme.success : stage.status === "error" ? theme.danger : stage.status === "start" ? theme.accent : theme.faint,
+            wrap: "truncate",
+            children: [
+              stage.status === "done" ? "\u2713" : stage.status === "error" ? "\u2717" : stage.status === "start" ? "\u25B8" : "\xB7",
+              " ",
+              stage.label
+            ]
+          },
+          `${stage.index}-${stage.roleId}`
+        )) }),
+        /* @__PURE__ */ jsxs2(Box2, { marginTop: 1, flexDirection: "column", children: [
+          /* @__PURE__ */ jsx2(Text2, { color: theme.violet, bold: true, children: "\u25A4 PLAN" }),
+          plan?.steps?.length ? plan.steps.slice(0, 6).map((step, index) => /* @__PURE__ */ jsxs2(Text2, { color: theme.muted, wrap: "truncate", children: [
+            step.status === "completed" ? "\u2713" : step.status === "in_progress" ? "\u25C9" : "\u25CB",
+            " ",
+            step.title
+          ] }, `${index}-${step.title}`)) : /* @__PURE__ */ jsx2(Text2, { color: theme.faint, dimColor: true, children: "No plan yet" })
+        ] }),
+        /* @__PURE__ */ jsxs2(Box2, { marginTop: 1, flexDirection: "column", children: [
+          /* @__PURE__ */ jsxs2(Text2, { color: theme.faint, wrap: "truncate", children: [
+            glyph.route,
+            " ",
+            route ?? "unrouted"
+          ] }),
+          /* @__PURE__ */ jsxs2(Text2, { color: theme.muted, children: [
+            formatCount(usage2.inputTokens),
+            " in / ",
+            formatCount(usage2.outputTokens),
+            " out"
+          ] }),
+          /* @__PURE__ */ jsx2(Text2, { color: theme.faint, dimColor: true, children: "f6 toggle" })
+        ] })
+      ]
+    }
+  );
+}
+var init_side_panel = __esm({
+  "src/tui/screens/side-panel.tsx"() {
+    "use strict";
+    init_components();
+    init_theme();
+  }
+});
+
 // src/tui/dialogs/confirm-dialog.tsx
 import { useEffect as useEffect2, useRef as useRef2, useState as useState2 } from "react";
-import { Box as Box2, Text as Text2, useInput as useInput2, useWindowSize as useWindowSize2 } from "ink";
-import { jsx as jsx2, jsxs as jsxs2 } from "react/jsx-runtime";
+import { Box as Box3, Text as Text3, useInput as useInput2, useWindowSize as useWindowSize2 } from "ink";
+import { jsx as jsx3, jsxs as jsxs3 } from "react/jsx-runtime";
 function ConfirmDialog({
   request,
   onDecision
@@ -16734,8 +17466,8 @@ function ConfirmDialog({
   const diffLines = request.diff ? request.diff.split(/\r?\n/).slice(0, 4) : [];
   const diffTotal = request.diff ? request.diff.split(/\r?\n/).length : 0;
   const target = request.command ?? request.path ?? null;
-  return /* @__PURE__ */ jsxs2(
-    Box2,
+  return /* @__PURE__ */ jsxs3(
+    Box3,
     {
       flexDirection: "column",
       flexShrink: 0,
@@ -16744,24 +17476,24 @@ function ConfirmDialog({
       backgroundColor: theme.surface,
       paddingX: 1,
       children: [
-        /* @__PURE__ */ jsxs2(Text2, { color: theme.warning, bold: true, wrap: "truncate", children: [
+        /* @__PURE__ */ jsxs3(Text3, { color: theme.warning, bold: true, wrap: "truncate", children: [
           glyph.pause,
           " ",
           request.title
         ] }),
-        /* @__PURE__ */ jsx2(Text2, { color: theme.muted, wrap: "truncate", children: clip2(request.description, 120) }),
-        target ? /* @__PURE__ */ jsxs2(Text2, { color: theme.warning, wrap: "truncate-middle", children: [
+        /* @__PURE__ */ jsx3(Text3, { color: theme.muted, wrap: "truncate", children: clip2(request.description, 120) }),
+        target ? /* @__PURE__ */ jsxs3(Text3, { color: theme.warning, wrap: "truncate-middle", children: [
           request.command ? "$ " : "",
           clip2(target, 100)
         ] }) : null,
-        request.reasons?.slice(0, 2).map((reason) => /* @__PURE__ */ jsxs2(Text2, { color: theme.danger, wrap: "truncate", children: [
+        request.reasons?.slice(0, 2).map((reason) => /* @__PURE__ */ jsxs3(Text3, { color: theme.danger, wrap: "truncate", children: [
           glyph.bullet,
           " ",
           clip2(reason, 100)
         ] }, reason)),
-        diffLines.length ? /* @__PURE__ */ jsxs2(Box2, { flexDirection: "column", children: [
-          diffLines.map((line, index) => /* @__PURE__ */ jsx2(
-            Text2,
+        diffLines.length ? /* @__PURE__ */ jsxs3(Box3, { flexDirection: "column", children: [
+          diffLines.map((line, index) => /* @__PURE__ */ jsx3(
+            Text3,
             {
               color: line.startsWith("+") ? theme.success : line.startsWith("-") ? theme.danger : theme.muted,
               wrap: "truncate",
@@ -16769,30 +17501,30 @@ function ConfirmDialog({
             },
             `${index}-${line.slice(0, 10)}`
           )),
-          diffTotal > diffLines.length ? /* @__PURE__ */ jsxs2(Text2, { color: theme.faint, children: [
+          diffTotal > diffLines.length ? /* @__PURE__ */ jsxs3(Text3, { color: theme.faint, children: [
             "[+",
             diffTotal - diffLines.length,
             " diff lines]"
           ] }) : null
         ] }) : null,
-        /* @__PURE__ */ jsx2(Box2, { flexDirection: "column", marginTop: 1, children: options.map((option, index) => {
+        /* @__PURE__ */ jsx3(Box3, { flexDirection: "column", marginTop: 1, children: options.map((option, index) => {
           const active = index === selected;
           const color = option.decision === "deny" ? theme.danger : theme.success;
-          return /* @__PURE__ */ jsxs2(Box2, { children: [
-            /* @__PURE__ */ jsx2(Text2, { color: active ? theme.accent : theme.faint, bold: active, children: active ? `${glyph.active} ` : "  " }),
-            /* @__PURE__ */ jsx2(Text2, { color: active ? color : theme.muted, bold: active, children: option.label }),
-            /* @__PURE__ */ jsxs2(Text2, { color: theme.faint, children: [
+          return /* @__PURE__ */ jsxs3(Box3, { children: [
+            /* @__PURE__ */ jsx3(Text3, { color: active ? theme.accent : theme.faint, bold: active, children: active ? `${glyph.active} ` : "  " }),
+            /* @__PURE__ */ jsx3(Text3, { color: active ? color : theme.muted, bold: active, children: option.label }),
+            /* @__PURE__ */ jsxs3(Text3, { color: theme.faint, children: [
               " \u2014 ",
               option.hint
             ] }),
-            /* @__PURE__ */ jsxs2(Text2, { color: theme.faint, children: [
+            /* @__PURE__ */ jsxs3(Text3, { color: theme.faint, children: [
               " [",
               option.shortcut,
               "]"
             ] })
           ] }, option.decision);
         }) }),
-        /* @__PURE__ */ jsx2(Text2, { color: theme.faint, wrap: "truncate", children: "\u2191/\u2193 choose \xB7 enter/click select \xB7 esc deny" })
+        /* @__PURE__ */ jsx3(Text3, { color: theme.faint, wrap: "truncate", children: "\u2191/\u2193 choose \xB7 enter/click select \xB7 esc deny" })
       ]
     }
   );
@@ -16817,8 +17549,8 @@ var init_confirm_dialog = __esm({
 
 // src/tui/dialogs/modal.tsx
 import { createContext, useContext } from "react";
-import { Box as Box3, Text as Text3 } from "ink";
-import { jsx as jsx3, jsxs as jsxs3 } from "react/jsx-runtime";
+import { Box as Box4, Text as Text4 } from "ink";
+import { jsx as jsx4, jsxs as jsxs4 } from "react/jsx-runtime";
 function ModalWindow({
   title,
   subtitle,
@@ -16831,8 +17563,8 @@ function ModalWindow({
   const { columns, rows } = useLayout();
   const modalWidth = Math.max(36, Math.min(columns - 4, width));
   const modalHeight = Math.max(8, Math.min(rows - 4, height));
-  return /* @__PURE__ */ jsx3(
-    Box3,
+  return /* @__PURE__ */ jsx4(
+    Box4,
     {
       position: "absolute",
       top: 0,
@@ -16841,8 +17573,8 @@ function ModalWindow({
       height: rows,
       justifyContent: "center",
       alignItems: "center",
-      children: /* @__PURE__ */ jsxs3(
-        Box3,
+      children: /* @__PURE__ */ jsxs4(
+        Box4,
         {
           width: modalWidth,
           height: modalHeight,
@@ -16853,18 +17585,18 @@ function ModalWindow({
           overflow: "hidden",
           paddingX: 1,
           children: [
-            title ? /* @__PURE__ */ jsxs3(Box3, { flexDirection: "column", flexShrink: 0, marginBottom: 1, children: [
-              /* @__PURE__ */ jsxs3(Text3, { bold: true, color: theme.text, wrap: "truncate", children: [
-                /* @__PURE__ */ jsxs3(Text3, { color: borderColor, children: [
+            title ? /* @__PURE__ */ jsxs4(Box4, { flexDirection: "column", flexShrink: 0, marginBottom: 1, children: [
+              /* @__PURE__ */ jsxs4(Text4, { bold: true, color: theme.text, wrap: "truncate", children: [
+                /* @__PURE__ */ jsxs4(Text4, { color: borderColor, children: [
                   glyph.brand,
                   " "
                 ] }),
                 title
               ] }),
-              subtitle ? /* @__PURE__ */ jsx3(Text3, { color: theme.faint, wrap: "truncate", children: subtitle }) : null
+              subtitle ? /* @__PURE__ */ jsx4(Text4, { color: theme.faint, wrap: "truncate", children: subtitle }) : null
             ] }) : null,
-            /* @__PURE__ */ jsx3(Box3, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children }),
-            footer && footer.length > 0 ? /* @__PURE__ */ jsx3(Box3, { flexShrink: 0, marginTop: 1, justifyContent: "space-between", children: /* @__PURE__ */ jsx3(Text3, { color: theme.faint, wrap: "truncate", children: footer.join(`  ${glyph.bullet}  `) }) }) : null
+            /* @__PURE__ */ jsx4(Box4, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children }),
+            footer && footer.length > 0 ? /* @__PURE__ */ jsx4(Box4, { flexShrink: 0, marginTop: 1, justifyContent: "space-between", children: /* @__PURE__ */ jsx4(Text4, { color: theme.faint, wrap: "truncate", children: footer.join(`  ${glyph.bullet}  `) }) }) : null
           ]
         }
       )
@@ -16912,7 +17644,7 @@ function commandReferenceLines() {
   }
   return lines;
 }
-var COMMAND_SPECS, byId;
+var COMMAND_SPECS, byId2;
 var init_catalog2 = __esm({
   "src/core/commands/catalog.ts"() {
     "use strict";
@@ -17146,7 +17878,7 @@ var init_catalog2 = __esm({
         summary: "Switch the agent mode",
         description: "Choose how the agent behaves: auto (classify), build, plan, debug, architect, review, refactor, test, docs, design, security, or explain. Tab also cycles modes.",
         usage: "/mode [mode]",
-        aliases: ["agent"],
+        aliases: [],
         arguments: [
           {
             name: "mode",
@@ -17239,16 +17971,31 @@ var init_catalog2 = __esm({
         surfaces: ["cli"]
       }
     ];
-    byId = new Map(COMMAND_SPECS.map((spec) => [spec.id, spec]));
+    byId2 = new Map(COMMAND_SPECS.map((spec) => [spec.id, spec]));
   }
 });
 
 // src/core/clipboard.ts
 var clipboard_exports = {};
 __export(clipboard_exports, {
+  copyTextOrFile: () => copyTextOrFile,
   copyToClipboard: () => copyToClipboard
 });
 import { execFile as execFile2 } from "child_process";
+import { mkdir as mkdir2, writeFile as writeFile2 } from "fs/promises";
+import { join as join19 } from "path";
+async function copyTextOrFile(text, cwd) {
+  if (await copyToClipboard(text)) return { ok: true };
+  try {
+    const dir = join19(cwd, ".comicode");
+    await mkdir2(dir, { recursive: true });
+    const path = join19(dir, "selection.txt");
+    await writeFile2(path, text, "utf8");
+    return { ok: true, path };
+  } catch {
+    return { ok: false };
+  }
+}
 async function copyToClipboard(text) {
   if (!text) return false;
   const { platform } = process;
@@ -17270,7 +18017,7 @@ var init_clipboard = __esm({
 
 // src/tui/commands/registry.ts
 var CommandRegistry, commandRegistry;
-var init_registry2 = __esm({
+var init_registry3 = __esm({
   "src/tui/commands/registry.ts"() {
     "use strict";
     init_catalog2();
@@ -17278,6 +18025,7 @@ var init_registry2 = __esm({
     init_compaction();
     init_modes();
     init_skills();
+    init_registry2();
     init_plugins();
     init_theme();
     CommandRegistry = class {
@@ -17286,6 +18034,50 @@ var init_registry2 = __esm({
       constructor() {
         this.registerDefaults();
         this.registerPluginCommands();
+        this.registerWorkspaceCommands();
+      }
+      registerWorkspaceCommands() {
+        const simple = [
+          { id: "agents", summary: "Show the 14-agent roster", text: AGENT_REGISTRY.map((a) => `${a.icon} ${a.name}`).join(" \xB7 ") },
+          { id: "plan", summary: "Show the current plan", text: "Use /tasks to inspect the active plan." },
+          { id: "tasks", summary: "Show the task board", text: "Press t in the workspace to open the task board." },
+          { id: "activity", summary: "Show live activity", text: "The activity panel is on the right of the workspace." },
+          { id: "review", summary: "Run a review stage", text: "Reviewer will be assigned after implementation." },
+          { id: "test", summary: "Run a QA stage", text: "QA Engineer will be assigned after implementation." }
+        ];
+        for (const item of simple) {
+          this.register(
+            {
+              id: item.id,
+              summary: item.summary,
+              description: item.summary,
+              usage: `/${item.id}`,
+              category: "agent",
+              surfaces: ["slash"]
+            },
+            (_args, ctx) => ctx.addNotice(item.id, item.text)
+          );
+        }
+        this.register(
+          {
+            id: "agent",
+            summary: "Inspect or invoke a specialist",
+            description: "Select a named agent from the 14-agent roster.",
+            usage: "/agent <name>",
+            category: "agent",
+            surfaces: ["slash"]
+          },
+          (args, ctx) => {
+            const needle = (args[0] ?? "").toLowerCase();
+            const match = AGENT_REGISTRY.find(
+              (agent) => agent.id === needle || agent.name.toLowerCase().includes(needle)
+            );
+            ctx.addNotice(
+              "agent",
+              match ? `${match.icon} ${match.name} \u2014 ${match.description}` : `Unknown agent "${needle}". Try: ${AGENT_REGISTRY.map((a) => a.id).join(", ")}.`
+            );
+          }
+        );
       }
       /** Register slash commands contributed by installed plugins. */
       registerPluginCommands() {
@@ -17718,8 +18510,13 @@ ${res.record.summary.slice(0, 400)}\u2026`;
 
 // src/tui/screens/workspace.tsx
 import { useCallback, useEffect as useEffect3, useMemo as useMemo2, useRef as useRef3, useState as useState3 } from "react";
-import { Box as Box4, Text as Text4, useInput as useInput3 } from "ink";
-import { Fragment, jsx as jsx4, jsxs as jsxs4 } from "react/jsx-runtime";
+import { Box as Box5, Text as Text5, useInput as useInput3 } from "ink";
+import { Fragment, jsx as jsx5, jsxs as jsxs5 } from "react/jsx-runtime";
+function sliceSelection(text, start, end) {
+  const from = Math.max(0, Math.min(start, end, text.length));
+  const to = Math.max(from, Math.min(Math.max(start, end), text.length));
+  return text.slice(from, to);
+}
 function taskToEntries(context, task) {
   const stored = context.store.loadStoredMessages(task.id, 80);
   let id = 0;
@@ -17902,16 +18699,17 @@ function EntryCard({
   toLine,
   showHeader = true,
   showMargin = true,
-  selected = false
+  selected = false,
+  charRange
 }) {
   const role = roleFor(entry);
   const lines = bodyLines ?? wrapBodyLines(entryDisplay(entry), 80);
   const end = Math.max(0, Math.min(lines.length, toLine ?? lines.length));
   const start = Math.max(0, Math.min(end, fromLine));
   const visible = lines.slice(start, end);
-  return /* @__PURE__ */ jsxs4(Box4, { flexDirection: "column", marginBottom: showMargin ? 1 : 0, flexShrink: 0, children: [
-    showHeader ? /* @__PURE__ */ jsxs4(
-      Text4,
+  return /* @__PURE__ */ jsxs5(Box5, { flexDirection: "column", marginBottom: showMargin ? 1 : 0, flexShrink: 0, children: [
+    showHeader ? /* @__PURE__ */ jsxs5(
+      Text5,
       {
         color: selected ? theme.black : role.color,
         backgroundColor: selected ? theme.accent : void 0,
@@ -17925,17 +18723,27 @@ function EntryCard({
         ]
       }
     ) : null,
-    visible.length > 0 ? /* @__PURE__ */ jsx4(Box4, { paddingLeft: 2, flexDirection: "column", children: visible.map((line, index) => /* @__PURE__ */ jsx4(
-      Text4,
-      {
-        color: selected ? theme.black : role.bodyColor,
-        backgroundColor: selected ? theme.accent : void 0,
-        wrap: "truncate",
-        dimColor: dimmed && !selected,
-        children: line.length > 0 ? line : " "
-      },
-      `${start + index}`
-    )) }) : null
+    visible.length > 0 ? /* @__PURE__ */ jsx5(Box5, { paddingLeft: 2, flexDirection: "column", children: visible.map((line, index) => {
+      const lineOffset = lines.slice(0, start + index).reduce((sum, prior) => sum + prior.length + 1, 0);
+      const from = charRange ? Math.max(0, Math.min(line.length, charRange.start - lineOffset)) : 0;
+      const to = charRange ? Math.max(from, Math.min(line.length, charRange.end - lineOffset)) : 0;
+      const hasChars = Boolean(charRange && to > from);
+      return /* @__PURE__ */ jsx5(
+        Text5,
+        {
+          color: selected ? theme.black : role.bodyColor,
+          backgroundColor: selected ? theme.accent : void 0,
+          wrap: "truncate",
+          dimColor: dimmed && !selected,
+          children: hasChars ? /* @__PURE__ */ jsxs5(Fragment, { children: [
+            line.slice(0, from),
+            /* @__PURE__ */ jsx5(Text5, { backgroundColor: theme.accent, color: theme.black, children: line.slice(from, to) }),
+            line.slice(to)
+          ] }) : line.length > 0 ? line : " "
+        },
+        `${start + index}`
+      );
+    }) }) : null
   ] });
 }
 function Workspace({
@@ -17954,7 +18762,10 @@ function Workspace({
   onAgentMode,
   onShowOutput,
   selectionMode = false,
-  onToggleSelection
+  onToggleSelection,
+  eventBus,
+  sidePanel = false,
+  onToggleSidePanel: _onToggleSidePanel
 }) {
   const { rows, columns } = useLayout();
   const [entries, setEntries] = useState3([]);
@@ -17977,6 +18788,7 @@ function Workspace({
   const [lastResult, setLastResult] = useState3(null);
   const [stages, setStages] = useState3([]);
   const [selection, setSelection] = useState3(null);
+  const [charSelection, setCharSelection] = useState3(null);
   const [frozenEntries, setFrozenEntries] = useState3(null);
   const nextId = useRef3(1);
   const agentRef = useRef3(null);
@@ -18164,6 +18976,7 @@ function Workspace({
       setRoute(null);
       setScrollOffset(0);
       setSelection(null);
+      setCharSelection(null);
       setFrozenEntries(null);
       setStages([]);
       streamingId.current = null;
@@ -18176,7 +18989,8 @@ function Workspace({
           hooks: makeHooks(),
           authority: { ...DEFAULT_AUTHORITY },
           settings: context.store.getSettings(),
-          mode: agentMode
+          mode: agentMode,
+          eventBus
         });
         agentRef.current = agent;
         const result = await agent.run({
@@ -18207,7 +19021,7 @@ function Workspace({
         refreshData();
       }
     },
-    [addEntry, agentMode, askConfirm, context, makeHooks, refreshData, running, updateStatus]
+    [addEntry, agentMode, askConfirm, context, eventBus, makeHooks, refreshData, running, updateStatus]
   );
   const startRequest = useCallback(
     async (request) => {
@@ -18450,7 +19264,7 @@ function Workspace({
     if (next.startsWith("/")) void handleCommand(next);
     else void startRequest(next);
   }, [running, queue, handleCommand, startRequest]);
-  const bodyWidth = Math.max(24, columns - 8);
+  const bodyWidth = Math.max(24, columns - (sidePanel ? 34 : 8));
   const renderEntries = frozenEntries ?? entries;
   const entryLayouts = useMemo2(() => {
     let line = 0;
@@ -18490,6 +19304,7 @@ function Workspace({
         if (key.escape) {
           if (selection) {
             setSelection(null);
+            setCharSelection(null);
             setFrozenEntries(null);
           } else {
             onToggleSelection?.();
@@ -18525,15 +19340,43 @@ function Workspace({
           }
           return;
         }
+        if (key.shift && key.leftArrow || key.shift && key.rightArrow || key.shift && key.home || key.shift && key.end) {
+          const source = frozenEntries ?? entries;
+          if (!frozenEntries) setFrozenEntries([...source]);
+          const entry = source.find((item) => item.id === (selection?.focus ?? -1)) ?? source[source.length - 1];
+          if (!entry) return;
+          const text = entryDisplay(entry);
+          const active2 = charSelection?.entryId === entry.id ? charSelection : { entryId: entry.id, start: text.length, end: text.length };
+          const next = key.home ? 0 : key.end ? text.length : Math.max(0, Math.min(text.length, active2.end + (key.leftArrow ? -1 : 1)));
+          setCharSelection({
+            entryId: entry.id,
+            start: Math.min(active2.start, next),
+            end: Math.max(active2.start, next)
+          });
+          setSelection({ anchor: entry.id, focus: entry.id });
+          return;
+        }
         if (key.ctrl && input2 === "c") {
           const source = frozenEntries ?? entries;
+          if (charSelection) {
+            const entry = source.find((item) => item.id === charSelection.entryId);
+            const text2 = entry ? sliceSelection(entryDisplay(entry), charSelection.start, charSelection.end) : "";
+            void copyTextOrFile(text2, context.cwd).then(
+              (result) => notify(
+                result.ok ? result.path ? `Copied selection \u2014 clipboard unavailable, saved to ${result.path}` : "Copied selected characters." : "Clipboard unavailable \u2014 select with your terminal instead."
+              )
+            );
+            return;
+          }
           const selected = selection ? source.filter((entry) => {
             const ids = [selection.anchor, selection.focus];
             return entry.id >= Math.min(...ids) && entry.id <= Math.max(...ids);
           }) : source;
           const text = selected.map((entry) => entryDisplay(entry)).join("\n");
-          void copyToClipboard(text).then(
-            (ok2) => notify(ok2 ? `Copied ${selected.length} entr${selected.length === 1 ? "y" : "ies"}.` : "Clipboard unavailable \u2014 select with your terminal instead.")
+          void copyTextOrFile(text, context.cwd).then(
+            (result) => notify(
+              result.ok ? result.path ? `Copied ${selected.length} entries to ${result.path}` : `Copied ${selected.length} entr${selected.length === 1 ? "y" : "ies"}.` : "Clipboard unavailable \u2014 select with your terminal instead."
+            )
           );
           return;
         }
@@ -18623,10 +19466,10 @@ function Workspace({
     Math.min(trackHeight, Math.round(trackHeight * lineBudget / Math.max(1, totalLines)))
   ) : 0;
   const thumbTop = thumbHeight > 0 ? Math.round((trackHeight - thumbHeight) * viewStart / Math.max(1, totalLines - lineBudget)) : 0;
-  const scrollbar = thumbHeight > 0 ? /* @__PURE__ */ jsx4(Box4, { flexDirection: "column", flexShrink: 0, paddingLeft: 1, children: Array.from({ length: trackHeight }, (_, i) => {
+  const scrollbar = thumbHeight > 0 ? /* @__PURE__ */ jsx5(Box5, { flexDirection: "column", flexShrink: 0, paddingLeft: 1, children: Array.from({ length: trackHeight }, (_, i) => {
     const inThumb = i >= thumbTop && i < thumbTop + thumbHeight;
-    return /* @__PURE__ */ jsx4(
-      Text4,
+    return /* @__PURE__ */ jsx5(
+      Text5,
       {
         color: inThumb ? theme.accent : theme.faint,
         dimColor: dimmed && !inThumb,
@@ -18639,10 +19482,10 @@ function Workspace({
   const jumpBase = jumpTargets.length - jumpShown.length;
   const jumpSel = Math.min(jumpIndex, Math.max(0, jumpTargets.length - 1));
   const statusColor2 = status === "running" ? theme.accent : status === "completed" ? theme.success : status === "paused" ? theme.warning : status === "failed" ? theme.danger : theme.faint;
-  const composerArea = confirmRequest ? /* @__PURE__ */ jsx4(ConfirmDialog, { request: confirmRequest, onDecision: respondConfirm }) : /* @__PURE__ */ jsxs4(Fragment, { children: [
-    running ? /* @__PURE__ */ jsx4(Box4, { flexDirection: "column", flexShrink: 0, borderStyle: "round", borderColor: theme.border, children: /* @__PURE__ */ jsxs4(Box4, { paddingX: 1, justifyContent: "space-between", children: [
-      /* @__PURE__ */ jsx4(Spinner, { frame, label: route ? `working ${glyph.route} ${route}` : "working" }),
-      /* @__PURE__ */ jsxs4(Text4, { color: theme.faint, dimColor: dimmed, children: [
+  const composerArea = confirmRequest ? /* @__PURE__ */ jsx5(ConfirmDialog, { request: confirmRequest, onDecision: respondConfirm }) : /* @__PURE__ */ jsxs5(Fragment, { children: [
+    running ? /* @__PURE__ */ jsx5(Box5, { flexDirection: "column", flexShrink: 0, borderStyle: "round", borderColor: theme.border, children: /* @__PURE__ */ jsxs5(Box5, { paddingX: 1, justifyContent: "space-between", children: [
+      /* @__PURE__ */ jsx5(Spinner, { frame, label: route ? `working ${glyph.route} ${route}` : "working" }),
+      /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, dimColor: dimmed, children: [
         formatCount(usage2.inputTokens),
         " in / ",
         formatCount(usage2.outputTokens),
@@ -18653,8 +19496,8 @@ function Workspace({
         "type to add live \xB7 esc pauses"
       ] })
     ] }) }) : null,
-    /* @__PURE__ */ jsxs4(
-      Box4,
+    /* @__PURE__ */ jsxs5(
+      Box5,
       {
         flexDirection: "column",
         flexShrink: 0,
@@ -18662,13 +19505,13 @@ function Workspace({
         borderColor: status === "paused" ? theme.warning : theme.accentDim,
         paddingX: 1,
         children: [
-          /* @__PURE__ */ jsx4(
+          /* @__PURE__ */ jsx5(
             PromptInput,
             {
               value: input,
               onChange: setInput,
               onSubmit: submit,
-              focus: active && !dimmed,
+              focus: active && !dimmed && !selectionMode,
               suggestions,
               history: history2,
               onCycleScreen,
@@ -18676,7 +19519,7 @@ function Workspace({
               placeholder: status === "paused" ? "Describe the next step, /resume, or /new" : "Ask ComiCode to build, fix, test, or explain\u2026"
             }
           ),
-          suggestions.length === 0 ? /* @__PURE__ */ jsx4(Box4, { children: /* @__PURE__ */ jsxs4(Text4, { color: theme.faint, wrap: "truncate", dimColor: dimmed, children: [
+          suggestions.length === 0 ? /* @__PURE__ */ jsx5(Box5, { children: /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, wrap: "truncate", dimColor: dimmed, children: [
             "enter send ",
             glyph.bullet,
             " / commands ",
@@ -18693,11 +19536,11 @@ function Workspace({
       }
     )
   ] });
-  const statusFooter = /* @__PURE__ */ jsxs4(Box4, { flexDirection: "column", flexShrink: 0, paddingX: 1, marginTop: 1, children: [
-    /* @__PURE__ */ jsxs4(Text4, { wrap: "truncate", dimColor: dimmed, children: [
-      /* @__PURE__ */ jsx4(Text4, { color: statusColor2, children: status === "running" ? `${glyph.dot} ${status}` : status === "completed" ? `${glyph.check} ${status}` : status === "failed" ? `${glyph.cross} ${status}` : `${glyph.ring} ${status}` }),
-      /* @__PURE__ */ jsxs4(
-        Text4,
+  const statusFooter = /* @__PURE__ */ jsxs5(Box5, { flexDirection: "column", flexShrink: 0, paddingX: 1, marginTop: 1, children: [
+    /* @__PURE__ */ jsxs5(Text5, { wrap: "truncate", dimColor: dimmed, children: [
+      /* @__PURE__ */ jsx5(Text5, { color: statusColor2, children: status === "running" ? `${glyph.dot} ${status}` : status === "completed" ? `${glyph.check} ${status}` : status === "failed" ? `${glyph.cross} ${status}` : `${glyph.ring} ${status}` }),
+      /* @__PURE__ */ jsxs5(
+        Text5,
         {
           color: agentMode === "plan" ? theme.info : agentMode === "debug" ? theme.warning : theme.muted,
           children: [
@@ -18708,49 +19551,49 @@ function Workspace({
           ]
         }
       ),
-      /* @__PURE__ */ jsxs4(Text4, { color: theme.faint, children: [
+      /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, children: [
         "  ",
         "effort ",
         effortText
       ] }),
-      selectedProfile ? /* @__PURE__ */ jsxs4(Text4, { color: theme.muted, children: [
+      selectedProfile ? /* @__PURE__ */ jsxs5(Text5, { color: theme.muted, children: [
         "  ",
         glyph.route,
         " ",
         clip2(selectedProfile.name, 24)
-      ] }) : /* @__PURE__ */ jsxs4(Text4, { color: theme.faint, children: [
+      ] }) : /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, children: [
         "  ",
         glyph.route,
         " no profile"
       ] })
     ] }),
-    /* @__PURE__ */ jsxs4(Text4, { wrap: "truncate", dimColor: dimmed, children: [
-      route ? /* @__PURE__ */ jsxs4(Text4, { color: theme.violet, children: [
+    /* @__PURE__ */ jsxs5(Text5, { wrap: "truncate", dimColor: dimmed, children: [
+      route ? /* @__PURE__ */ jsxs5(Text5, { color: theme.violet, children: [
         glyph.route,
         " ",
         clip2(route, 54)
-      ] }) : /* @__PURE__ */ jsxs4(Text4, { color: theme.faint, children: [
+      ] }) : /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, children: [
         glyph.route,
         " no route yet"
       ] }),
-      task ? /* @__PURE__ */ jsxs4(Text4, { color: theme.faint, children: [
+      task ? /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, children: [
         "  ",
         glyph.bullet,
         " task ",
         task.id.slice(0, 8)
-      ] }) : /* @__PURE__ */ jsxs4(Text4, { color: theme.faint, children: [
+      ] }) : /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, children: [
         " ",
         glyph.bullet,
         " no task yet"
       ] })
     ] }),
-    /* @__PURE__ */ jsxs4(Text4, { color: theme.faint, wrap: "truncate", dimColor: dimmed, children: [
+    /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, wrap: "truncate", dimColor: dimmed, children: [
       usage2.inputTokens + usage2.outputTokens > 0 ? `${formatCount(usage2.inputTokens)} in \xB7 ${formatCount(usage2.outputTokens)} out` : `${formatCount(usage2.inputTokens + usage2.outputTokens)} tokens`,
       lastInputTokens > 0 ? ` \xB7 ctx ~${formatCount(lastInputTokens)}` : "",
       pauseReason ? ` ${glyph.bullet} ${clip2(pauseReason, 48)}` : lastResult ? ` ${glyph.bullet} ${clip2(lastResult, 48)}` : ""
     ] })
   ] });
-  const selectionBanner = selectionMode ? /* @__PURE__ */ jsx4(Box4, { flexShrink: 0, paddingTop: 1, children: /* @__PURE__ */ jsxs4(Text4, { color: theme.success, wrap: "truncate", children: [
+  const selectionBanner = selectionMode ? /* @__PURE__ */ jsx5(Box5, { flexShrink: 0, paddingTop: 1, children: /* @__PURE__ */ jsxs5(Text5, { color: theme.success, wrap: "truncate", children: [
     "\u2318 SELECT MODE ",
     glyph.bullet,
     " shift+\u2191/\u2193 highlight ",
@@ -18762,16 +19605,26 @@ function Workspace({
     " esc clear / ctrl+y exits"
   ] }) }) : null;
   if (entries.length === 0) {
-    return /* @__PURE__ */ jsxs4(Box4, { flexDirection: "column", flexGrow: 1, paddingX: 2, children: [
+    return /* @__PURE__ */ jsxs5(Box5, { flexDirection: "column", flexGrow: 1, paddingX: 2, children: [
       selectionBanner,
-      /* @__PURE__ */ jsx4(Box4, { flexDirection: "column", flexGrow: 1, justifyContent: "center", children: /* @__PURE__ */ jsxs4(Box4, { flexDirection: "column", alignItems: "center", width: "100%", children: [
-        /* @__PURE__ */ jsxs4(Box4, { flexDirection: "column", alignItems: "center", marginBottom: 1, children: [
-          /* @__PURE__ */ jsx4(Text4, { color: theme.accent, bold: true, wrap: "truncate", children: " \u2588\u2588\u2588\u2588\u2588\u2588\u2557   \u2588\u2588\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2588\u2557   \u2588\u2588\u2588\u2557 \u2588\u2588\u2557  \u2588\u2588\u2588\u2588\u2588\u2588\u2557   \u2588\u2588\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\n\u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255D  \u2588\u2588\u2554\u2550\u2550\u2550\u2588\u2588\u2557 \u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2588\u2588\u2551 \u2588\u2588\u2551 \u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255D  \u2588\u2588\u2554\u2550\u2550\u2550\u2588\u2588\u2557 \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557 \u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255D\n\u2588\u2588\u2551       \u2588\u2588\u2551   \u2588\u2588\u2551 \u2588\u2588\u2554\u2588\u2588\u2588\u2588\u2554\u2588\u2588\u2551 \u2588\u2588\u2551 \u2588\u2588\u2551       \u2588\u2588\u2551   \u2588\u2588\u2551 \u2588\u2588\u2551  \u2588\u2588\u2551 \u2588\u2588\u2588\u2588\u2588\u2557  \n\u2588\u2588\u2551       \u2588\u2588\u2551   \u2588\u2588\u2551 \u2588\u2588\u2551\u255A\u2588\u2588\u2554\u255D\u2588\u2588\u2551 \u2588\u2588\u2551 \u2588\u2588\u2551       \u2588\u2588\u2551   \u2588\u2588\u2551 \u2588\u2588\u2551  \u2588\u2588\u2551 \u2588\u2588\u2554\u2550\u2550\u255D  \n\u255A\u2588\u2588\u2588\u2588\u2588\u2588\u2557  \u255A\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255D \u2588\u2588\u2551 \u255A\u2550\u255D \u2588\u2588\u2551 \u2588\u2588\u2551 \u255A\u2588\u2588\u2588\u2588\u2588\u2588\u2557  \u255A\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255D \u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255D \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\n \u255A\u2550\u2550\u2550\u2550\u2550\u255D   \u255A\u2550\u2550\u2550\u2550\u2550\u255D  \u255A\u2550\u255D     \u255A\u2550\u255D \u255A\u2550\u255D  \u255A\u2550\u2550\u2550\u2550\u2550\u255D   \u255A\u2550\u2550\u2550\u2550\u2550\u255D  \u255A\u2550\u2550\u2550\u2550\u2550\u255D  \u255A\u2550\u2550\u2550\u2550\u2550\u2550\u255D" }),
-          /* @__PURE__ */ jsxs4(Text4, { color: theme.faint, dimColor: dimmed, children: [
+      sidePanel ? /* @__PURE__ */ jsx5(Box5, { flexDirection: "row", flexGrow: 1, overflow: "hidden", children: /* @__PURE__ */ jsx5(Box5, { flexDirection: "column", flexGrow: 1, justifyContent: "center", overflow: "hidden", children: /* @__PURE__ */ jsx5(
+        SidePanel,
+        {
+          stages,
+          plan,
+          route,
+          usage: usage2,
+          agentMode
+        }
+      ) }) }) : null,
+      /* @__PURE__ */ jsx5(Box5, { flexDirection: "column", flexGrow: sidePanel ? 0 : 1, justifyContent: "center", children: /* @__PURE__ */ jsxs5(Box5, { flexDirection: "column", alignItems: "center", width: "100%", children: [
+        /* @__PURE__ */ jsxs5(Box5, { flexDirection: "column", alignItems: "center", marginBottom: 1, children: [
+          /* @__PURE__ */ jsx5(Text5, { color: theme.accent, bold: true, wrap: "truncate", children: " \u2588\u2588\u2588\u2588\u2588\u2588\u2557   \u2588\u2588\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2588\u2557   \u2588\u2588\u2588\u2557 \u2588\u2588\u2557  \u2588\u2588\u2588\u2588\u2588\u2588\u2557   \u2588\u2588\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\n\u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255D  \u2588\u2588\u2554\u2550\u2550\u2550\u2588\u2588\u2557 \u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2588\u2588\u2551 \u2588\u2588\u2551 \u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255D  \u2588\u2588\u2554\u2550\u2550\u2550\u2588\u2588\u2557 \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557 \u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255D\n\u2588\u2588\u2551       \u2588\u2588\u2551   \u2588\u2588\u2551 \u2588\u2588\u2554\u2588\u2588\u2588\u2588\u2554\u2588\u2588\u2551 \u2588\u2588\u2551 \u2588\u2588\u2551       \u2588\u2588\u2551   \u2588\u2588\u2551 \u2588\u2588\u2551  \u2588\u2588\u2551 \u2588\u2588\u2588\u2588\u2588\u2557  \n\u2588\u2588\u2551       \u2588\u2588\u2551   \u2588\u2588\u2551 \u2588\u2588\u2551\u255A\u2588\u2588\u2554\u255D\u2588\u2588\u2551 \u2588\u2588\u2551 \u2588\u2588\u2551       \u2588\u2588\u2551   \u2588\u2588\u2551 \u2588\u2588\u2551  \u2588\u2588\u2551 \u2588\u2588\u2554\u2550\u2550\u255D  \n\u255A\u2588\u2588\u2588\u2588\u2588\u2588\u2557  \u255A\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255D \u2588\u2588\u2551 \u255A\u2550\u255D \u2588\u2588\u2551 \u2588\u2588\u2551 \u255A\u2588\u2588\u2588\u2588\u2588\u2588\u2557  \u255A\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255D \u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255D \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\n \u255A\u2550\u2550\u2550\u2550\u2550\u255D   \u255A\u2550\u2550\u2550\u2550\u2550\u255D  \u255A\u2550\u255D     \u255A\u2550\u255D \u255A\u2550\u255D  \u255A\u2550\u2550\u2550\u2550\u2550\u255D   \u255A\u2550\u2550\u2550\u2550\u2550\u255D  \u255A\u2550\u2550\u2550\u2550\u2550\u255D  \u255A\u2550\u2550\u2550\u2550\u2550\u2550\u255D" }),
+          /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, dimColor: dimmed, children: [
             glyph.route,
             " what should we build?"
           ] }),
-          /* @__PURE__ */ jsxs4(Text4, { color: theme.faint, dimColor: dimmed, children: [
+          /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, dimColor: dimmed, children: [
             "try: \u201Cfix a bug\u201D ",
             glyph.bullet,
             " \u201Cbuild a feature\u201D ",
@@ -18779,16 +19632,16 @@ function Workspace({
             " \u201Cexplain this code\u201D"
           ] })
         ] }),
-        /* @__PURE__ */ jsx4(Box4, { flexDirection: "column", width: "100%", maxWidth: 84, children: composerArea }),
-        /* @__PURE__ */ jsx4(Box4, { flexDirection: "column", width: "100%", maxWidth: 84, children: statusFooter })
+        /* @__PURE__ */ jsx5(Box5, { flexDirection: "column", width: "100%", maxWidth: 84, children: composerArea }),
+        /* @__PURE__ */ jsx5(Box5, { flexDirection: "column", width: "100%", maxWidth: 84, children: statusFooter })
       ] }) })
     ] });
   }
-  return /* @__PURE__ */ jsxs4(Box4, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children: [
-    /* @__PURE__ */ jsxs4(Box4, { flexDirection: "row", flexGrow: 1, overflow: "hidden", children: [
-      /* @__PURE__ */ jsxs4(Box4, { flexDirection: "column", flexGrow: 1, overflow: "hidden", paddingTop: 1, children: [
+  return /* @__PURE__ */ jsxs5(Box5, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children: [
+    /* @__PURE__ */ jsxs5(Box5, { flexDirection: "row", flexGrow: 1, overflow: "hidden", children: [
+      /* @__PURE__ */ jsxs5(Box5, { flexDirection: "column", flexGrow: 1, overflow: "hidden", paddingTop: 1, children: [
         selectionBanner,
-        viewStart > 0 ? /* @__PURE__ */ jsx4(Box4, { flexShrink: 0, children: /* @__PURE__ */ jsxs4(Text4, { color: theme.faint, dimColor: dimmed, children: [
+        viewStart > 0 ? /* @__PURE__ */ jsx5(Box5, { flexShrink: 0, children: /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, dimColor: dimmed, children: [
           glyph.arrowUp,
           " ",
           viewStart,
@@ -18798,7 +19651,7 @@ function Workspace({
           glyph.bullet,
           " pgup to scroll back"
         ] }) }) : null,
-        visibleLayouts.map((layout) => /* @__PURE__ */ jsx4(
+        visibleLayouts.map((layout) => /* @__PURE__ */ jsx5(
           EntryCard,
           {
             entry: layout.entry,
@@ -18808,16 +19661,27 @@ function Workspace({
             toLine: layout.toLine,
             showHeader: layout.localStart === 0,
             showMargin: layout.localEnd >= layout.height,
-            selected: selection !== null && layout.entry.id >= Math.min(selection.anchor, selection.focus) && layout.entry.id <= Math.max(selection.anchor, selection.focus)
+            selected: selection !== null && layout.entry.id >= Math.min(selection.anchor, selection.focus) && layout.entry.id <= Math.max(selection.anchor, selection.focus),
+            charRange: charSelection?.entryId === layout.entry.id ? { start: charSelection.start, end: charSelection.end } : null
           },
           layout.entry.id
         )),
-        visibleOffset > 0 && visibleLayouts.length === 0 ? /* @__PURE__ */ jsx4(Empty, { children: "No more transcript above. Press pgdn to return to the latest output." }) : null
+        visibleOffset > 0 && visibleLayouts.length === 0 ? /* @__PURE__ */ jsx5(Empty, { children: "No more transcript above. Press pgdn to return to the latest output." }) : null
       ] }),
-      scrollbar
+      scrollbar,
+      sidePanel ? /* @__PURE__ */ jsx5(
+        SidePanel,
+        {
+          stages,
+          plan,
+          route,
+          usage: usage2,
+          agentMode
+        }
+      ) : null
     ] }),
-    stages.length ? /* @__PURE__ */ jsxs4(Box4, { flexDirection: "column", flexShrink: 0, marginBottom: 1, children: [
-      /* @__PURE__ */ jsxs4(Text4, { color: theme.accent, bold: true, wrap: "truncate", children: [
+    stages.length ? /* @__PURE__ */ jsxs5(Box5, { flexDirection: "column", flexShrink: 0, marginBottom: 1, children: [
+      /* @__PURE__ */ jsxs5(Text5, { color: theme.accent, bold: true, wrap: "truncate", children: [
         "\u25C8 ComiCode Company ",
         glyph.bullet,
         " ",
@@ -18829,32 +19693,32 @@ function Workspace({
       stages.map((stage) => {
         const mark = stage.status === "done" ? theme.success : stage.status === "error" ? theme.danger : stage.status === "start" ? theme.accent : theme.faint;
         const symbol = stage.status === "done" ? "\u2713" : stage.status === "error" ? "\u2717" : stage.status === "start" ? "\u25B8" : "\xB7";
-        return /* @__PURE__ */ jsxs4(Box4, { flexDirection: "column", children: [
-          /* @__PURE__ */ jsxs4(Text4, { color: mark, wrap: "truncate", dimColor: dimmed && stage.status !== "start", children: [
+        return /* @__PURE__ */ jsxs5(Box5, { flexDirection: "column", children: [
+          /* @__PURE__ */ jsxs5(Text5, { color: mark, wrap: "truncate", dimColor: dimmed && stage.status !== "start", children: [
             symbol,
             " ",
             stage.icon,
             " ",
             stage.label,
-            /* @__PURE__ */ jsxs4(Text4, { color: theme.faint, children: [
+            /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, children: [
               " \u2014 ",
               stage.department,
               stage.model ? ` \xB7 ${stage.model}` : ""
             ] })
           ] }),
-          stage.status === "done" && stage.summary ? /* @__PURE__ */ jsxs4(Text4, { color: theme.faint, dimColor: true, wrap: "truncate", children: [
+          stage.status === "done" && stage.summary ? /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, dimColor: true, wrap: "truncate", children: [
             "\u21B3 ",
             clip2(stage.summary.replace(/\s+/g, " "), 110)
           ] }) : null
         ] }, `${stage.index}-${stage.roleId}`);
       })
     ] }) : null,
-    plan?.steps?.length ? /* @__PURE__ */ jsxs4(Box4, { flexDirection: "column", flexShrink: 0, marginBottom: 1, children: [
-      /* @__PURE__ */ jsxs4(Text4, { color: theme.muted, wrap: "truncate", dimColor: dimmed, children: [
-        /* @__PURE__ */ jsx4(Text4, { color: theme.accent, children: "\u25A4 plan " }),
+    plan?.steps?.length ? /* @__PURE__ */ jsxs5(Box5, { flexDirection: "column", flexShrink: 0, marginBottom: 1, children: [
+      /* @__PURE__ */ jsxs5(Text5, { color: theme.muted, wrap: "truncate", dimColor: dimmed, children: [
+        /* @__PURE__ */ jsx5(Text5, { color: theme.accent, children: "\u25A4 plan " }),
         plan.summary
       ] }),
-      /* @__PURE__ */ jsxs4(Text4, { color: theme.faint, dimColor: dimmed, children: [
+      /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, dimColor: dimmed, children: [
         plan.steps.filter((step) => step.status === "completed").length,
         "/",
         plan.steps.length,
@@ -18863,7 +19727,7 @@ function Workspace({
       ] })
     ] }) : null,
     composerArea,
-    jumpOpen && jumpTargets.length > 0 ? /* @__PURE__ */ jsx4(
+    jumpOpen && jumpTargets.length > 0 ? /* @__PURE__ */ jsx5(
       ModalWindow,
       {
         title: "JUMP TO QUESTION",
@@ -18871,13 +19735,13 @@ function Workspace({
         width: 72,
         height: Math.min(rows - 4, 20),
         footer: ["\u2191/\u2193 choose", "enter jump to that point", "esc close \xB7 pgdn latest"],
-        children: /* @__PURE__ */ jsxs4(Box4, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children: [
+        children: /* @__PURE__ */ jsxs5(Box5, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children: [
           jumpShown.map((entryIndex, offset) => {
             const pos = jumpBase + offset;
             const selected = pos === jumpSel;
             const prompt = entries[entryIndex]?.text ?? "";
-            return /* @__PURE__ */ jsx4(Box4, { children: /* @__PURE__ */ jsxs4(
-              Text4,
+            return /* @__PURE__ */ jsx5(Box5, { children: /* @__PURE__ */ jsxs5(
+              Text5,
               {
                 color: selected ? theme.black : theme.text,
                 backgroundColor: selected ? theme.accent : void 0,
@@ -18889,7 +19753,7 @@ function Workspace({
               }
             ) }, entryIndex);
           }),
-          jumpTargets.length > jumpShown.length ? /* @__PURE__ */ jsxs4(Text4, { color: theme.faint, children: [
+          jumpTargets.length > jumpShown.length ? /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, children: [
             " \u22EE ",
             jumpTargets.length - jumpShown.length,
             " earlier"
@@ -18906,20 +19770,321 @@ var init_workspace = __esm({
     init_agent();
     init_modes();
     init_components();
+    init_side_panel();
     init_confirm_dialog();
     init_modal();
     init_theme();
-    init_registry2();
+    init_registry3();
     init_files();
     init_mouse();
     init_clipboard();
   }
 });
 
+// src/tui/screens/agent-views.tsx
+import "react";
+import { Box as Box6, Text as Text6 } from "ink";
+import { jsx as jsx6, jsxs as jsxs6 } from "react/jsx-runtime";
+function safe(value) {
+  return redactSecrets(value.replace(/\b(?:sk|ghp|gho|glpat|AIza)[A-Za-z0-9_-]{8,}/gi, "[redacted]"));
+}
+function AgentInspector({
+  definition,
+  state,
+  recentEvents
+}) {
+  return /* @__PURE__ */ jsxs6(Box6, { flexDirection: "column", borderStyle: "round", borderColor: theme.borderStrong, paddingX: 1, children: [
+    /* @__PURE__ */ jsxs6(Text6, { color: theme.accent, bold: true, children: [
+      definition.icon,
+      " ",
+      definition.name
+    ] }),
+    /* @__PURE__ */ jsx6(Text6, { color: theme.muted, children: definition.description }),
+    /* @__PURE__ */ jsxs6(Text6, { color: STATUS_COLOR[state.status], children: [
+      "status ",
+      state.status,
+      " \xB7 assigned ",
+      state.assignedTaskCount,
+      " \xB7 completed ",
+      state.completedTaskCount
+    ] }),
+    /* @__PURE__ */ jsxs6(Text6, { color: theme.faint, children: [
+      "mode ",
+      definition.mode ?? "coordinator",
+      " \xB7 tools ",
+      definition.toolScope
+    ] }),
+    /* @__PURE__ */ jsxs6(Text6, { color: theme.faint, children: [
+      "model ",
+      state.model ?? "automatic",
+      " \xB7 provider ",
+      state.provider ?? "automatic"
+    ] }),
+    /* @__PURE__ */ jsx6(Box6, { marginTop: 1, flexDirection: "column", children: definition.responsibilities.map((item) => /* @__PURE__ */ jsxs6(Text6, { color: theme.muted, children: [
+      "\xB7 ",
+      safe(item)
+    ] }, item)) }),
+    /* @__PURE__ */ jsx6(Box6, { marginTop: 1, flexDirection: "column", children: recentEvents.slice(-5).map((event, index) => /* @__PURE__ */ jsxs6(Text6, { color: theme.faint, wrap: "truncate", children: [
+      event.type,
+      " ",
+      safe(String(event.payload.note ?? ""))
+    ] }, `${event.timestamp}-${index}`)) }),
+    state.lastError ? /* @__PURE__ */ jsxs6(Text6, { color: theme.danger, children: [
+      "last error: ",
+      safe(state.lastError)
+    ] }) : null
+  ] });
+}
+function TaskBoard({ contracts }) {
+  return /* @__PURE__ */ jsxs6(Box6, { flexDirection: "column", borderStyle: "round", borderColor: theme.border, paddingX: 1, children: [
+    /* @__PURE__ */ jsx6(Text6, { color: theme.accent, bold: true, children: "\u25A4 TASK BOARD" }),
+    contracts.map((contract) => /* @__PURE__ */ jsxs6(Box6, { flexDirection: "column", marginBottom: 1, children: [
+      /* @__PURE__ */ jsxs6(Text6, { color: theme.text, wrap: "truncate", children: [
+        contract.id,
+        " \xB7 ",
+        contract.assignee
+      ] }),
+      /* @__PURE__ */ jsxs6(Text6, { color: theme.muted, wrap: "truncate", children: [
+        contract.status,
+        " \xB7 priority ",
+        contract.priority,
+        " \xB7 deps ",
+        contract.dependencies.join(",") || "none"
+      ] }),
+      contract.actualResult ? /* @__PURE__ */ jsx6(Text6, { color: theme.faint, wrap: "truncate", children: contract.actualResult.slice(0, 120) }) : null
+    ] }, contract.id)),
+    contracts.length === 0 ? /* @__PURE__ */ jsx6(Text6, { color: theme.faint, children: "No tasks yet." }) : null
+  ] });
+}
+var STATUS_COLOR;
+var init_agent_views = __esm({
+  "src/tui/screens/agent-views.tsx"() {
+    "use strict";
+    init_redact();
+    init_theme();
+    STATUS_COLOR = {
+      idle: theme.faint,
+      working: theme.accent,
+      waiting: theme.violet,
+      completed: theme.success,
+      failed: theme.danger,
+      needs_input: theme.warning
+    };
+  }
+});
+
+// src/tui/screens/mission-control.tsx
+import { useEffect as useEffect4, useMemo as useMemo3, useState as useState4 } from "react";
+import { Box as Box7, Text as Text7, useInput as useInput4 } from "ink";
+import { jsx as jsx7, jsxs as jsxs7 } from "react/jsx-runtime";
+function MissionControl({
+  context,
+  active,
+  eventBus,
+  agentMode,
+  onAgentMode,
+  onStatusChange,
+  notify,
+  refreshData,
+  resumeRequest = null,
+  selectionMode = false,
+  onToggleSelection,
+  sidePanel = true
+}) {
+  const { columns, rows, compact } = useLayout();
+  const [events, setEvents] = useState4(() => {
+    const tasks = context.store.listTasks({ projectPath: context.cwd, limit: 20 });
+    const saved = tasks.find((task) => Array.isArray(task.metadata.agentEvents))?.metadata.agentEvents;
+    return [...saved ?? [], ...eventBus.history(40)].slice(-200);
+  });
+  const [focus, setFocus] = useState4("workspace");
+  const [selectedAgent, setSelectedAgent] = useState4(0);
+  const [overlay, setOverlay] = useState4(null);
+  const [agentsVisible, setAgentsVisible] = useState4(sidePanel);
+  useEffect4(() => eventBus.subscribe((event) => {
+    setEvents((previous) => [...previous.slice(-199), event]);
+  }), [eventBus]);
+  useInput4(
+    (input, key) => {
+      if (!active) return;
+      if (input === "\x1B[17~") {
+        setAgentsVisible((visible) => !visible);
+        return;
+      }
+      if (key.escape) {
+        setOverlay(null);
+        return;
+      }
+      if (focus !== "workspace" && input === "i") {
+        setOverlay("inspector");
+        return;
+      }
+      if (focus !== "workspace" && input === "t") {
+        setOverlay("board");
+        return;
+      }
+      if (focus !== "workspace" && key.tab) {
+        setFocus(
+          (current) => current === "agents" ? "workspace" : current === "workspace" ? "activity" : "agents"
+        );
+      }
+      if (focus === "agents" && (key.upArrow || key.downArrow)) {
+        setSelectedAgent(
+          (current) => Math.max(
+            0,
+            Math.min(AGENT_REGISTRY.length - 1, current + (key.downArrow ? 1 : -1))
+          )
+        );
+      }
+    },
+    { isActive: active }
+  );
+  const showAgents = agentsVisible && !compact && columns >= 112;
+  const recent = useMemo3(() => events.slice(-12).reverse(), [events]);
+  const contracts = useMemo3(() => {
+    const tasks = context.store.listTasks({ projectPath: context.cwd, limit: 20 });
+    for (const task of tasks) {
+      const saved = task.metadata.taskContracts;
+      if (Array.isArray(saved)) return saved;
+    }
+    return [];
+  }, [context, events.length]);
+  const agentStates = useMemo3(() => deriveAgentStates(events, contracts), [events, contracts]);
+  return /* @__PURE__ */ jsxs7(Box7, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children: [
+    /* @__PURE__ */ jsxs7(Box7, { flexDirection: "row", flexGrow: 1, overflow: "hidden", children: [
+      showAgents ? /* @__PURE__ */ jsxs7(
+        Box7,
+        {
+          width: 26,
+          flexDirection: "column",
+          flexShrink: 0,
+          borderStyle: "round",
+          borderColor: focus === "agents" ? theme.accent : theme.border,
+          paddingX: 1,
+          overflow: "hidden",
+          children: [
+            /* @__PURE__ */ jsxs7(Text7, { color: theme.accent, bold: true, children: [
+              glyph.brand,
+              " TEAM"
+            ] }),
+            /* @__PURE__ */ jsxs7(Text7, { color: theme.faint, dimColor: true, children: [
+              "14 agents \xB7 ",
+              agentMode
+            ] }),
+            AGENT_REGISTRY.map((agent, index) => /* @__PURE__ */ jsxs7(
+              Text7,
+              {
+                color: index === selectedAgent ? theme.black : theme.muted,
+                backgroundColor: index === selectedAgent ? theme.accent : void 0,
+                wrap: "truncate",
+                children: [
+                  agent.icon,
+                  " ",
+                  agent.name
+                ]
+              },
+              agent.id
+            ))
+          ]
+        }
+      ) : null,
+      /* @__PURE__ */ jsx7(
+        Box7,
+        {
+          flexDirection: "column",
+          flexGrow: 1,
+          flexShrink: 1,
+          borderStyle: focus === "workspace" ? "round" : void 0,
+          borderColor: theme.border,
+          overflow: "hidden",
+          children: /* @__PURE__ */ jsx7(
+            Workspace,
+            {
+              context,
+              active: active && focus === "workspace",
+              dimmed: !active,
+              onStatusChange: onStatusChange ?? (() => {
+              }),
+              onNavigate: () => {
+              },
+              onCycleScreen: () => {
+              },
+              onOpenDialog: () => {
+              },
+              onQuit: () => {
+              },
+              resumeRequest,
+              selectionMode,
+              onToggleSelection,
+              notify: notify ?? (() => {
+              }),
+              refreshData: refreshData ?? (() => {
+              }),
+              agentMode,
+              onAgentMode,
+              eventBus
+            }
+          )
+        }
+      ),
+      /* @__PURE__ */ jsxs7(
+        Box7,
+        {
+          width: 30,
+          flexDirection: "column",
+          flexShrink: 0,
+          borderStyle: "round",
+          borderColor: focus === "activity" ? theme.accent : theme.border,
+          paddingX: 1,
+          overflow: "hidden",
+          children: [
+            /* @__PURE__ */ jsxs7(Text7, { color: theme.accent, bold: true, children: [
+              glyph.dot,
+              " ACTIVITY"
+            ] }),
+            /* @__PURE__ */ jsxs7(Text7, { color: theme.faint, dimColor: true, children: [
+              events.length,
+              " events \xB7 real runtime"
+            ] }),
+            recent.map((event, index) => /* @__PURE__ */ jsx7(Text7, { color: theme.muted, wrap: "truncate", children: event.type === "agent.handoff" ? `${String(event.payload.from ?? "")} \u2192 ${String(event.payload.to ?? "")}` : event.type.startsWith("tool.") ? `${event.type.replace("tool.", "")} ${String(event.payload.name ?? "")}` : `${event.type.replace("agent.", "").replace("task.", "")} ${event.agentId ?? ""}` }, `${event.timestamp}-${index}`)),
+            recent.length === 0 ? /* @__PURE__ */ jsx7(Text7, { color: theme.faint, dimColor: true, children: "Waiting for agent activity\u2026" }) : null
+          ]
+        }
+      )
+    ] }),
+    /* @__PURE__ */ jsx7(Box7, { flexShrink: 0, paddingX: 1, children: /* @__PURE__ */ jsxs7(Text7, { color: theme.faint, wrap: "truncate", children: [
+      "tab focus ",
+      focus,
+      " \xB7 \u2191/\u2193 agents \xB7 i inspect \xB7 t tasks \xB7 esc close \xB7 ",
+      rows,
+      " rows"
+    ] }) }),
+    overlay === "inspector" ? /* @__PURE__ */ jsx7(Box7, { position: "absolute", bottom: 2, right: 2, width: 58, flexDirection: "column", children: /* @__PURE__ */ jsx7(
+      AgentInspector,
+      {
+        definition: getAgentDefinition(AGENT_REGISTRY[selectedAgent].id),
+        state: agentStates[AGENT_REGISTRY[selectedAgent].id],
+        recentEvents: events
+      }
+    ) }) : null,
+    overlay === "board" ? /* @__PURE__ */ jsx7(Box7, { position: "absolute", bottom: 2, right: 2, width: 58, flexDirection: "column", children: /* @__PURE__ */ jsx7(TaskBoard, { contracts }) }) : null
+  ] });
+}
+var init_mission_control = __esm({
+  "src/tui/screens/mission-control.tsx"() {
+    "use strict";
+    init_registry2();
+    init_components();
+    init_theme();
+    init_workspace();
+    init_agent_views();
+  }
+});
+
 // src/tui/screens/providers.tsx
-import { useCallback as useCallback2, useEffect as useEffect4, useMemo as useMemo3, useState as useState4 } from "react";
-import { Box as Box5, Text as Text5, useInput as useInput4 } from "ink";
-import { jsx as jsx5, jsxs as jsxs5 } from "react/jsx-runtime";
+import { useCallback as useCallback2, useEffect as useEffect5, useMemo as useMemo4, useState as useState5 } from "react";
+import { Box as Box8, Text as Text8, useInput as useInput5 } from "ink";
+import { jsx as jsx8, jsxs as jsxs8 } from "react/jsx-runtime";
 function kindOptions() {
   const builtins = PROVIDER_ORDER.filter((kind) => kind !== "custom").map((kind) => {
     const definition = getProviderDefinition(kind);
@@ -19058,7 +20223,7 @@ function ProvidersFrame({
   children
 }) {
   if (embedded) {
-    return /* @__PURE__ */ jsx5(
+    return /* @__PURE__ */ jsx8(
       ModalWindow,
       {
         title,
@@ -19070,7 +20235,7 @@ function ProvidersFrame({
       }
     );
   }
-  return /* @__PURE__ */ jsx5(PanelScreen, { title, subtitle, children });
+  return /* @__PURE__ */ jsx8(PanelScreen, { title, subtitle, children });
 }
 function ProvidersScreen({
   context,
@@ -19086,20 +20251,20 @@ function ProvidersScreen({
   const { rows, columns } = useLayout();
   const navHint = embedded ? "" : " \u2190/\u2192 or tab screens";
   const backHint = embedded ? "esc close" : "esc back to workspace";
-  const [mode, setMode] = useState4({ kind: "list" });
-  const [selected, setSelected] = useState4(0);
-  const [kindIndex, setKindIndex] = useState4(0);
-  const [accessIndex, setAccessIndex] = useState4(0);
-  const [effortIndex, setEffortIndex] = useState4(2);
-  const [confirmDelete, setConfirmDelete] = useState4(null);
-  const [error, setError] = useState4(null);
-  const [frame, setFrame] = useState4(0);
-  useEffect4(() => {
+  const [mode, setMode] = useState5({ kind: "list" });
+  const [selected, setSelected] = useState5(0);
+  const [kindIndex, setKindIndex] = useState5(0);
+  const [accessIndex, setAccessIndex] = useState5(0);
+  const [effortIndex, setEffortIndex] = useState5(2);
+  const [confirmDelete, setConfirmDelete] = useState5(null);
+  const [error, setError] = useState5(null);
+  const [frame, setFrame] = useState5(0);
+  useEffect5(() => {
     if (mode.kind !== "busy") return;
     const timer = setInterval(() => setFrame((value) => value + 1), 120);
     return () => clearInterval(timer);
   }, [mode.kind]);
-  const kinds = useMemo3(kindOptions, []);
+  const kinds = useMemo4(kindOptions, []);
   const profiles = context.store.listProfiles();
   const storedIds = new Set(getCredentialStore().listSecretIds());
   const current = profiles[Math.min(selected, Math.max(0, profiles.length - 1))] ?? null;
@@ -19256,7 +20421,7 @@ function ProvidersScreen({
     },
     [context, notify, refreshData]
   );
-  useInput4(
+  useInput5(
     (input, key) => {
       if (mode.kind === "busy") return;
       if (key.escape) {
@@ -19405,12 +20570,12 @@ function ProvidersScreen({
     Math.min(kindIndex - Math.floor(kindWindow / 2), kinds.length - kindWindow)
   );
   if (mode.kind === "busy") {
-    return /* @__PURE__ */ jsx5(ProvidersFrame, { embedded, title: "Providers", subtitle: "working", children: /* @__PURE__ */ jsx5(Spinner, { frame, label: mode.label }) });
+    return /* @__PURE__ */ jsx8(ProvidersFrame, { embedded, title: "Providers", subtitle: "working", children: /* @__PURE__ */ jsx8(Spinner, { frame, label: mode.label }) });
   }
   if (mode.kind === "wizard") {
     const draft = mode.draft;
     const isText = TEXT_STEPS.includes(mode.step);
-    return /* @__PURE__ */ jsxs5(
+    return /* @__PURE__ */ jsxs8(
       ProvidersFrame,
       {
         embedded,
@@ -19418,43 +20583,43 @@ function ProvidersScreen({
         subtitle: isText ? stepLabel(mode.step) : mode.step,
         footer: ["enter continue", "esc back"],
         children: [
-          /* @__PURE__ */ jsx5(Text5, { color: theme.muted, wrap: "wrap", children: "Custom platforms are first-class: any OpenAI-compatible or Gemini-compatible endpoint works." }),
-          error ? /* @__PURE__ */ jsx5(Text5, { color: theme.danger, children: error }) : null,
-          mode.step === "kind" ? /* @__PURE__ */ jsxs5(Box5, { flexDirection: "column", marginTop: 1, overflow: "hidden", children: [
-            /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, wrap: "truncate", children: [
+          /* @__PURE__ */ jsx8(Text8, { color: theme.muted, wrap: "wrap", children: "Custom platforms are first-class: any OpenAI-compatible or Gemini-compatible endpoint works." }),
+          error ? /* @__PURE__ */ jsx8(Text8, { color: theme.danger, children: error }) : null,
+          mode.step === "kind" ? /* @__PURE__ */ jsxs8(Box8, { flexDirection: "column", marginTop: 1, overflow: "hidden", children: [
+            /* @__PURE__ */ jsxs8(Text8, { color: theme.faint, wrap: "truncate", children: [
               "  ",
               "Free options are marked. Local endpoints need no key."
             ] }),
             kinds.slice(kindStart, kindStart + kindWindow).map((option, offset) => {
               const index = kindStart + offset;
               const activeRow = index === kindIndex;
-              return /* @__PURE__ */ jsxs5(
-                Box5,
+              return /* @__PURE__ */ jsxs8(
+                Box8,
                 {
                   flexDirection: "column",
                   backgroundColor: activeRow ? theme.surfaceAlt : void 0,
                   children: [
-                    /* @__PURE__ */ jsxs5(Box5, { children: [
-                      /* @__PURE__ */ jsx5(Text5, { color: activeRow ? theme.accent : theme.faint, bold: activeRow, children: activeRow ? `${glyph.active} ` : "  " }),
-                      /* @__PURE__ */ jsx5(Text5, { bold: true, color: activeRow ? theme.text : theme.text, children: option.label }),
-                      option.badge ? /* @__PURE__ */ jsxs5(Text5, { color: activeRow ? theme.accent : theme.success, children: [
+                    /* @__PURE__ */ jsxs8(Box8, { children: [
+                      /* @__PURE__ */ jsx8(Text8, { color: activeRow ? theme.accent : theme.faint, bold: activeRow, children: activeRow ? `${glyph.active} ` : "  " }),
+                      /* @__PURE__ */ jsx8(Text8, { bold: true, color: activeRow ? theme.text : theme.text, children: option.label }),
+                      option.badge ? /* @__PURE__ */ jsxs8(Text8, { color: activeRow ? theme.accent : theme.success, children: [
                         "  ",
                         "[",
                         option.badge,
                         "]"
                       ] }) : null
                     ] }),
-                    /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, wrap: "truncate", children: [
+                    /* @__PURE__ */ jsxs8(Text8, { color: theme.faint, wrap: "truncate", children: [
                       "     ",
                       clip2(option.detail, Math.max(20, columns - 12)),
-                      option.baseUrl && option.preset ? /* @__PURE__ */ jsx5(Text5, { color: theme.faint, children: `  ${clip2(option.baseUrl, 40)}` }) : null
+                      option.baseUrl && option.preset ? /* @__PURE__ */ jsx8(Text8, { color: theme.faint, children: `  ${clip2(option.baseUrl, 40)}` }) : null
                     ] })
                   ]
                 },
                 option.key
               );
             }),
-            /* @__PURE__ */ jsxs5(Hint, { children: [
+            /* @__PURE__ */ jsxs8(Hint, { children: [
               "\u2191/\u2193 choose ",
               glyph.bullet,
               " enter continue ",
@@ -19462,9 +20627,9 @@ function ProvidersScreen({
               " esc cancel"
             ] })
           ] }) : null,
-          isText ? /* @__PURE__ */ jsxs5(Box5, { flexDirection: "column", marginTop: 1, children: [
-            /* @__PURE__ */ jsx5(Text5, { color: theme.muted, children: stepLabel(mode.step) }),
-            /* @__PURE__ */ jsx5(
+          isText ? /* @__PURE__ */ jsxs8(Box8, { flexDirection: "column", marginTop: 1, children: [
+            /* @__PURE__ */ jsx8(Text8, { color: theme.muted, children: stepLabel(mode.step) }),
+            /* @__PURE__ */ jsx8(
               PromptInput,
               {
                 value: String(draft[mode.step] ?? ""),
@@ -19500,14 +20665,14 @@ function ProvidersScreen({
                 }
               }
             ),
-            /* @__PURE__ */ jsx5(Hint, { children: mode.step === "apiKeyEnv" ? "Leave blank to store a key instead. Environment variables keep secrets out of the database." : "enter continue \xB7 esc cancels without saving" })
+            /* @__PURE__ */ jsx8(Hint, { children: mode.step === "apiKeyEnv" ? "Leave blank to store a key instead. Environment variables keep secrets out of the database." : "enter continue \xB7 esc cancels without saving" })
           ] }) : null,
-          mode.step === "access" ? /* @__PURE__ */ jsxs5(Box5, { flexDirection: "column", marginTop: 1, children: [
-            /* @__PURE__ */ jsx5(Text5, { color: theme.muted, children: "How should routing classify this profile?" }),
+          mode.step === "access" ? /* @__PURE__ */ jsxs8(Box8, { flexDirection: "column", marginTop: 1, children: [
+            /* @__PURE__ */ jsx8(Text8, { color: theme.muted, children: "How should routing classify this profile?" }),
             ACCESS_OPTIONS.map((access, index) => {
               const activeRow = index === accessIndex;
-              return /* @__PURE__ */ jsxs5(
-                Text5,
+              return /* @__PURE__ */ jsxs8(
+                Text8,
                 {
                   color: activeRow ? theme.black : theme.text,
                   backgroundColor: activeRow ? theme.accent : void 0,
@@ -19515,13 +20680,13 @@ function ProvidersScreen({
                   children: [
                     activeRow ? ` ${glyph.active} ` : "   ",
                     access.padEnd(13),
-                    /* @__PURE__ */ jsx5(Text5, { color: activeRow ? theme.black : theme.faint, children: access === "unknown" ? " usable, not preferred" : access === "user-free" ? " free for you; preferred fallback" : access === "user-paid" ? " blocked unless allowPaid" : " never routed" })
+                    /* @__PURE__ */ jsx8(Text8, { color: activeRow ? theme.black : theme.faint, children: access === "unknown" ? " usable, not preferred" : access === "user-free" ? " free for you; preferred fallback" : access === "user-paid" ? " blocked unless allowPaid" : " never routed" })
                   ]
                 },
                 access
               );
             }),
-            /* @__PURE__ */ jsxs5(Hint, { children: [
+            /* @__PURE__ */ jsxs8(Hint, { children: [
               "\u2191/\u2193 choose ",
               glyph.bullet,
               " enter continue ",
@@ -19529,17 +20694,17 @@ function ProvidersScreen({
               " esc cancel"
             ] })
           ] }) : null,
-          mode.step === "effort" ? /* @__PURE__ */ jsxs5(Box5, { flexDirection: "column", marginTop: 1, children: [
-            /* @__PURE__ */ jsx5(Text5, { color: theme.muted, wrap: "wrap", children: "How deep should the agent go on this profile? Lower effort uses far fewer tokens." }),
+          mode.step === "effort" ? /* @__PURE__ */ jsxs8(Box8, { flexDirection: "column", marginTop: 1, children: [
+            /* @__PURE__ */ jsx8(Text8, { color: theme.muted, wrap: "wrap", children: "How deep should the agent go on this profile? Lower effort uses far fewer tokens." }),
             EFFORT_OPTIONS.map((effort, index) => {
               const activeRow = index === effortIndex;
-              return /* @__PURE__ */ jsx5(
-                Box5,
+              return /* @__PURE__ */ jsx8(
+                Box8,
                 {
                   backgroundColor: activeRow ? theme.surfaceAlt : void 0,
                   flexDirection: "column",
-                  children: /* @__PURE__ */ jsxs5(
-                    Text5,
+                  children: /* @__PURE__ */ jsxs8(
+                    Text8,
                     {
                       color: activeRow ? theme.black : theme.text,
                       backgroundColor: activeRow ? theme.accent : void 0,
@@ -19547,7 +20712,7 @@ function ProvidersScreen({
                       children: [
                         activeRow ? ` ${glyph.active} ` : "   ",
                         effort.padEnd(10),
-                        /* @__PURE__ */ jsx5(Text5, { color: activeRow ? theme.black : theme.faint, children: EFFORT_DESCRIPTIONS[effort] })
+                        /* @__PURE__ */ jsx8(Text8, { color: activeRow ? theme.black : theme.faint, children: EFFORT_DESCRIPTIONS[effort] })
                       ]
                     }
                   )
@@ -19555,7 +20720,7 @@ function ProvidersScreen({
                 effort
               );
             }),
-            /* @__PURE__ */ jsxs5(Hint, { children: [
+            /* @__PURE__ */ jsxs8(Hint, { children: [
               "\u2191/\u2193 choose ",
               glyph.bullet,
               " enter continue ",
@@ -19563,8 +20728,8 @@ function ProvidersScreen({
               " esc cancel"
             ] })
           ] }) : null,
-          mode.step === "confirm" ? /* @__PURE__ */ jsxs5(Box5, { flexDirection: "column", marginTop: 1, children: [
-            /* @__PURE__ */ jsx5(
+          mode.step === "confirm" ? /* @__PURE__ */ jsxs8(Box8, { flexDirection: "column", marginTop: 1, children: [
+            /* @__PURE__ */ jsx8(
               KeyValue,
               {
                 rows: [
@@ -19586,16 +20751,16 @@ function ProvidersScreen({
                 ]
               }
             ),
-            /* @__PURE__ */ jsx5(Box5, { marginTop: 1, children: /* @__PURE__ */ jsxs5(Text5, { color: theme.muted, children: [
-              /* @__PURE__ */ jsx5(Text5, { bold: true, color: theme.accent, children: "enter" }),
+            /* @__PURE__ */ jsx8(Box8, { marginTop: 1, children: /* @__PURE__ */ jsxs8(Text8, { color: theme.muted, children: [
+              /* @__PURE__ */ jsx8(Text8, { bold: true, color: theme.accent, children: "enter" }),
               " ",
               "save ",
-              /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, children: [
+              /* @__PURE__ */ jsxs8(Text8, { color: theme.faint, children: [
                 glyph.bullet,
                 " esc cancels"
               ] })
             ] }) }),
-            error ? /* @__PURE__ */ jsx5(Text5, { color: theme.danger, children: error }) : null
+            error ? /* @__PURE__ */ jsx8(Text8, { color: theme.danger, children: error }) : null
           ] }) : null
         ]
       }
@@ -19604,13 +20769,13 @@ function ProvidersScreen({
   if (mode.kind === "details") {
     const profile = context.store.getProfile(mode.profileId);
     if (!profile) {
-      return /* @__PURE__ */ jsx5(ProvidersFrame, { embedded, title: "Providers", subtitle: "missing", children: /* @__PURE__ */ jsx5(Text5, { color: theme.muted, children: "This profile no longer exists. Press esc to return." }) });
+      return /* @__PURE__ */ jsx8(ProvidersFrame, { embedded, title: "Providers", subtitle: "missing", children: /* @__PURE__ */ jsx8(Text8, { color: theme.muted, children: "This profile no longer exists. Press esc to return." }) });
     }
     const config = readEndpointConfig(profile);
     const models = context.store.listModels(profile.providerId, profile.providerId === "custom" ? profile.id : void 0).filter((model) => model.profileId === null || model.profileId === profile.id);
     const limits2 = context.store.listLimits(true).filter((limit) => limit.profileId === profile.id);
     const keyState = profile.apiKeyEnv ? `env:${profile.apiKeyEnv}` : storedIds.has(credentialIdForProfile(profile.id)) ? "stored securely" : config.allowNoAuth ? "no auth" : "missing";
-    return /* @__PURE__ */ jsxs5(
+    return /* @__PURE__ */ jsxs8(
       ProvidersFrame,
       {
         embedded,
@@ -19618,8 +20783,8 @@ function ProvidersScreen({
         subtitle: providerDisplayName(profile.providerId),
         footer: ["t test", "r refresh", "e edit", "space toggle", "d delete", "esc back"],
         children: [
-          error ? /* @__PURE__ */ jsx5(Text5, { color: theme.danger, children: error }) : null,
-          /* @__PURE__ */ jsx5(
+          error ? /* @__PURE__ */ jsx8(Text8, { color: theme.danger, children: error }) : null,
+          /* @__PURE__ */ jsx8(
             KeyValue,
             {
               rows: [
@@ -19641,49 +20806,49 @@ function ProvidersScreen({
               width: 18
             }
           ),
-          /* @__PURE__ */ jsxs5(Box5, { marginTop: 1, flexDirection: "column", overflow: "hidden", children: [
-            /* @__PURE__ */ jsx5(Text5, { bold: true, color: theme.text, children: "Models" }),
-            models.slice(0, 6).map((model) => /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, wrap: "truncate", children: [
+          /* @__PURE__ */ jsxs8(Box8, { marginTop: 1, flexDirection: "column", overflow: "hidden", children: [
+            /* @__PURE__ */ jsx8(Text8, { bold: true, color: theme.text, children: "Models" }),
+            models.slice(0, 6).map((model) => /* @__PURE__ */ jsxs8(Text8, { color: theme.faint, wrap: "truncate", children: [
               "  ",
               model.modelId,
               " [",
               model.access,
               "]"
             ] }, model.id)),
-            models.length > 6 ? /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, children: [
+            models.length > 6 ? /* @__PURE__ */ jsxs8(Text8, { color: theme.faint, children: [
               " \u2026 ",
               models.length - 6,
               " more in the model picker"
             ] }) : null
           ] }),
-          /* @__PURE__ */ jsx5(Box5, { marginTop: 1, flexShrink: 0, children: /* @__PURE__ */ jsxs5(Text5, { color: theme.muted, wrap: "truncate", children: [
-            /* @__PURE__ */ jsx5(Text5, { color: theme.accent, children: "t" }),
+          /* @__PURE__ */ jsx8(Box8, { marginTop: 1, flexShrink: 0, children: /* @__PURE__ */ jsxs8(Text8, { color: theme.muted, wrap: "truncate", children: [
+            /* @__PURE__ */ jsx8(Text8, { color: theme.accent, children: "t" }),
             " test ",
             glyph.bullet,
             " ",
-            /* @__PURE__ */ jsx5(Text5, { color: theme.accent, children: "r" }),
+            /* @__PURE__ */ jsx8(Text8, { color: theme.accent, children: "r" }),
             " refresh ",
             glyph.bullet,
             " ",
-            /* @__PURE__ */ jsx5(Text5, { color: theme.accent, children: "e" }),
+            /* @__PURE__ */ jsx8(Text8, { color: theme.accent, children: "e" }),
             " edit ",
             glyph.bullet,
             " ",
-            /* @__PURE__ */ jsx5(Text5, { color: theme.accent, children: "space" }),
+            /* @__PURE__ */ jsx8(Text8, { color: theme.accent, children: "space" }),
             " enable/disable ",
             glyph.bullet,
             " ",
-            /* @__PURE__ */ jsx5(Text5, { color: theme.accent, children: "d" }),
+            /* @__PURE__ */ jsx8(Text8, { color: theme.accent, children: "d" }),
             " delete ",
             glyph.bullet,
             " esc back"
           ] }) }),
-          /* @__PURE__ */ jsx5(Hint, { children: `esc returns to the profile list${navHint}` })
+          /* @__PURE__ */ jsx8(Hint, { children: `esc returns to the profile list${navHint}` })
         ]
       }
     );
   }
-  return /* @__PURE__ */ jsxs5(
+  return /* @__PURE__ */ jsxs8(
     ProvidersFrame,
     {
       embedded,
@@ -19700,30 +20865,30 @@ function ProvidersScreen({
         "esc close"
       ],
       children: [
-        error ? /* @__PURE__ */ jsx5(Text5, { color: theme.danger, children: error }) : null,
-        profiles.length === 0 ? /* @__PURE__ */ jsx5(Empty, { children: "No providers yet. Press a to connect Gemini, Groq, OpenRouter, OpenAI, or any custom platform." }) : /* @__PURE__ */ jsx5(Box5, { flexDirection: "column", marginTop: 1, overflow: "hidden", children: profiles.slice(listStart, listStart + listWindow).map((profile, offset) => {
+        error ? /* @__PURE__ */ jsx8(Text8, { color: theme.danger, children: error }) : null,
+        profiles.length === 0 ? /* @__PURE__ */ jsx8(Empty, { children: "No providers yet. Press a to connect Gemini, Groq, OpenRouter, OpenAI, or any custom platform." }) : /* @__PURE__ */ jsx8(Box8, { flexDirection: "column", marginTop: 1, overflow: "hidden", children: profiles.slice(listStart, listStart + listWindow).map((profile, offset) => {
           const index = listStart + offset;
           const key = profile.apiKeyEnv ? `env:${profile.apiKeyEnv}` : storedIds.has(credentialIdForProfile(profile.id)) ? "key stored" : "no key";
           const activeRow = index === selected;
-          return /* @__PURE__ */ jsxs5(Box5, { flexDirection: "column", marginBottom: 1, children: [
-            /* @__PURE__ */ jsxs5(Text5, { color: activeRow ? theme.text : theme.muted, children: [
-              activeRow ? /* @__PURE__ */ jsxs5(Text5, { color: theme.accent, bold: true, children: [
+          return /* @__PURE__ */ jsxs8(Box8, { flexDirection: "column", marginBottom: 1, children: [
+            /* @__PURE__ */ jsxs8(Text8, { color: activeRow ? theme.text : theme.muted, children: [
+              activeRow ? /* @__PURE__ */ jsxs8(Text8, { color: theme.accent, bold: true, children: [
                 glyph.active,
                 " "
               ] }) : "  ",
-              /* @__PURE__ */ jsx5(Text5, { color: lastCheckSucceeded(profile) ? theme.success : theme.faint, children: lastCheckSucceeded(profile) ? glyph.check : glyph.ring }),
+              /* @__PURE__ */ jsx8(Text8, { color: lastCheckSucceeded(profile) ? theme.success : theme.faint, children: lastCheckSucceeded(profile) ? glyph.check : glyph.ring }),
               " ",
-              /* @__PURE__ */ jsx5(Text5, { bold: true, color: activeRow ? theme.text : theme.text, children: profile.name }),
-              /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, children: [
+              /* @__PURE__ */ jsx8(Text8, { bold: true, color: activeRow ? theme.text : theme.text, children: profile.name }),
+              /* @__PURE__ */ jsxs8(Text8, { color: theme.faint, children: [
                 " ",
                 providerDisplayName(profile.providerId)
               ] }),
-              /* @__PURE__ */ jsxs5(Text5, { color: theme.accent, children: [
+              /* @__PURE__ */ jsxs8(Text8, { color: theme.accent, children: [
                 " ",
                 profile.defaultModel ?? "no default model"
               ] })
             ] }),
-            /* @__PURE__ */ jsxs5(Text5, { color: theme.faint, wrap: "truncate", children: [
+            /* @__PURE__ */ jsxs8(Text8, { color: theme.faint, wrap: "truncate", children: [
               "    ",
               clip2(profile.baseUrl, Math.max(20, columns - 34)),
               " ",
@@ -19745,45 +20910,45 @@ function ProvidersScreen({
             ] })
           ] }, profile.id);
         }) }),
-        confirmDelete ? /* @__PURE__ */ jsxs5(Text5, { color: theme.warning, children: [
+        confirmDelete ? /* @__PURE__ */ jsxs8(Text8, { color: theme.warning, children: [
           "Delete ",
           profiles.find((profile) => profile.id === confirmDelete)?.name,
           " and its credential? ",
-          /* @__PURE__ */ jsx5(Text5, { bold: true, children: "y" }),
+          /* @__PURE__ */ jsx8(Text8, { bold: true, children: "y" }),
           " yes ",
           glyph.bullet,
           " ",
-          /* @__PURE__ */ jsx5(Text5, { bold: true, children: "n" }),
+          /* @__PURE__ */ jsx8(Text8, { bold: true, children: "n" }),
           " no"
-        ] }) : /* @__PURE__ */ jsx5(Box5, { marginTop: 1, flexShrink: 0, children: /* @__PURE__ */ jsxs5(Text5, { color: theme.muted, wrap: "truncate", children: [
-          /* @__PURE__ */ jsx5(Text5, { color: theme.accent, children: "a" }),
+        ] }) : /* @__PURE__ */ jsx8(Box8, { marginTop: 1, flexShrink: 0, children: /* @__PURE__ */ jsxs8(Text8, { color: theme.muted, wrap: "truncate", children: [
+          /* @__PURE__ */ jsx8(Text8, { color: theme.accent, children: "a" }),
           " add ",
           glyph.bullet,
           " ",
-          /* @__PURE__ */ jsx5(Text5, { color: theme.accent, children: "enter" }),
+          /* @__PURE__ */ jsx8(Text8, { color: theme.accent, children: "enter" }),
           " details ",
           glyph.bullet,
           " ",
-          /* @__PURE__ */ jsx5(Text5, { color: theme.accent, children: "e" }),
+          /* @__PURE__ */ jsx8(Text8, { color: theme.accent, children: "e" }),
           " edit ",
           glyph.bullet,
           " ",
-          /* @__PURE__ */ jsx5(Text5, { color: theme.accent, children: "t" }),
+          /* @__PURE__ */ jsx8(Text8, { color: theme.accent, children: "t" }),
           " test ",
           glyph.bullet,
           " ",
-          /* @__PURE__ */ jsx5(Text5, { color: theme.accent, children: "r" }),
+          /* @__PURE__ */ jsx8(Text8, { color: theme.accent, children: "r" }),
           " refresh ",
           glyph.bullet,
           " ",
-          /* @__PURE__ */ jsx5(Text5, { color: theme.accent, children: "space" }),
+          /* @__PURE__ */ jsx8(Text8, { color: theme.accent, children: "space" }),
           " toggle ",
           glyph.bullet,
           " ",
-          /* @__PURE__ */ jsx5(Text5, { color: theme.accent, children: "d" }),
+          /* @__PURE__ */ jsx8(Text8, { color: theme.accent, children: "d" }),
           " delete"
         ] }) }),
-        /* @__PURE__ */ jsx5(Hint, { children: `\u2191/\u2193 move${navHint} ${glyph.bullet} ${backHint}` })
+        /* @__PURE__ */ jsx8(Hint, { children: `\u2191/\u2193 move${navHint} ${glyph.bullet} ${backHint}` })
       ]
     }
   );
@@ -19833,7 +20998,7 @@ var init_providers2 = __esm({
 
 // src/tui/dialogs/providers-dialog.tsx
 import "react";
-import { jsx as jsx6 } from "react/jsx-runtime";
+import { jsx as jsx9 } from "react/jsx-runtime";
 function ProvidersDialog({
   context,
   onClose,
@@ -19842,7 +21007,7 @@ function ProvidersDialog({
   onStatusChange,
   onRequestConnect
 }) {
-  return /* @__PURE__ */ jsx6(
+  return /* @__PURE__ */ jsx9(
     ProvidersScreen,
     {
       context,
@@ -19867,9 +21032,9 @@ var init_providers_dialog = __esm({
 });
 
 // src/tui/dialogs/selector.tsx
-import { useMemo as useMemo4 } from "react";
-import { Box as Box6, Text as Text6, useInput as useInput5 } from "ink";
-import { Fragment as Fragment2, jsx as jsx7, jsxs as jsxs6 } from "react/jsx-runtime";
+import { useMemo as useMemo5 } from "react";
+import { Box as Box9, Text as Text9, useInput as useInput6 } from "ink";
+import { Fragment as Fragment2, jsx as jsx10, jsxs as jsxs9 } from "react/jsx-runtime";
 function Selector({
   title,
   subtitle,
@@ -19903,7 +21068,7 @@ function Selector({
       }
     }
   };
-  useInput5(
+  useInput6(
     (input, key) => {
       if (isMouseSequence(input) || isSuppressedInput()) return;
       if (onKey?.(input, key, current)) return;
@@ -19946,7 +21111,7 @@ function Selector({
     },
     { isActive: true }
   );
-  const displayRows = useMemo4(() => {
+  const displayRows = useMemo5(() => {
     const result = [];
     let previousGroup;
     items.forEach((item, index) => {
@@ -19989,8 +21154,8 @@ function Selector({
   const visible = displayRows.slice(start, end + 1);
   const remainingAbove = start;
   const remainingBelow = Math.max(0, displayRows.length - (end + 1));
-  const content = /* @__PURE__ */ jsxs6(
-    Box6,
+  const content = /* @__PURE__ */ jsxs9(
+    Box9,
     {
       width: floating ? modalWidth : void 0,
       height: floating ? modalHeight : void 0,
@@ -20002,36 +21167,36 @@ function Selector({
       paddingX: 1,
       overflow: "hidden",
       children: [
-        /* @__PURE__ */ jsxs6(Box6, { justifyContent: "space-between", flexShrink: 0, children: [
-          /* @__PURE__ */ jsxs6(Text6, { bold: true, color: theme.text, wrap: "truncate", children: [
-            /* @__PURE__ */ jsxs6(Text6, { color: accent2, children: [
+        /* @__PURE__ */ jsxs9(Box9, { justifyContent: "space-between", flexShrink: 0, children: [
+          /* @__PURE__ */ jsxs9(Text9, { bold: true, color: theme.text, wrap: "truncate", children: [
+            /* @__PURE__ */ jsxs9(Text9, { color: accent2, children: [
               glyph.brand,
               " "
             ] }),
             title
           ] }),
-          /* @__PURE__ */ jsxs6(Text6, { color: theme.faint, wrap: "truncate", children: [
+          /* @__PURE__ */ jsxs9(Text9, { color: theme.faint, wrap: "truncate", children: [
             subtitle ? `${subtitle}  ` : "",
             items.length,
             " ",
             items.length === 1 ? "result" : "results"
           ] })
         ] }),
-        showSearch ? /* @__PURE__ */ jsxs6(Box6, { flexShrink: 0, marginTop: 1, children: [
-          /* @__PURE__ */ jsxs6(Text6, { color: theme.faint, children: [
+        showSearch ? /* @__PURE__ */ jsxs9(Box9, { flexShrink: 0, marginTop: 1, children: [
+          /* @__PURE__ */ jsxs9(Text9, { color: theme.faint, children: [
             glyph.prompt,
             " "
           ] }),
-          query ? /* @__PURE__ */ jsxs6(Text6, { color: theme.text, wrap: "truncate", children: [
+          query ? /* @__PURE__ */ jsxs9(Text9, { color: theme.text, wrap: "truncate", children: [
             query,
-            /* @__PURE__ */ jsx7(Text6, { color: accent2, children: "\u258C" })
-          ] }) : /* @__PURE__ */ jsxs6(Text6, { color: theme.faint, wrap: "truncate", children: [
+            /* @__PURE__ */ jsx10(Text9, { color: accent2, children: "\u258C" })
+          ] }) : /* @__PURE__ */ jsxs9(Text9, { color: theme.faint, wrap: "truncate", children: [
             searchPlaceholder,
-            /* @__PURE__ */ jsx7(Text6, { color: accent2, children: "\u258C" })
+            /* @__PURE__ */ jsx10(Text9, { color: accent2, children: "\u258C" })
           ] })
         ] }) : null,
-        /* @__PURE__ */ jsx7(Box6, { flexDirection: "column", flexGrow: 1, overflow: "hidden", marginTop: 1, children: items.length === 0 ? /* @__PURE__ */ jsx7(Text6, { color: theme.muted, wrap: "wrap", children: emptyText }) : /* @__PURE__ */ jsxs6(Fragment2, { children: [
-          remainingAbove > 0 ? /* @__PURE__ */ jsxs6(Text6, { color: theme.faint, children: [
+        /* @__PURE__ */ jsx10(Box9, { flexDirection: "column", flexGrow: 1, overflow: "hidden", marginTop: 1, children: items.length === 0 ? /* @__PURE__ */ jsx10(Text9, { color: theme.muted, wrap: "wrap", children: emptyText }) : /* @__PURE__ */ jsxs9(Fragment2, { children: [
+          remainingAbove > 0 ? /* @__PURE__ */ jsxs9(Text9, { color: theme.faint, children: [
             glyph.arrowUp,
             " ",
             remainingAbove,
@@ -20039,12 +21204,12 @@ function Selector({
           ] }) : null,
           visible.map((row, offset) => {
             if (row.kind === "group") {
-              return /* @__PURE__ */ jsx7(Text6, { color: theme.faint, bold: true, children: row.label.toUpperCase() }, `group-${row.label}-${start + offset}`);
+              return /* @__PURE__ */ jsx10(Text9, { color: theme.faint, bold: true, children: row.label.toUpperCase() }, `group-${row.label}-${start + offset}`);
             }
             const active = row.index === safeSelected && !row.item.disabled;
-            return /* @__PURE__ */ jsxs6(Box6, { flexDirection: "column", flexShrink: 0, children: [
-              /* @__PURE__ */ jsx7(Box6, { children: /* @__PURE__ */ jsxs6(
-                Text6,
+            return /* @__PURE__ */ jsxs9(Box9, { flexDirection: "column", flexShrink: 0, children: [
+              /* @__PURE__ */ jsx10(Box9, { children: /* @__PURE__ */ jsxs9(
+                Text9,
                 {
                   color: active ? theme.black : row.item.disabled ? theme.faint : theme.text,
                   backgroundColor: active ? accent2 : void 0,
@@ -20052,8 +21217,8 @@ function Selector({
                   wrap: "truncate",
                   children: [
                     active ? ` ${glyph.active} ` : "   ",
-                    row.item.leadingBadge ? /* @__PURE__ */ jsxs6(
-                      Text6,
+                    row.item.leadingBadge ? /* @__PURE__ */ jsxs9(
+                      Text9,
                       {
                         bold: true,
                         color: active ? theme.black : row.item.leadingBadgeColor ?? theme.success,
@@ -20063,8 +21228,8 @@ function Selector({
                         ]
                       }
                     ) : null,
-                    /* @__PURE__ */ jsx7(Text6, { bold: active, children: row.item.label }),
-                    row.item.badge ? /* @__PURE__ */ jsxs6(Text6, { color: active ? theme.black : row.item.badgeColor ?? theme.muted, children: [
+                    /* @__PURE__ */ jsx10(Text9, { bold: active, children: row.item.label }),
+                    row.item.badge ? /* @__PURE__ */ jsxs9(Text9, { color: active ? theme.black : row.item.badgeColor ?? theme.muted, children: [
                       "  ",
                       row.item.badge
                     ] }) : null,
@@ -20072,29 +21237,29 @@ function Selector({
                   ]
                 }
               ) }),
-              row.item.detail ? /* @__PURE__ */ jsxs6(Text6, { color: active ? theme.muted : theme.faint, wrap: "truncate", children: [
+              row.item.detail ? /* @__PURE__ */ jsxs9(Text9, { color: active ? theme.muted : theme.faint, wrap: "truncate", children: [
                 "     ",
                 row.item.detail
               ] }) : null
             ] }, row.item.key);
           }),
-          remainingBelow > 0 ? /* @__PURE__ */ jsxs6(Text6, { color: theme.faint, children: [
+          remainingBelow > 0 ? /* @__PURE__ */ jsxs9(Text9, { color: theme.faint, children: [
             glyph.arrowDown,
             " ",
             remainingBelow,
             " more"
           ] }) : null
         ] }) }),
-        /* @__PURE__ */ jsxs6(Box6, { flexShrink: 0, marginTop: 1, justifyContent: "space-between", children: [
-          /* @__PURE__ */ jsx7(Text6, { color: theme.faint, wrap: "truncate", children: footer.join(`  ${glyph.bullet}  `) }),
-          /* @__PURE__ */ jsx7(Text6, { color: theme.faint, children: columns < 80 ? "" : `${columns} cols` })
+        /* @__PURE__ */ jsxs9(Box9, { flexShrink: 0, marginTop: 1, justifyContent: "space-between", children: [
+          /* @__PURE__ */ jsx10(Text9, { color: theme.faint, wrap: "truncate", children: footer.join(`  ${glyph.bullet}  `) }),
+          /* @__PURE__ */ jsx10(Text9, { color: theme.faint, children: columns < 80 ? "" : `${columns} cols` })
         ] })
       ]
     }
   );
   if (!floating) return content;
-  return /* @__PURE__ */ jsx7(
-    Box6,
+  return /* @__PURE__ */ jsx10(
+    Box9,
     {
       position: "absolute",
       top: 0,
@@ -20122,9 +21287,9 @@ var init_selector = __esm({
 });
 
 // src/tui/dialogs/model-picker.tsx
-import { useCallback as useCallback3, useEffect as useEffect5, useMemo as useMemo5, useState as useState5 } from "react";
-import { Box as Box7, Text as Text7 } from "ink";
-import { jsx as jsx8, jsxs as jsxs7 } from "react/jsx-runtime";
+import { useCallback as useCallback3, useEffect as useEffect6, useMemo as useMemo6, useState as useState6 } from "react";
+import { Box as Box10, Text as Text10 } from "ink";
+import { jsx as jsx11, jsxs as jsxs10 } from "react/jsx-runtime";
 function accessColor(access) {
   if (access === "free-confirmed" || access === "user-free") return theme.success;
   if (access === "free-tier") return theme.accent;
@@ -20143,25 +21308,25 @@ function ModelPicker({
   refreshData,
   initialQuery = ""
 }) {
-  const [query, setQuery] = useState5(initialQuery);
-  const [selected, setSelected] = useState5(0);
-  const [freeOnly, setFreeOnly] = useState5(false);
-  const [toolsOnly, setToolsOnly] = useState5(false);
-  const [availableOnly, setAvailableOnly] = useState5(true);
-  const [providerFilter, setProviderFilter] = useState5(null);
-  const [manualMode, setManualMode] = useState5(false);
-  const [manualValue, setManualValue] = useState5("");
-  const [busy, setBusy] = useState5(null);
-  const [error, setError] = useState5(null);
-  const [version, setVersion] = useState5(0);
+  const [query, setQuery] = useState6(initialQuery);
+  const [selected, setSelected] = useState6(0);
+  const [freeOnly, setFreeOnly] = useState6(false);
+  const [toolsOnly, setToolsOnly] = useState6(false);
+  const [availableOnly, setAvailableOnly] = useState6(true);
+  const [providerFilter, setProviderFilter] = useState6(null);
+  const [manualMode, setManualMode] = useState6(false);
+  const [manualValue, setManualValue] = useState6("");
+  const [busy, setBusy] = useState6(null);
+  const [error, setError] = useState6(null);
+  const [version, setVersion] = useState6(0);
   const profiles = context.store.listProfiles();
   const allowPaid = context.store.getSettings().routing.allowPaid;
-  const providers = useMemo5(
+  const providers = useMemo6(
     () => [...new Set(profiles.map((profile) => profile.providerId))],
     [profiles]
   );
   const currentSelectedKey = context.store.getSelectedModelId();
-  const models = useMemo5(() => {
+  const models = useMemo6(() => {
     let entries = context.store.listModels().filter((model) => profiles.some((profile) => profile.providerId === model.providerId));
     if (providerFilter) entries = entries.filter((model) => model.providerId === providerFilter);
     if (availableOnly) entries = entries.filter((model) => model.available);
@@ -20209,11 +21374,11 @@ function ModelPicker({
     query,
     version
   ]);
-  useEffect5(() => {
+  useEffect6(() => {
     setSelected((value) => Math.min(value, Math.max(0, models.length - 1)));
   }, [models.length]);
   const current = models[Math.min(selected, Math.max(0, models.length - 1))] ?? null;
-  const items = useMemo5(
+  const items = useMemo6(
     () => models.map((model) => {
       const profile = owningProfileForModel(profiles, model);
       const access = effectiveAccess(model, profile?.accessClassification ?? null);
@@ -20332,7 +21497,7 @@ function ModelPicker({
     }
   }, [context, current, manualValue, notify, onClose, profiles, refreshData, selectModel2]);
   if (manualMode) {
-    return /* @__PURE__ */ jsxs7(
+    return /* @__PURE__ */ jsxs10(
       ModalWindow,
       {
         title: "ADD A MODEL ID MANUALLY",
@@ -20341,8 +21506,8 @@ function ModelPicker({
         height: 14,
         footer: ["enter add", "esc cancel"],
         children: [
-          /* @__PURE__ */ jsx8(Text7, { color: theme.muted, wrap: "wrap", children: "Use this when a provider's model-list endpoint is unavailable. The id is stored in the catalog for the selected profile." }),
-          /* @__PURE__ */ jsx8(Box7, { marginTop: 1, children: /* @__PURE__ */ jsx8(
+          /* @__PURE__ */ jsx11(Text10, { color: theme.muted, wrap: "wrap", children: "Use this when a provider's model-list endpoint is unavailable. The id is stored in the catalog for the selected profile." }),
+          /* @__PURE__ */ jsx11(Box10, { marginTop: 1, children: /* @__PURE__ */ jsx11(
             PromptInput,
             {
               value: manualValue,
@@ -20352,13 +21517,13 @@ function ModelPicker({
               placeholder: "provider/model-id"
             }
           ) }),
-          error ? /* @__PURE__ */ jsx8(Text7, { color: theme.danger, wrap: "wrap", children: error }) : null,
-          busy ? /* @__PURE__ */ jsx8(Text7, { color: theme.accent, children: busy }) : null
+          error ? /* @__PURE__ */ jsx11(Text10, { color: theme.danger, wrap: "wrap", children: error }) : null,
+          busy ? /* @__PURE__ */ jsx11(Text10, { color: theme.accent, children: busy }) : null
         ]
       }
     );
   }
-  return /* @__PURE__ */ jsx8(
+  return /* @__PURE__ */ jsx11(
     Selector,
     {
       title: "Select model",
@@ -20446,10 +21611,10 @@ var init_model_picker = __esm({
 });
 
 // src/tui/dialogs/connect-dialog.tsx
-import { useEffect as useEffect6, useState as useState6, useMemo as useMemo6 } from "react";
-import { Box as Box8, Text as Text8, useInput as useInput6 } from "ink";
+import { useEffect as useEffect7, useState as useState7, useMemo as useMemo7 } from "react";
+import { Box as Box11, Text as Text11, useInput as useInput7 } from "ink";
 import { randomUUID as randomUUID4 } from "crypto";
-import { jsx as jsx9, jsxs as jsxs8 } from "react/jsx-runtime";
+import { jsx as jsx12, jsxs as jsxs11 } from "react/jsx-runtime";
 function ConnectDialog({
   context,
   onClose,
@@ -20457,26 +21622,26 @@ function ConnectDialog({
   notify,
   refreshData
 }) {
-  const [step, setStep] = useState6("select-provider");
-  const [providerIndex, setProviderIndex] = useState6(0);
-  const [providerQuery, setProviderQuery] = useState6("");
-  const [selectedProvider, setSelectedProvider] = useState6(PROVIDER_CHOICES[0]);
-  const [fieldIndex, setFieldIndex] = useState6(0);
-  const [name, setName] = useState6("");
-  const [apiKey, setApiKey] = useState6("");
-  const [baseUrl, setBaseUrl] = useState6("");
-  const [defaultModel, setDefaultModel2] = useState6("");
-  const [testResult, setTestResult] = useState6(null);
-  const [statusMessage, setStatusMessage] = useState6(null);
-  const [saving, setSaving] = useState6(false);
-  const [spinFrame, setSpinFrame] = useState6(0);
-  useEffect6(() => {
+  const [step, setStep] = useState7("select-provider");
+  const [providerIndex, setProviderIndex] = useState7(0);
+  const [providerQuery, setProviderQuery] = useState7("");
+  const [selectedProvider, setSelectedProvider] = useState7(PROVIDER_CHOICES[0]);
+  const [fieldIndex, setFieldIndex] = useState7(0);
+  const [name, setName] = useState7("");
+  const [apiKey, setApiKey] = useState7("");
+  const [baseUrl, setBaseUrl] = useState7("");
+  const [defaultModel, setDefaultModel2] = useState7("");
+  const [testResult, setTestResult] = useState7(null);
+  const [statusMessage, setStatusMessage] = useState7(null);
+  const [saving, setSaving] = useState7(false);
+  const [spinFrame, setSpinFrame] = useState7(0);
+  useEffect7(() => {
     if (!statusMessage) return;
     const timer = setInterval(() => setSpinFrame((frame) => frame + 1), 120);
     return () => clearInterval(timer);
   }, [statusMessage]);
-  const existingProfiles = useMemo6(() => context.store.listProfiles(), [context, step]);
-  const providerItems = useMemo6(() => {
+  const existingProfiles = useMemo7(() => context.store.listProfiles(), [context, step]);
+  const providerItems = useMemo7(() => {
     const items = PROVIDER_CHOICES.map((choice) => {
       const connected = existingProfiles.filter((p) => p.providerId === choice.kind);
       const countBadge = connected.length > 0 ? `${connected.length} connected` : choice.kind === "custom" ? "custom" : "not connected";
@@ -20650,7 +21815,7 @@ function ConnectDialog({
       setSaving(false);
     }
   };
-  useInput6(
+  useInput7(
     (input, key) => {
       if (step !== "configure-profile") return;
       if (key.escape) {
@@ -20673,7 +21838,7 @@ function ConnectDialog({
     { isActive: step === "configure-profile" }
   );
   if (step === "select-provider") {
-    return /* @__PURE__ */ jsx9(
+    return /* @__PURE__ */ jsx12(
       Selector,
       {
         title: "CONNECT PROVIDER",
@@ -20693,7 +21858,7 @@ function ConnectDialog({
       }
     );
   }
-  return /* @__PURE__ */ jsxs8(
+  return /* @__PURE__ */ jsxs11(
     ModalWindow,
     {
       title: `CONNECT ${selectedProvider.label.toUpperCase()}`,
@@ -20703,13 +21868,13 @@ function ConnectDialog({
       borderColor: theme.accent,
       footer: ["tab next field", "ctrl+t test", "ctrl+s save", "esc back"],
       children: [
-        /* @__PURE__ */ jsxs8(Box8, { flexDirection: "column", marginTop: 1, flexGrow: 1, children: [
-          /* @__PURE__ */ jsxs8(Box8, { marginBottom: 1, children: [
-            /* @__PURE__ */ jsxs8(Text8, { color: fieldIndex === 0 ? theme.accent : theme.faint, bold: fieldIndex === 0, children: [
+        /* @__PURE__ */ jsxs11(Box11, { flexDirection: "column", marginTop: 1, flexGrow: 1, children: [
+          /* @__PURE__ */ jsxs11(Box11, { marginBottom: 1, children: [
+            /* @__PURE__ */ jsxs11(Text11, { color: fieldIndex === 0 ? theme.accent : theme.faint, bold: fieldIndex === 0, children: [
               fieldIndex === 0 ? `\u25B8 ` : `  `,
               "Profile name:"
             ] }),
-            /* @__PURE__ */ jsx9(Box8, { marginLeft: 2, flexGrow: 1, children: /* @__PURE__ */ jsx9(
+            /* @__PURE__ */ jsx12(Box11, { marginLeft: 2, flexGrow: 1, children: /* @__PURE__ */ jsx12(
               PromptInput,
               {
                 value: name,
@@ -20720,12 +21885,12 @@ function ConnectDialog({
               }
             ) })
           ] }),
-          /* @__PURE__ */ jsxs8(Box8, { marginBottom: 1, children: [
-            /* @__PURE__ */ jsxs8(Text8, { color: fieldIndex === 1 ? theme.accent : theme.faint, bold: fieldIndex === 1, children: [
+          /* @__PURE__ */ jsxs11(Box11, { marginBottom: 1, children: [
+            /* @__PURE__ */ jsxs11(Text11, { color: fieldIndex === 1 ? theme.accent : theme.faint, bold: fieldIndex === 1, children: [
               fieldIndex === 1 ? `\u25B8 ` : `  `,
               "API key:"
             ] }),
-            /* @__PURE__ */ jsx9(Box8, { marginLeft: 2, flexGrow: 1, children: fieldIndex === 1 ? /* @__PURE__ */ jsx9(
+            /* @__PURE__ */ jsx12(Box11, { marginLeft: 2, flexGrow: 1, children: fieldIndex === 1 ? /* @__PURE__ */ jsx12(
               PromptInput,
               {
                 value: apiKey,
@@ -20735,14 +21900,14 @@ function ConnectDialog({
                 mask: "*",
                 placeholder: selectedProvider.requiresKey ? "Paste API key(s), comma-separate for multiple (masked)" : "Optional"
               }
-            ) : /* @__PURE__ */ jsx9(Text8, { color: apiKey ? theme.muted : theme.faint, children: apiKey ? `${maskSecret(apiKey)} (hidden)` : "(none)" }) })
+            ) : /* @__PURE__ */ jsx12(Text11, { color: apiKey ? theme.muted : theme.faint, children: apiKey ? `${maskSecret(apiKey)} (hidden)` : "(none)" }) })
           ] }),
-          /* @__PURE__ */ jsxs8(Box8, { marginBottom: 1, children: [
-            /* @__PURE__ */ jsxs8(Text8, { color: fieldIndex === 2 ? theme.accent : theme.faint, bold: fieldIndex === 2, children: [
+          /* @__PURE__ */ jsxs11(Box11, { marginBottom: 1, children: [
+            /* @__PURE__ */ jsxs11(Text11, { color: fieldIndex === 2 ? theme.accent : theme.faint, bold: fieldIndex === 2, children: [
               fieldIndex === 2 ? `\u25B8 ` : `  `,
               "Base URL:"
             ] }),
-            /* @__PURE__ */ jsx9(Box8, { marginLeft: 2, flexGrow: 1, children: /* @__PURE__ */ jsx9(
+            /* @__PURE__ */ jsx12(Box11, { marginLeft: 2, flexGrow: 1, children: /* @__PURE__ */ jsx12(
               PromptInput,
               {
                 value: baseUrl,
@@ -20753,12 +21918,12 @@ function ConnectDialog({
               }
             ) })
           ] }),
-          /* @__PURE__ */ jsxs8(Box8, { marginBottom: 1, children: [
-            /* @__PURE__ */ jsxs8(Text8, { color: fieldIndex === 3 ? theme.accent : theme.faint, bold: fieldIndex === 3, children: [
+          /* @__PURE__ */ jsxs11(Box11, { marginBottom: 1, children: [
+            /* @__PURE__ */ jsxs11(Text11, { color: fieldIndex === 3 ? theme.accent : theme.faint, bold: fieldIndex === 3, children: [
               fieldIndex === 3 ? `\u25B8 ` : `  `,
               "Default model:"
             ] }),
-            /* @__PURE__ */ jsx9(Box8, { marginLeft: 2, flexGrow: 1, children: /* @__PURE__ */ jsx9(
+            /* @__PURE__ */ jsx12(Box11, { marginLeft: 2, flexGrow: 1, children: /* @__PURE__ */ jsx12(
               PromptInput,
               {
                 value: defaultModel,
@@ -20769,19 +21934,19 @@ function ConnectDialog({
               }
             ) })
           ] }),
-          statusMessage ? /* @__PURE__ */ jsx9(Box8, { marginY: 1, children: /* @__PURE__ */ jsx9(Spinner, { frame: spinFrame, label: statusMessage }) }) : null,
-          testResult ? /* @__PURE__ */ jsx9(Box8, { marginY: 1, children: /* @__PURE__ */ jsxs8(Text8, { color: testResult.ok ? theme.success : theme.danger, children: [
+          statusMessage ? /* @__PURE__ */ jsx12(Box11, { marginY: 1, children: /* @__PURE__ */ jsx12(Spinner, { frame: spinFrame, label: statusMessage }) }) : null,
+          testResult ? /* @__PURE__ */ jsx12(Box11, { marginY: 1, children: /* @__PURE__ */ jsxs11(Text11, { color: testResult.ok ? theme.success : theme.danger, children: [
             testResult.ok ? glyph.check : glyph.cross,
             " ",
             testResult.message
           ] }) }) : null
         ] }),
-        /* @__PURE__ */ jsx9(Box8, { justifyContent: "flex-end", flexShrink: 0, marginTop: 1, children: /* @__PURE__ */ jsxs8(Text8, { color: theme.faint, children: [
-          /* @__PURE__ */ jsx9(Text8, { color: theme.info, children: "[ Ctrl+T Test Connection ]" }),
+        /* @__PURE__ */ jsx12(Box11, { justifyContent: "flex-end", flexShrink: 0, marginTop: 1, children: /* @__PURE__ */ jsxs11(Text11, { color: theme.faint, children: [
+          /* @__PURE__ */ jsx12(Text11, { color: theme.info, children: "[ Ctrl+T Test Connection ]" }),
           "   ",
-          /* @__PURE__ */ jsx9(Text8, { color: theme.accent, children: "[ Ctrl+S Save ]" }),
+          /* @__PURE__ */ jsx12(Text11, { color: theme.accent, children: "[ Ctrl+S Save ]" }),
           "   ",
-          /* @__PURE__ */ jsx9(Text8, { color: theme.muted, children: "[ Esc Back ]" })
+          /* @__PURE__ */ jsx12(Text11, { color: theme.muted, children: "[ Esc Back ]" })
         ] }) })
       ]
     }
@@ -20852,9 +22017,9 @@ var init_connect_dialog = __esm({
 });
 
 // src/tui/dialogs/tasks-dialog.tsx
-import { useMemo as useMemo7, useState as useState7 } from "react";
-import { Box as Box9, Text as Text9, useInput as useInput7 } from "ink";
-import { jsx as jsx10, jsxs as jsxs9 } from "react/jsx-runtime";
+import { useMemo as useMemo8, useState as useState8 } from "react";
+import { Box as Box12, Text as Text12, useInput as useInput8 } from "ink";
+import { jsx as jsx13, jsxs as jsxs12 } from "react/jsx-runtime";
 function statusColor(status) {
   if (status === "completed") return theme.success;
   if (status === "running") return theme.accent;
@@ -20874,18 +22039,18 @@ function TasksDialog({
   notify,
   refreshData
 }) {
-  const [query, setQuery] = useState7("");
-  const [selected, setSelected] = useState7(0);
-  const [renamingId, setRenamingId] = useState7(null);
-  const [renameValue, setRenameValue] = useState7("");
-  const [confirmDelete, setConfirmDelete] = useState7(null);
-  const [confirmDeleteAll, setConfirmDeleteAll] = useState7(false);
-  const [version, setVersion] = useState7(0);
-  const tasks = useMemo7(
+  const [query, setQuery] = useState8("");
+  const [selected, setSelected] = useState8(0);
+  const [renamingId, setRenamingId] = useState8(null);
+  const [renameValue, setRenameValue] = useState8("");
+  const [confirmDelete, setConfirmDelete] = useState8(null);
+  const [confirmDeleteAll, setConfirmDeleteAll] = useState8(false);
+  const [version, setVersion] = useState8(0);
+  const tasks = useMemo8(
     () => context.store.listTasks({ projectPath: context.cwd, limit: 100 }),
     [context, version]
   );
-  const filteredTasks = useMemo7(() => {
+  const filteredTasks = useMemo8(() => {
     return filterByQuery(tasks, query, (task) => [
       task.id,
       task.userRequest,
@@ -20895,7 +22060,7 @@ function TasksDialog({
       task.projectName
     ]);
   }, [tasks, query]);
-  const items = useMemo7(
+  const items = useMemo8(
     () => filteredTasks.map((task) => {
       const changes = task.changedFiles.length;
       const changeLabel = changes > 0 ? `${changes} file${changes > 1 ? "s" : ""}` : "no edits";
@@ -20971,7 +22136,7 @@ function TasksDialog({
       notify(`Failed to rename task: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
-  useInput7((input, key) => {
+  useInput8((input, key) => {
     if (renamingId) {
       if (key.escape) {
         setRenamingId(null);
@@ -21000,7 +22165,7 @@ function TasksDialog({
     }
   });
   if (renamingId) {
-    return /* @__PURE__ */ jsx10(
+    return /* @__PURE__ */ jsx13(
       ModalWindow,
       {
         title: "RENAME TASK",
@@ -21008,7 +22173,7 @@ function TasksDialog({
         width: 64,
         height: 12,
         footer: ["enter or ctrl+s save", "esc cancel"],
-        children: /* @__PURE__ */ jsx10(Box9, { marginTop: 1, children: /* @__PURE__ */ jsx10(
+        children: /* @__PURE__ */ jsx13(Box12, { marginTop: 1, children: /* @__PURE__ */ jsx13(
           PromptInput,
           {
             value: renameValue,
@@ -21022,7 +22187,7 @@ function TasksDialog({
     );
   }
   if (confirmDelete) {
-    return /* @__PURE__ */ jsx10(
+    return /* @__PURE__ */ jsx13(
       ModalWindow,
       {
         title: "DELETE SAVED TASK?",
@@ -21031,12 +22196,12 @@ function TasksDialog({
         height: 12,
         borderColor: theme.warning,
         footer: ["y confirm", "n or esc cancel"],
-        children: /* @__PURE__ */ jsx10(Box9, { marginTop: 1, children: /* @__PURE__ */ jsx10(Text9, { color: theme.text, wrap: "wrap", children: taskTitle2(confirmDelete) }) })
+        children: /* @__PURE__ */ jsx13(Box12, { marginTop: 1, children: /* @__PURE__ */ jsx13(Text12, { color: theme.text, wrap: "wrap", children: taskTitle2(confirmDelete) }) })
       }
     );
   }
   if (confirmDeleteAll) {
-    return /* @__PURE__ */ jsx10(
+    return /* @__PURE__ */ jsx13(
       ModalWindow,
       {
         title: "DELETE ALL TASK HISTORY?",
@@ -21045,14 +22210,14 @@ function TasksDialog({
         height: 12,
         borderColor: theme.danger,
         footer: ["y confirm", "n or esc cancel"],
-        children: /* @__PURE__ */ jsx10(Box9, { marginTop: 1, children: /* @__PURE__ */ jsxs9(Text9, { color: theme.text, wrap: "wrap", children: [
+        children: /* @__PURE__ */ jsx13(Box12, { marginTop: 1, children: /* @__PURE__ */ jsxs12(Text12, { color: theme.text, wrap: "wrap", children: [
           tasks.filter((t) => t.status !== "running").length,
           " task(s) will be permanently deleted. Running tasks are skipped. Provider profiles and settings are kept."
         ] }) })
       }
     );
   }
-  return /* @__PURE__ */ jsx10(
+  return /* @__PURE__ */ jsx13(
     Selector,
     {
       title: "TASK HISTORY",
@@ -21119,15 +22284,15 @@ var init_tasks_dialog = __esm({
 });
 
 // src/tui/dialogs/diff-dialog.tsx
-import { useEffect as useEffect7, useState as useState8 } from "react";
-import { Box as Box10, Text as Text10, useInput as useInput8 } from "ink";
-import { jsx as jsx11 } from "react/jsx-runtime";
+import { useEffect as useEffect8, useState as useState9 } from "react";
+import { Box as Box13, Text as Text13, useInput as useInput9 } from "ink";
+import { jsx as jsx14 } from "react/jsx-runtime";
 function DiffDialog({ context, taskId, onClose }) {
-  const [loading, setLoading] = useState8(true);
-  const [summary, setSummary] = useState8(null);
-  const [diffText, setDiffText] = useState8("");
-  const [scrollOffset, setScrollOffset] = useState8(0);
-  useEffect7(() => {
+  const [loading, setLoading] = useState9(true);
+  const [summary, setSummary] = useState9(null);
+  const [diffText, setDiffText] = useState9("");
+  const [scrollOffset, setScrollOffset] = useState9(0);
+  useEffect8(() => {
     let active = true;
     async function loadDiff() {
       setLoading(true);
@@ -21158,7 +22323,7 @@ function DiffDialog({ context, taskId, onClose }) {
   const visibleLineCount = 10;
   const maxScroll = Math.max(0, diffLines.length - visibleLineCount);
   const visibleLines = diffLines.slice(scrollOffset, scrollOffset + visibleLineCount);
-  useInput8((input, key) => {
+  useInput9((input, key) => {
     if (key.escape) {
       onClose();
       return;
@@ -21180,7 +22345,7 @@ function DiffDialog({ context, taskId, onClose }) {
       return;
     }
   });
-  return /* @__PURE__ */ jsx11(
+  return /* @__PURE__ */ jsx14(
     ModalWindow,
     {
       title: `GIT DIFF ${taskId ? `(Task ${taskId.slice(0, 8)})` : ""}`,
@@ -21192,13 +22357,13 @@ function DiffDialog({ context, taskId, onClose }) {
         "\u2191/\u2193 scroll",
         "esc close"
       ],
-      children: loading ? /* @__PURE__ */ jsx11(Box10, { marginY: 2, children: /* @__PURE__ */ jsx11(Spinner, { frame: 0, label: "Reading git diff\u2026" }) }) : /* @__PURE__ */ jsx11(Box10, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children: visibleLines.map((line, idx) => {
+      children: loading ? /* @__PURE__ */ jsx14(Box13, { marginY: 2, children: /* @__PURE__ */ jsx14(Spinner, { frame: 0, label: "Reading git diff\u2026" }) }) : /* @__PURE__ */ jsx14(Box13, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children: visibleLines.map((line, idx) => {
         let color = theme.text;
         if (line.startsWith("+") && !line.startsWith("+++")) color = theme.success;
         else if (line.startsWith("-") && !line.startsWith("---")) color = theme.danger;
         else if (line.startsWith("@@")) color = theme.info;
         else if (line.startsWith("diff ") || line.startsWith("index ")) color = theme.faint;
-        return /* @__PURE__ */ jsx11(Text10, { color, wrap: "truncate", children: line || " " }, `${scrollOffset + idx}`);
+        return /* @__PURE__ */ jsx14(Text13, { color, wrap: "truncate", children: line || " " }, `${scrollOffset + idx}`);
       }) })
     }
   );
@@ -21214,9 +22379,9 @@ var init_diff_dialog = __esm({
 });
 
 // src/tui/dialogs/undo-dialog.tsx
-import { useEffect as useEffect8, useState as useState9 } from "react";
-import { Box as Box11, Text as Text11, useInput as useInput9 } from "ink";
-import { jsx as jsx12, jsxs as jsxs10 } from "react/jsx-runtime";
+import { useEffect as useEffect9, useState as useState10 } from "react";
+import { Box as Box14, Text as Text14, useInput as useInput10 } from "ink";
+import { jsx as jsx15, jsxs as jsxs13 } from "react/jsx-runtime";
 function UndoDialog({
   context,
   taskId,
@@ -21224,12 +22389,12 @@ function UndoDialog({
   notify,
   refreshData
 }) {
-  const [loading, setLoading] = useState9(true);
-  const [plan, setPlan] = useState9(null);
-  const [statusMessage, setStatusMessage] = useState9(null);
-  const [done, setDone] = useState9(false);
+  const [loading, setLoading] = useState10(true);
+  const [plan, setPlan] = useState10(null);
+  const [statusMessage, setStatusMessage] = useState10(null);
+  const [done, setDone] = useState10(false);
   const task = taskId ? context.store.getTask(taskId) : null;
-  useEffect8(() => {
+  useEffect9(() => {
     let active = true;
     async function computePlan() {
       if (!task) {
@@ -21280,7 +22445,7 @@ function UndoDialog({
       onClose();
     }
   };
-  useInput9((input, key) => {
+  useInput10((input, key) => {
     if (key.escape || input.toLowerCase() === "n") {
       onClose();
       return;
@@ -21292,7 +22457,7 @@ function UndoDialog({
     }
   });
   if (!task) {
-    return /* @__PURE__ */ jsxs10(
+    return /* @__PURE__ */ jsxs13(
       ModalWindow,
       {
         title: "SAFE UNDO",
@@ -21301,13 +22466,13 @@ function UndoDialog({
         borderColor: theme.warning,
         footer: ["esc close"],
         children: [
-          /* @__PURE__ */ jsx12(Text11, { bold: true, color: theme.warning, children: "No active task" }),
-          /* @__PURE__ */ jsx12(Text11, { color: theme.muted, children: "Undo requires an active task that modified files. Start or resume a task first." })
+          /* @__PURE__ */ jsx15(Text14, { bold: true, color: theme.warning, children: "No active task" }),
+          /* @__PURE__ */ jsx15(Text14, { color: theme.muted, children: "Undo requires an active task that modified files. Start or resume a task first." })
         ]
       }
     );
   }
-  return /* @__PURE__ */ jsx12(
+  return /* @__PURE__ */ jsx15(
     ModalWindow,
     {
       title: `SAFE UNDO \u2014 TASK ${task.id.slice(0, 8)}`,
@@ -21315,41 +22480,41 @@ function UndoDialog({
       height: 18,
       borderColor: theme.warning,
       footer: ["y confirm revert", "n / esc cancel"],
-      children: loading ? /* @__PURE__ */ jsx12(Box11, { marginY: 2, children: /* @__PURE__ */ jsx12(Spinner, { frame: 0, label: "Analyzing task baseline snapshot and safety checks\u2026" }) }) : statusMessage ? /* @__PURE__ */ jsx12(Box11, { marginY: 2, children: /* @__PURE__ */ jsx12(Spinner, { frame: 0, label: statusMessage }) }) : /* @__PURE__ */ jsx12(Box11, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children: !plan?.supported ? /* @__PURE__ */ jsxs10(Box11, { flexDirection: "column", children: [
-        /* @__PURE__ */ jsx12(Text11, { color: theme.danger, bold: true, children: "Undo not possible for this task" }),
-        /* @__PURE__ */ jsx12(Text11, { color: theme.muted, children: plan?.reason ?? "No baseline snapshot was recorded for this task or git is unavailable." })
-      ] }) : plan.items.length === 0 ? /* @__PURE__ */ jsxs10(Box11, { flexDirection: "column", children: [
-        /* @__PURE__ */ jsx12(Text11, { color: theme.success, children: "No modified files to revert." }),
-        /* @__PURE__ */ jsx12(Text11, { color: theme.muted, children: "The task did not alter any files or files are already in their pre-task state." })
-      ] }) : /* @__PURE__ */ jsxs10(Box11, { flexDirection: "column", children: [
-        /* @__PURE__ */ jsx12(Text11, { color: theme.text, bold: true, children: "The following actions will be performed safely:" }),
-        /* @__PURE__ */ jsx12(Box11, { flexDirection: "column", marginY: 1, children: plan.items.map((item) => /* @__PURE__ */ jsxs10(Box11, { children: [
-          /* @__PURE__ */ jsxs10(Text11, { color: item.action === "restore" ? theme.warning : theme.danger, children: [
+      children: loading ? /* @__PURE__ */ jsx15(Box14, { marginY: 2, children: /* @__PURE__ */ jsx15(Spinner, { frame: 0, label: "Analyzing task baseline snapshot and safety checks\u2026" }) }) : statusMessage ? /* @__PURE__ */ jsx15(Box14, { marginY: 2, children: /* @__PURE__ */ jsx15(Spinner, { frame: 0, label: statusMessage }) }) : /* @__PURE__ */ jsx15(Box14, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children: !plan?.supported ? /* @__PURE__ */ jsxs13(Box14, { flexDirection: "column", children: [
+        /* @__PURE__ */ jsx15(Text14, { color: theme.danger, bold: true, children: "Undo not possible for this task" }),
+        /* @__PURE__ */ jsx15(Text14, { color: theme.muted, children: plan?.reason ?? "No baseline snapshot was recorded for this task or git is unavailable." })
+      ] }) : plan.items.length === 0 ? /* @__PURE__ */ jsxs13(Box14, { flexDirection: "column", children: [
+        /* @__PURE__ */ jsx15(Text14, { color: theme.success, children: "No modified files to revert." }),
+        /* @__PURE__ */ jsx15(Text14, { color: theme.muted, children: "The task did not alter any files or files are already in their pre-task state." })
+      ] }) : /* @__PURE__ */ jsxs13(Box14, { flexDirection: "column", children: [
+        /* @__PURE__ */ jsx15(Text14, { color: theme.text, bold: true, children: "The following actions will be performed safely:" }),
+        /* @__PURE__ */ jsx15(Box14, { flexDirection: "column", marginY: 1, children: plan.items.map((item) => /* @__PURE__ */ jsxs13(Box14, { children: [
+          /* @__PURE__ */ jsxs13(Text14, { color: item.action === "restore" ? theme.warning : theme.danger, children: [
             item.action === "restore" ? "\u21BA restore" : "\u2715 delete",
             ":",
             " "
           ] }),
-          /* @__PURE__ */ jsx12(Text11, { color: theme.text, children: item.path }),
-          /* @__PURE__ */ jsxs10(Text11, { color: theme.faint, children: [
+          /* @__PURE__ */ jsx15(Text14, { color: theme.text, children: item.path }),
+          /* @__PURE__ */ jsxs13(Text14, { color: theme.faint, children: [
             " (",
             item.reason,
             ")"
           ] })
         ] }, item.path)) }),
-        plan.skipped.length > 0 ? /* @__PURE__ */ jsxs10(Box11, { flexDirection: "column", marginTop: 1, children: [
-          /* @__PURE__ */ jsxs10(Text11, { color: theme.info, children: [
+        plan.skipped.length > 0 ? /* @__PURE__ */ jsxs13(Box14, { flexDirection: "column", marginTop: 1, children: [
+          /* @__PURE__ */ jsxs13(Text14, { color: theme.info, children: [
             "Notice: ",
             plan.skipped.length,
             " file(s) will be protected and preserved:"
           ] }),
-          plan.skipped.map((skip) => /* @__PURE__ */ jsxs10(Text11, { color: theme.faint, children: [
+          plan.skipped.map((skip) => /* @__PURE__ */ jsxs13(Text14, { color: theme.faint, children: [
             "\xB7 ",
             skip.path,
             ": ",
             skip.reason
           ] }, skip.path))
         ] }) : null,
-        /* @__PURE__ */ jsx12(Box11, { marginTop: 1, children: /* @__PURE__ */ jsx12(Text11, { color: theme.warm, bold: true, children: "Are you sure you want to revert these files? (y / n)" }) })
+        /* @__PURE__ */ jsx15(Box14, { marginTop: 1, children: /* @__PURE__ */ jsx15(Text14, { color: theme.warm, bold: true, children: "Are you sure you want to revert these files? (y / n)" }) })
       ] }) })
     }
   );
@@ -21365,9 +22530,9 @@ var init_undo_dialog = __esm({
 });
 
 // src/tui/dialogs/status-dialog.tsx
-import { useEffect as useEffect9, useState as useState10 } from "react";
-import { Box as Box12, Text as Text12, useInput as useInput10 } from "ink";
-import { jsx as jsx13, jsxs as jsxs11 } from "react/jsx-runtime";
+import { useEffect as useEffect10, useState as useState11 } from "react";
+import { Box as Box15, Text as Text15, useInput as useInput11 } from "ink";
+import { jsx as jsx16, jsxs as jsxs14 } from "react/jsx-runtime";
 function lastCheckSucceeded2(profile) {
   return Boolean(
     profile.lastSuccessAt && (!profile.lastErrorAt || profile.lastSuccessAt >= profile.lastErrorAt)
@@ -21379,14 +22544,14 @@ function lastCheckFailed(profile) {
   );
 }
 function StatusDialog({ context, taskId, onClose }) {
-  const [git, setGit] = useState10(null);
+  const [git, setGit] = useState11(null);
   const profiles = context.store.listProfiles();
   const activeProfileId = context.store.getSelectedProfileId();
   const activeModelId = context.store.getSelectedModelId();
   const settings = context.store.getSettings();
   const limits2 = context.store.listLimits(true);
   const task = taskId ? context.store.getTask(taskId) : null;
-  useEffect9(() => {
+  useEffect10(() => {
     let active = true;
     void gitSummary(context.cwd).then((sum) => {
       if (active) setGit(sum);
@@ -21395,10 +22560,10 @@ function StatusDialog({ context, taskId, onClose }) {
       active = false;
     };
   }, [context]);
-  useInput10((_input, key) => {
+  useInput11((_input, key) => {
     if (key.escape) onClose();
   });
-  return /* @__PURE__ */ jsx13(
+  return /* @__PURE__ */ jsx16(
     ModalWindow,
     {
       title: "SYSTEM & QUOTA STATUS",
@@ -21407,49 +22572,49 @@ function StatusDialog({ context, taskId, onClose }) {
       height: 18,
       borderColor: theme.info,
       footer: ["esc close"],
-      children: /* @__PURE__ */ jsxs11(Box12, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children: [
-        /* @__PURE__ */ jsxs11(Box12, { flexDirection: "column", marginBottom: 1, children: [
-          /* @__PURE__ */ jsx13(Text12, { color: theme.accent, bold: true, children: "Active Model & Routing" }),
-          /* @__PURE__ */ jsxs11(Text12, { color: theme.text, children: [
+      children: /* @__PURE__ */ jsxs14(Box15, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children: [
+        /* @__PURE__ */ jsxs14(Box15, { flexDirection: "column", marginBottom: 1, children: [
+          /* @__PURE__ */ jsx16(Text15, { color: theme.accent, bold: true, children: "Active Model & Routing" }),
+          /* @__PURE__ */ jsxs14(Text15, { color: theme.text, children: [
             "\xB7 Selected Profile:",
             " ",
-            /* @__PURE__ */ jsx13(Text12, { color: theme.warm, children: profiles.find((p) => p.id === activeProfileId)?.name ?? "(none selected)" })
+            /* @__PURE__ */ jsx16(Text15, { color: theme.warm, children: profiles.find((p) => p.id === activeProfileId)?.name ?? "(none selected)" })
           ] }),
-          /* @__PURE__ */ jsxs11(Text12, { color: theme.text, children: [
+          /* @__PURE__ */ jsxs14(Text15, { color: theme.text, children: [
             "\xB7 Selected Model:",
             " ",
-            /* @__PURE__ */ jsx13(Text12, { color: theme.warm, children: activeModelId ?? "(provider default)" })
+            /* @__PURE__ */ jsx16(Text15, { color: theme.warm, children: activeModelId ?? "(provider default)" })
           ] }),
-          /* @__PURE__ */ jsxs11(Text12, { color: theme.text, children: [
+          /* @__PURE__ */ jsxs14(Text15, { color: theme.text, children: [
             "\xB7 Paid Fallbacks:",
             " ",
-            /* @__PURE__ */ jsx13(Text12, { color: settings.routing.allowPaid ? theme.warning : theme.success, children: settings.routing.allowPaid ? "Paid fallbacks allowed" : "Paid fallbacks disabled" })
+            /* @__PURE__ */ jsx16(Text15, { color: settings.routing.allowPaid ? theme.warning : theme.success, children: settings.routing.allowPaid ? "Paid fallbacks allowed" : "Paid fallbacks disabled" })
           ] })
         ] }),
-        /* @__PURE__ */ jsxs11(Box12, { flexDirection: "column", marginBottom: 1, children: [
-          /* @__PURE__ */ jsxs11(Text12, { color: theme.accent, bold: true, children: [
+        /* @__PURE__ */ jsxs14(Box15, { flexDirection: "column", marginBottom: 1, children: [
+          /* @__PURE__ */ jsxs14(Text15, { color: theme.accent, bold: true, children: [
             "Provider Profiles (",
             profiles.length,
             ")"
           ] }),
-          profiles.length === 0 ? /* @__PURE__ */ jsx13(Text12, { color: theme.faint, children: "No provider profiles configured yet." }) : profiles.map((p) => {
+          profiles.length === 0 ? /* @__PURE__ */ jsx16(Text15, { color: theme.faint, children: "No provider profiles configured yet." }) : profiles.map((p) => {
             const profileLimits = limits2.filter((l) => l.profileId === p.id);
             const isLimited = profileLimits.length > 0;
             const status = !p.enabled ? "Disabled" : isLimited ? `Rate limited (${profileLimits.map((l) => l.category).join(", ")})` : lastCheckFailed(p) ? "Last check failed" : lastCheckSucceeded2(p) ? "Last check passed" : "Not verified";
-            return /* @__PURE__ */ jsxs11(Box12, { justifyContent: "space-between", children: [
-              /* @__PURE__ */ jsxs11(Text12, { color: theme.text, children: [
+            return /* @__PURE__ */ jsxs14(Box15, { justifyContent: "space-between", children: [
+              /* @__PURE__ */ jsxs14(Text15, { color: theme.text, children: [
                 lastCheckSucceeded2(p) ? glyph.check : glyph.ring,
                 " ",
                 p.name,
                 " ",
-                /* @__PURE__ */ jsxs11(Text12, { color: theme.faint, children: [
+                /* @__PURE__ */ jsxs14(Text15, { color: theme.faint, children: [
                   "(",
                   providerDisplayName(p.providerId),
                   ")"
                 ] })
               ] }),
-              /* @__PURE__ */ jsx13(
-                Text12,
+              /* @__PURE__ */ jsx16(
+                Text15,
                 {
                   color: isLimited || lastCheckFailed(p) ? theme.danger : lastCheckSucceeded2(p) ? theme.success : theme.faint,
                   children: status
@@ -21458,36 +22623,36 @@ function StatusDialog({ context, taskId, onClose }) {
             ] }, p.id);
           })
         ] }),
-        /* @__PURE__ */ jsxs11(Box12, { flexDirection: "column", marginBottom: 1, children: [
-          /* @__PURE__ */ jsx13(Text12, { color: theme.accent, bold: true, children: "Git Repository" }),
-          /* @__PURE__ */ jsxs11(Text12, { color: theme.text, children: [
+        /* @__PURE__ */ jsxs14(Box15, { flexDirection: "column", marginBottom: 1, children: [
+          /* @__PURE__ */ jsx16(Text15, { color: theme.accent, bold: true, children: "Git Repository" }),
+          /* @__PURE__ */ jsxs14(Text15, { color: theme.text, children: [
             "\xB7 Branch: ",
-            /* @__PURE__ */ jsx13(Text12, { color: theme.violet, children: git?.branch ?? "(not a git repo)" })
+            /* @__PURE__ */ jsx16(Text15, { color: theme.violet, children: git?.branch ?? "(not a git repo)" })
           ] }),
-          /* @__PURE__ */ jsxs11(Text12, { color: theme.text, children: [
+          /* @__PURE__ */ jsxs14(Text15, { color: theme.text, children: [
             "\xB7 Status:",
             " ",
-            /* @__PURE__ */ jsx13(Text12, { color: git?.clean ? theme.success : theme.warning, children: git?.clean ? "Clean working directory" : `${git?.files.length ?? 0} modified file(s)` })
+            /* @__PURE__ */ jsx16(Text15, { color: git?.clean ? theme.success : theme.warning, children: git?.clean ? "Clean working directory" : `${git?.files.length ?? 0} modified file(s)` })
           ] })
         ] }),
-        task ? /* @__PURE__ */ jsxs11(Box12, { flexDirection: "column", children: [
-          /* @__PURE__ */ jsxs11(Text12, { color: theme.accent, bold: true, children: [
+        task ? /* @__PURE__ */ jsxs14(Box15, { flexDirection: "column", children: [
+          /* @__PURE__ */ jsxs14(Text15, { color: theme.accent, bold: true, children: [
             "Active Task (",
             task.id.slice(0, 8),
             ")"
           ] }),
-          /* @__PURE__ */ jsxs11(Text12, { color: theme.text, children: [
+          /* @__PURE__ */ jsxs14(Text15, { color: theme.text, children: [
             "\xB7 Status: ",
-            /* @__PURE__ */ jsx13(Text12, { color: theme.warm, children: task.status }),
+            /* @__PURE__ */ jsx16(Text15, { color: theme.warm, children: task.status }),
             " (Phase: ",
             task.phase,
             ")"
           ] }),
-          /* @__PURE__ */ jsxs11(Text12, { color: theme.text, children: [
+          /* @__PURE__ */ jsxs14(Text15, { color: theme.text, children: [
             "\xB7 Request: ",
-            /* @__PURE__ */ jsx13(Text12, { color: theme.faint, children: task.userRequest.slice(0, 60) })
+            /* @__PURE__ */ jsx16(Text15, { color: theme.faint, children: task.userRequest.slice(0, 60) })
           ] }),
-          /* @__PURE__ */ jsxs11(Text12, { color: theme.text, children: [
+          /* @__PURE__ */ jsxs14(Text15, { color: theme.text, children: [
             "\xB7 Changed files: ",
             task.changedFiles.length,
             " file(s)"
@@ -21508,9 +22673,9 @@ var init_status_dialog = __esm({
 });
 
 // src/tui/dialogs/usage-dialog.tsx
-import { useMemo as useMemo8, useState as useState11 } from "react";
-import { Box as Box13, Text as Text13, useInput as useInput11 } from "ink";
-import { jsx as jsx14, jsxs as jsxs12 } from "react/jsx-runtime";
+import { useMemo as useMemo9, useState as useState12 } from "react";
+import { Box as Box16, Text as Text16, useInput as useInput12 } from "ink";
+import { jsx as jsx17, jsxs as jsxs15 } from "react/jsx-runtime";
 function money2(value) {
   if (value === null) return "\u2014";
   if (value === 0) return "$0";
@@ -21523,8 +22688,8 @@ function UsageDialog({
   notify,
   refreshData
 }) {
-  const [todayOnly, setTodayOnly] = useState11(false);
-  const since = useMemo8(() => {
+  const [todayOnly, setTodayOnly] = useState12(false);
+  const since = useMemo9(() => {
     if (!todayOnly) return void 0;
     const now = /* @__PURE__ */ new Date();
     return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
@@ -21532,7 +22697,7 @@ function UsageDialog({
   const totals = context.store.usageTotals(since);
   const byModel = context.store.usageByModel(since).slice(0, 5);
   const limits2 = context.store.listLimits(true);
-  useInput11((input, key) => {
+  useInput12((input, key) => {
     if (key.escape) {
       onClose();
       return;
@@ -21551,7 +22716,7 @@ function UsageDialog({
       return;
     }
   });
-  return /* @__PURE__ */ jsx14(
+  return /* @__PURE__ */ jsx17(
     ModalWindow,
     {
       title: "TOKEN USAGE & PROVIDER LIMITS",
@@ -21564,9 +22729,9 @@ function UsageDialog({
         limits2.length > 0 ? "c clear active limits" : "limits active: " + limits2.length,
         "esc close"
       ],
-      children: /* @__PURE__ */ jsxs12(Box13, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children: [
-        /* @__PURE__ */ jsxs12(
-          Box13,
+      children: /* @__PURE__ */ jsxs15(Box16, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children: [
+        /* @__PURE__ */ jsxs15(
+          Box16,
           {
             justifyContent: "space-between",
             paddingX: 1,
@@ -21574,46 +22739,46 @@ function UsageDialog({
             borderStyle: "single",
             borderColor: theme.border,
             children: [
-              /* @__PURE__ */ jsxs12(Box13, { flexDirection: "column", children: [
-                /* @__PURE__ */ jsx14(Text13, { color: theme.faint, children: "INPUT TOKENS" }),
-                /* @__PURE__ */ jsx14(Text13, { bold: true, color: theme.text, children: formatCount(totals.inputTokens) })
+              /* @__PURE__ */ jsxs15(Box16, { flexDirection: "column", children: [
+                /* @__PURE__ */ jsx17(Text16, { color: theme.faint, children: "INPUT TOKENS" }),
+                /* @__PURE__ */ jsx17(Text16, { bold: true, color: theme.text, children: formatCount(totals.inputTokens) })
               ] }),
-              /* @__PURE__ */ jsxs12(Box13, { flexDirection: "column", children: [
-                /* @__PURE__ */ jsx14(Text13, { color: theme.faint, children: "OUTPUT TOKENS" }),
-                /* @__PURE__ */ jsx14(Text13, { bold: true, color: theme.text, children: formatCount(totals.outputTokens) })
+              /* @__PURE__ */ jsxs15(Box16, { flexDirection: "column", children: [
+                /* @__PURE__ */ jsx17(Text16, { color: theme.faint, children: "OUTPUT TOKENS" }),
+                /* @__PURE__ */ jsx17(Text16, { bold: true, color: theme.text, children: formatCount(totals.outputTokens) })
               ] }),
-              /* @__PURE__ */ jsxs12(Box13, { flexDirection: "column", children: [
-                /* @__PURE__ */ jsx14(Text13, { color: theme.faint, children: "TOTAL TOKENS" }),
-                /* @__PURE__ */ jsx14(Text13, { bold: true, color: theme.accent, children: formatCount(totals.inputTokens + totals.outputTokens) })
+              /* @__PURE__ */ jsxs15(Box16, { flexDirection: "column", children: [
+                /* @__PURE__ */ jsx17(Text16, { color: theme.faint, children: "TOTAL TOKENS" }),
+                /* @__PURE__ */ jsx17(Text16, { bold: true, color: theme.accent, children: formatCount(totals.inputTokens + totals.outputTokens) })
               ] }),
-              /* @__PURE__ */ jsxs12(Box13, { flexDirection: "column", children: [
-                /* @__PURE__ */ jsx14(Text13, { color: theme.faint, children: "EVENTS" }),
-                /* @__PURE__ */ jsx14(Text13, { bold: true, color: theme.text, children: formatCount(totals.events) })
+              /* @__PURE__ */ jsxs15(Box16, { flexDirection: "column", children: [
+                /* @__PURE__ */ jsx17(Text16, { color: theme.faint, children: "EVENTS" }),
+                /* @__PURE__ */ jsx17(Text16, { bold: true, color: theme.text, children: formatCount(totals.events) })
               ] }),
-              /* @__PURE__ */ jsxs12(Box13, { flexDirection: "column", children: [
-                /* @__PURE__ */ jsx14(Text13, { color: theme.faint, children: "ESTIMATED COST" }),
-                /* @__PURE__ */ jsx14(Text13, { bold: true, color: theme.success, children: money2(totals.cost) })
+              /* @__PURE__ */ jsxs15(Box16, { flexDirection: "column", children: [
+                /* @__PURE__ */ jsx17(Text16, { color: theme.faint, children: "ESTIMATED COST" }),
+                /* @__PURE__ */ jsx17(Text16, { bold: true, color: theme.success, children: money2(totals.cost) })
               ] })
             ]
           }
         ),
-        /* @__PURE__ */ jsxs12(Box13, { flexDirection: "column", marginBottom: 1, children: [
-          /* @__PURE__ */ jsxs12(Text13, { color: theme.accent, bold: true, children: [
+        /* @__PURE__ */ jsxs15(Box16, { flexDirection: "column", marginBottom: 1, children: [
+          /* @__PURE__ */ jsxs15(Text16, { color: theme.accent, bold: true, children: [
             "Active Provider Rate Limits (",
             limits2.length,
             ")"
           ] }),
-          limits2.length === 0 ? /* @__PURE__ */ jsx14(Text13, { color: theme.muted, children: "No active rate limits recorded. All providers available." }) : limits2.slice(0, 3).map((limit) => {
+          limits2.length === 0 ? /* @__PURE__ */ jsx17(Text16, { color: theme.muted, children: "No active rate limits recorded. All providers available." }) : limits2.slice(0, 3).map((limit) => {
             const profile = context.store.getProfile(limit.profileId);
-            return /* @__PURE__ */ jsxs12(Box13, { justifyContent: "space-between", children: [
-              /* @__PURE__ */ jsxs12(Text13, { color: theme.warning, children: [
+            return /* @__PURE__ */ jsxs15(Box16, { justifyContent: "space-between", children: [
+              /* @__PURE__ */ jsxs15(Text16, { color: theme.warning, children: [
                 "\xB7 ",
                 profile?.name ?? limit.profileId,
                 " (",
                 limit.modelId ?? "all models",
                 ")"
               ] }),
-              /* @__PURE__ */ jsxs12(Text13, { color: theme.faint, children: [
+              /* @__PURE__ */ jsxs15(Text16, { color: theme.faint, children: [
                 describeCategory(limit.category),
                 " \xB7 resets",
                 " ",
@@ -21622,14 +22787,14 @@ function UsageDialog({
             ] }, `${limit.profileId}-${limit.modelId}`);
           })
         ] }),
-        /* @__PURE__ */ jsxs12(Box13, { flexDirection: "column", children: [
-          /* @__PURE__ */ jsx14(Text13, { color: theme.accent, bold: true, children: "Top Models by Usage" }),
-          byModel.length === 0 ? /* @__PURE__ */ jsx14(Text13, { color: theme.muted, children: "No recorded usage for this period." }) : byModel.map((item) => /* @__PURE__ */ jsxs12(Box13, { justifyContent: "space-between", children: [
-            /* @__PURE__ */ jsxs12(Text13, { color: theme.text, wrap: "truncate", children: [
+        /* @__PURE__ */ jsxs15(Box16, { flexDirection: "column", children: [
+          /* @__PURE__ */ jsx17(Text16, { color: theme.accent, bold: true, children: "Top Models by Usage" }),
+          byModel.length === 0 ? /* @__PURE__ */ jsx17(Text16, { color: theme.muted, children: "No recorded usage for this period." }) : byModel.map((item) => /* @__PURE__ */ jsxs15(Box16, { justifyContent: "space-between", children: [
+            /* @__PURE__ */ jsxs15(Text16, { color: theme.text, wrap: "truncate", children: [
               "\xB7 ",
               item.modelId
             ] }),
-            /* @__PURE__ */ jsxs12(Text13, { color: theme.faint, children: [
+            /* @__PURE__ */ jsxs15(Text16, { color: theme.faint, children: [
               formatCount(item.inputTokens + item.outputTokens),
               " tokens \xB7",
               " ",
@@ -21653,9 +22818,9 @@ var init_usage_dialog = __esm({
 });
 
 // src/tui/dialogs/settings-dialog.tsx
-import { useState as useState12 } from "react";
-import { Box as Box14, Text as Text14, useInput as useInput12 } from "ink";
-import { jsx as jsx15, jsxs as jsxs13 } from "react/jsx-runtime";
+import { useState as useState13 } from "react";
+import { Box as Box17, Text as Text17, useInput as useInput13 } from "ink";
+import { jsx as jsx18, jsxs as jsxs16 } from "react/jsx-runtime";
 function toggleLabel(value, onText, offText) {
   return value ? `ON (${onText})` : `OFF (${offText})`;
 }
@@ -21665,7 +22830,7 @@ function SettingsDialog({
   notify,
   refreshData
 }) {
-  const [selectedIndex, setSelectedIndex] = useState12(0);
+  const [selectedIndex, setSelectedIndex] = useState13(0);
   const settings = context.store.getSettings();
   const update = (mutate) => {
     context.store.updateSettings((s) => {
@@ -21871,7 +23036,7 @@ function SettingsDialog({
       })
     }
   ];
-  useInput12((input, key) => {
+  useInput13((input, key) => {
     if (key.escape) {
       onClose();
       return;
@@ -21902,7 +23067,7 @@ function SettingsDialog({
     Math.max(0, items.length - visibleCount)
   );
   const visibleItems = items.slice(scrollStart, scrollStart + visibleCount);
-  return /* @__PURE__ */ jsx15(
+  return /* @__PURE__ */ jsx18(
     ModalWindow,
     {
       title: "COMICODE SETTINGS",
@@ -21910,13 +23075,13 @@ function SettingsDialog({
       width: 72,
       height: modalHeight,
       footer: ["\u2191/\u2193 select setting", "\u2190/\u2192 or enter change", "esc close"],
-      children: /* @__PURE__ */ jsxs13(Box14, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children: [
-        scrollStart > 0 ? /* @__PURE__ */ jsx15(Text14, { color: theme.faint, children: "  \u22EE" }) : null,
+      children: /* @__PURE__ */ jsxs16(Box17, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children: [
+        scrollStart > 0 ? /* @__PURE__ */ jsx18(Text17, { color: theme.faint, children: "  \u22EE" }) : null,
         visibleItems.map((item, offset) => {
           const index = scrollStart + offset;
           const isSelected = index === selectedIndex;
-          return /* @__PURE__ */ jsxs13(
-            Box14,
+          return /* @__PURE__ */ jsxs16(
+            Box17,
             {
               flexDirection: "column",
               marginBottom: 1,
@@ -21924,13 +23089,13 @@ function SettingsDialog({
               borderStyle: isSelected ? "single" : void 0,
               borderColor: isSelected ? theme.accent : void 0,
               children: [
-                /* @__PURE__ */ jsxs13(Box14, { justifyContent: "space-between", children: [
-                  /* @__PURE__ */ jsxs13(Text14, { bold: isSelected, color: isSelected ? theme.accent : theme.text, children: [
+                /* @__PURE__ */ jsxs16(Box17, { justifyContent: "space-between", children: [
+                  /* @__PURE__ */ jsxs16(Text17, { bold: isSelected, color: isSelected ? theme.accent : theme.text, children: [
                     isSelected ? `${glyph.active} ` : "  ",
                     item.label
                   ] }),
-                  /* @__PURE__ */ jsxs13(
-                    Text14,
+                  /* @__PURE__ */ jsxs16(
+                    Text17,
                     {
                       bold: true,
                       color: item.value.startsWith("ON") || item.value.startsWith("YES") ? theme.success : item.value.startsWith("OFF") || item.value.startsWith("NO") ? theme.warning : theme.accent,
@@ -21942,13 +23107,13 @@ function SettingsDialog({
                     }
                   )
                 ] }),
-                /* @__PURE__ */ jsx15(Box14, { paddingLeft: 2, children: /* @__PURE__ */ jsx15(Text14, { color: theme.faint, wrap: "truncate", children: item.description }) })
+                /* @__PURE__ */ jsx18(Box17, { paddingLeft: 2, children: /* @__PURE__ */ jsx18(Text17, { color: theme.faint, wrap: "truncate", children: item.description }) })
               ]
             },
             item.id
           );
         }),
-        scrollStart + visibleCount < items.length ? /* @__PURE__ */ jsx15(Text14, { color: theme.faint, children: "  \u22EE" }) : null
+        scrollStart + visibleCount < items.length ? /* @__PURE__ */ jsx18(Text17, { color: theme.faint, children: "  \u22EE" }) : null
       ] })
     }
   );
@@ -22211,14 +23376,14 @@ var init_manager = __esm({
 
 // src/tui/dialogs/shortcuts-dialog.tsx
 import "react";
-import { Box as Box15, Text as Text15, useInput as useInput13 } from "ink";
-import { jsx as jsx16 } from "react/jsx-runtime";
+import { Box as Box18, Text as Text18, useInput as useInput14 } from "ink";
+import { jsx as jsx19 } from "react/jsx-runtime";
 function ShortcutsDialog({ onClose }) {
-  useInput13((_input, key) => {
+  useInput14((_input, key) => {
     if (key.escape) onClose();
   });
   const lines = shortcutLines();
-  return /* @__PURE__ */ jsx16(
+  return /* @__PURE__ */ jsx19(
     ModalWindow,
     {
       title: "KEYBOARD SHORTCUTS",
@@ -22227,10 +23392,10 @@ function ShortcutsDialog({ onClose }) {
       height: 18,
       borderColor: theme.accent,
       footer: ["esc close"],
-      children: /* @__PURE__ */ jsx16(Box15, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children: lines.map((line, idx) => {
+      children: /* @__PURE__ */ jsx19(Box18, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children: lines.map((line, idx) => {
         const isCategory = line === "GLOBAL" || line === "WORKSPACE" || line === "DIALOGS";
-        return /* @__PURE__ */ jsx16(
-          Text15,
+        return /* @__PURE__ */ jsx19(
+          Text18,
           {
             color: isCategory ? theme.accent : theme.text,
             bold: isCategory,
@@ -22253,17 +23418,17 @@ var init_shortcuts_dialog = __esm({
 });
 
 // src/tui/dialogs/output-dialog.tsx
-import { useState as useState13 } from "react";
-import { Box as Box16, Text as Text16, useInput as useInput14 } from "ink";
-import { jsx as jsx17, jsxs as jsxs14 } from "react/jsx-runtime";
+import { useState as useState14 } from "react";
+import { Box as Box19, Text as Text19, useInput as useInput15 } from "ink";
+import { jsx as jsx20, jsxs as jsxs17 } from "react/jsx-runtime";
 function OutputDialog({ title, text, onClose }) {
   const { rows } = useLayout();
   const lines = text.replace(/\t/g, "  ").split("\n");
   const height = Math.min(rows - 4, 30);
   const inner = Math.max(4, height - 7);
   const maxOffset = Math.max(0, lines.length - inner);
-  const [offset, setOffset] = useState13(0);
-  useInput14((_input, key) => {
+  const [offset, setOffset] = useState14(0);
+  useInput15((_input, key) => {
     if (key.escape) {
       onClose();
       return;
@@ -22277,7 +23442,7 @@ function OutputDialog({ title, text, onClose }) {
   });
   const clamped = Math.min(offset, maxOffset);
   const visible = lines.slice(clamped, clamped + inner);
-  return /* @__PURE__ */ jsx17(
+  return /* @__PURE__ */ jsx20(
     ModalWindow,
     {
       title: title.toUpperCase(),
@@ -22285,9 +23450,9 @@ function OutputDialog({ title, text, onClose }) {
       width: 72,
       height,
       footer: ["\u2191/\u2193 scroll", "pgup/pgdn page", "esc close"],
-      children: /* @__PURE__ */ jsxs14(Box16, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children: [
-        visible.map((line, index) => /* @__PURE__ */ jsx17(Text16, { color: theme.text, wrap: "truncate", children: line || " " }, clamped + index)),
-        clamped > 0 || clamped + inner < lines.length ? /* @__PURE__ */ jsx17(Text16, { color: theme.faint, children: `  \u22EF ${clamped + 1}-${Math.min(clamped + inner, lines.length)} of ${lines.length}` }) : null
+      children: /* @__PURE__ */ jsxs17(Box19, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children: [
+        visible.map((line, index) => /* @__PURE__ */ jsx20(Text19, { color: theme.text, wrap: "truncate", children: line || " " }, clamped + index)),
+        clamped > 0 || clamped + inner < lines.length ? /* @__PURE__ */ jsx20(Text19, { color: theme.faint, children: `  \u22EF ${clamped + 1}-${Math.min(clamped + inner, lines.length)} of ${lines.length}` }) : null
       ] })
     }
   );
@@ -22302,19 +23467,19 @@ var init_output_dialog = __esm({
 });
 
 // src/tui/dialogs/effort-dialog.tsx
-import { useMemo as useMemo9, useState as useState14 } from "react";
-import { jsx as jsx18 } from "react/jsx-runtime";
+import { useMemo as useMemo10, useState as useState15 } from "react";
+import { jsx as jsx21 } from "react/jsx-runtime";
 function EffortDialog({
   context,
   onClose,
   notify,
   refreshData
 }) {
-  const [query, setQuery] = useState14("");
+  const [query, setQuery] = useState15("");
   const profileId = context.store.getSelectedProfileId();
   const profile = profileId ? context.store.getProfile(profileId) : null;
   const current = typeof profile?.config?.effort === "string" ? profile.config.effort : "default";
-  const items = useMemo9(
+  const items = useMemo10(
     () => EFFORTS.map((effort) => ({
       key: effort,
       label: effort,
@@ -22324,14 +23489,14 @@ function EffortDialog({
     })),
     [current]
   );
-  const filtered = useMemo9(() => {
+  const filtered = useMemo10(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return items;
     return items.filter(
       (item) => item.label.toLowerCase().includes(needle) || (item.detail ?? "").toLowerCase().includes(needle)
     );
   }, [items, query]);
-  const [selected, setSelected] = useState14(
+  const [selected, setSelected] = useState15(
     () => Math.max(
       0,
       items.findIndex((item) => item.key === current)
@@ -22350,7 +23515,7 @@ function EffortDialog({
     refreshData();
     onClose();
   };
-  return /* @__PURE__ */ jsx18(
+  return /* @__PURE__ */ jsx21(
     Selector,
     {
       title: "REASONING EFFORT",
@@ -22385,8 +23550,8 @@ var init_effort_dialog = __esm({
 });
 
 // src/tui/dialogs/mode-picker.tsx
-import { useMemo as useMemo10, useState as useState15 } from "react";
-import { jsx as jsx19 } from "react/jsx-runtime";
+import { useMemo as useMemo11, useState as useState16 } from "react";
+import { jsx as jsx22 } from "react/jsx-runtime";
 function ModePicker({
   current,
   onMode,
@@ -22394,8 +23559,8 @@ function ModePicker({
   notify,
   refreshData
 }) {
-  const [query, setQuery] = useState15("");
-  const items = useMemo10(
+  const [query, setQuery] = useState16("");
+  const items = useMemo11(
     () => AGENT_MODE_IDS.map((id) => {
       const spec = AGENT_MODES[id];
       return {
@@ -22407,14 +23572,14 @@ function ModePicker({
     }),
     [current]
   );
-  const filtered = useMemo10(() => {
+  const filtered = useMemo11(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return items;
     return items.filter(
       (item) => item.key.toLowerCase().includes(needle) || (item.detail ?? "").toLowerCase().includes(needle)
     );
   }, [items, query]);
-  const [selected, setSelected] = useState15(
+  const [selected, setSelected] = useState16(
     () => Math.max(0, AGENT_MODE_IDS.indexOf(current))
   );
   const apply = (key) => {
@@ -22430,7 +23595,7 @@ function ModePicker({
     refreshData();
     onClose();
   };
-  return /* @__PURE__ */ jsx19(
+  return /* @__PURE__ */ jsx22(
     Selector,
     {
       title: "AGENT / WORKFLOW",
@@ -22462,24 +23627,29 @@ __export(app_exports, {
   App: () => App,
   runTui: () => runTui
 });
-import { useCallback as useCallback4, useEffect as useEffect10, useMemo as useMemo11, useRef as useRef4, useState as useState16 } from "react";
-import { Box as Box17, Text as Text17, render, useApp, useInput as useInput15 } from "ink";
-import { jsx as jsx20, jsxs as jsxs15 } from "react/jsx-runtime";
+import { useCallback as useCallback4, useEffect as useEffect11, useMemo as useMemo12, useRef as useRef4, useState as useState17 } from "react";
+import { Box as Box20, Text as Text20, render, useApp, useInput as useInput16 } from "ink";
+import { jsx as jsx23, jsxs as jsxs18 } from "react/jsx-runtime";
 function App({ context }) {
   const { exit } = useApp();
   const { columns, rows } = useLayout();
   setActiveTheme(context.store.getSettings().ui.theme);
-  const [status, setStatus] = useState16("idle");
-  const [tick, setTick] = useState16(0);
-  const [toast, setToast] = useState16(null);
-  const [resumeRequest, setResumeRequest] = useState16(null);
-  const [dialogStack, setDialogStack] = useState16([]);
-  const [paletteQuery, setPaletteQuery] = useState16("");
-  const [paletteIndex, setPaletteIndex] = useState16(0);
-  const [branch, setBranch] = useState16(null);
-  const [agentMode, setAgentMode] = useState16("auto");
-  const [outputContent, setOutputContent] = useState16(null);
-  const [selectionMode, setSelectionMode] = useState16(false);
+  const [status, setStatus] = useState17("idle");
+  const [tick, setTick] = useState17(0);
+  const [toast, setToast] = useState17(null);
+  const [resumeRequest, setResumeRequest] = useState17(null);
+  const [dialogStack, setDialogStack] = useState17([]);
+  const [paletteQuery, setPaletteQuery] = useState17("");
+  const [paletteIndex, setPaletteIndex] = useState17(0);
+  const [branch, setBranch] = useState17(null);
+  const [agentMode, setAgentMode] = useState17("auto");
+  const [sidePanelVisible, setSidePanelVisible] = useState17(() => columns >= 112);
+  const [eventBus] = useState17(() => new EventBus());
+  useEffect11(() => {
+    setSidePanelVisible(columns >= 112);
+  }, [columns]);
+  const [outputContent, setOutputContent] = useState17(null);
+  const [selectionMode, setSelectionMode] = useState17(false);
   const quitArmedAt = useRef4(0);
   const activeDialog = dialogStack.length > 0 ? dialogStack[dialogStack.length - 1] : null;
   const isDialogOpen = activeDialog !== null;
@@ -22490,7 +23660,7 @@ function App({ context }) {
     setDialogStack((stack) => stack.slice(0, -1));
   }, []);
   const closeAllDialogs = useCallback4(() => setDialogStack([]), []);
-  const showOutput = useCallback4(
+  const _showOutput = useCallback4(
     (title, text) => {
       setOutputContent({ title, text });
       openDialog("output");
@@ -22506,22 +23676,22 @@ function App({ context }) {
     const next = !selectionMode;
     setSelectionMode(next);
     notify(
-      next ? "Select mode on \u2014 drag to highlight text and copy anywhere. Esc or ctrl+y returns to wheel scrolling." : "Wheel scrolling restored."
+      next ? "Select mode \u2014 shift+\u2191/\u2193 entries, shift+\u2190/\u2192 characters, a all, ctrl+c copy, esc clear." : "Wheel scrolling restored."
     );
   }, [notify, selectionMode]);
-  useEffect10(() => {
+  useEffect11(() => {
     if (!toast) return;
     const timer = setTimeout(() => setToast(null), 5e3);
     return () => clearTimeout(timer);
   }, [toast]);
-  useEffect10(() => enableAlternateScroll(), []);
-  useEffect10(() => {
+  useEffect11(() => enableAlternateScroll(), []);
+  useEffect11(() => {
     if (context.store.getSettings().ui.mouseScroll !== true) return;
     if (context.store.db.metaGet("ui.mouse_tip_v1")) return;
     context.store.db.metaSet("ui.mouse_tip_v1", "1");
     notify("Mouse scroll on \u2014 hold Shift+drag or press ctrl+y to highlight and copy text.");
   }, [context, notify]);
-  useEffect10(() => {
+  useEffect11(() => {
     let active = true;
     void gitBranch(context.cwd).then((b) => {
       if (active) setBranch(b);
@@ -22552,7 +23722,7 @@ function App({ context }) {
   const latestPaused = useCallback4(() => {
     return context.store.listTasks({ projectPath: context.cwd, limit: 100 }).find((task) => task.status === "paused" || task.status === "failed") ?? null;
   }, [context]);
-  const paletteActions = useMemo11(
+  const paletteActions = useMemo12(
     () => [
       {
         label: "Select an AI model",
@@ -22666,24 +23836,29 @@ function App({ context }) {
     ],
     [context, latestPaused, notify, openDialog, openTask, quit, refreshData, togglePaid]
   );
-  const filteredActions = useMemo11(() => {
+  const filteredActions = useMemo12(() => {
     const needle = paletteQuery.trim().toLowerCase();
     if (!needle) return paletteActions;
     return paletteActions.filter(
       (action) => action.label.toLowerCase().includes(needle) || action.detail.toLowerCase().includes(needle)
     );
   }, [paletteActions, paletteQuery]);
-  useEffect10(() => {
+  useEffect11(() => {
     setPaletteIndex((value) => Math.min(value, Math.max(0, filteredActions.length - 1)));
   }, [filteredActions.length]);
-  useInput15((input, key) => {
+  useInput16((input, key) => {
+    if (input === "\x1B[17~") {
+      setSidePanelVisible((visible) => !visible);
+      notify(sidePanelVisible ? "Side panel hidden." : "Side panel shown.");
+      return;
+    }
     const shortcutOverrides = context.store.getSettings().ui.shortcuts;
     if (shortcutMatches("select", input, key, shortcutOverrides)) {
       toggleSelectionMode();
       return;
     }
     if (isDialogOpen) return;
-    if (shortcutMatches("quit", input, key, shortcutOverrides)) {
+    if (!selectionMode && shortcutMatches("quit", input, key, shortcutOverrides)) {
       if (status === "running") {
         notify("Pause the run with esc before quitting.");
         return;
@@ -22731,7 +23906,7 @@ function App({ context }) {
       return;
     }
   });
-  useInput15(
+  useInput16(
     (_input, key) => {
       if (key.escape) {
         closeDialog();
@@ -22776,8 +23951,8 @@ function App({ context }) {
       Math.max(0, filteredActions.length - paletteRows)
     )
   );
-  return /* @__PURE__ */ jsxs15(Box17, { flexDirection: "column", height: rows, width: columns, overflow: "hidden", children: [
-    /* @__PURE__ */ jsx20(
+  return /* @__PURE__ */ jsxs18(Box20, { flexDirection: "column", height: rows, width: columns, overflow: "hidden", children: [
+    /* @__PURE__ */ jsx23(
       Header,
       {
         version: VERSION,
@@ -22792,33 +23967,24 @@ function App({ context }) {
         agentMode
       }
     ),
-    /* @__PURE__ */ jsx20(Box17, { flexDirection: "column", flexGrow: 1, overflow: "hidden", paddingX: 1, children: /* @__PURE__ */ jsx20(
-      Workspace,
+    /* @__PURE__ */ jsx23(Box20, { flexDirection: "column", flexGrow: 1, overflow: "hidden", paddingX: 1, children: /* @__PURE__ */ jsx23(
+      MissionControl,
       {
         context,
         active: !isDialogOpen,
-        dimmed: isDialogOpen,
-        onStatusChange: setStatus,
-        onNavigate: () => {
-        },
-        onCycleScreen: () => {
-        },
-        onOpenDialog: (d) => {
-          if (d) openDialog(d);
-          else closeDialog();
-        },
-        onQuit: quit,
-        resumeRequest,
-        notify,
-        refreshData,
+        eventBus,
         agentMode,
         onAgentMode: setAgentMode,
-        onShowOutput: showOutput,
+        resumeRequest,
         selectionMode,
-        onToggleSelection: toggleSelectionMode
+        onToggleSelection: toggleSelectionMode,
+        sidePanel: sidePanelVisible,
+        onStatusChange: setStatus,
+        notify,
+        refreshData
       }
     ) }),
-    activeDialog === "palette" ? /* @__PURE__ */ jsxs15(
+    activeDialog === "palette" ? /* @__PURE__ */ jsxs18(
       ModalWindow,
       {
         title: "COMMAND PALETTE",
@@ -22827,7 +23993,7 @@ function App({ context }) {
         height: Math.max(10, rows - 8),
         footer: ["type to filter", "\u2191/\u2193 choose", "enter run", "esc close"],
         children: [
-          /* @__PURE__ */ jsx20(Box17, { marginBottom: 1, flexShrink: 0, children: /* @__PURE__ */ jsx20(
+          /* @__PURE__ */ jsx23(Box20, { marginBottom: 1, flexShrink: 0, children: /* @__PURE__ */ jsx23(
             PromptInput,
             {
               value: paletteQuery,
@@ -22840,12 +24006,12 @@ function App({ context }) {
               placeholder: "Search commands, providers, models, tasks\u2026"
             }
           ) }),
-          /* @__PURE__ */ jsx20(Box17, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children: filteredActions.length === 0 ? /* @__PURE__ */ jsx20(Text17, { color: theme.muted, children: "No matching actions." }) : filteredActions.slice(paletteStart, paletteStart + paletteRows).map((action, offset) => {
+          /* @__PURE__ */ jsx23(Box20, { flexDirection: "column", flexGrow: 1, overflow: "hidden", children: filteredActions.length === 0 ? /* @__PURE__ */ jsx23(Text20, { color: theme.muted, children: "No matching actions." }) : filteredActions.slice(paletteStart, paletteStart + paletteRows).map((action, offset) => {
             const index = paletteStart + offset;
             const selected = index === paletteIndex;
-            return /* @__PURE__ */ jsxs15(Box17, { children: [
-              /* @__PURE__ */ jsxs15(
-                Text17,
+            return /* @__PURE__ */ jsxs18(Box20, { children: [
+              /* @__PURE__ */ jsxs18(
+                Text20,
                 {
                   color: selected ? theme.black : theme.text,
                   backgroundColor: selected ? theme.accent : void 0,
@@ -22857,13 +24023,13 @@ function App({ context }) {
                   ]
                 }
               ),
-              /* @__PURE__ */ jsx20(Text17, { color: selected ? theme.black : theme.faint, children: action.detail })
+              /* @__PURE__ */ jsx23(Text20, { color: selected ? theme.black : theme.faint, children: action.detail })
             ] }, action.label);
           }) })
         ]
       }
     ) : null,
-    activeDialog === "model-picker" ? /* @__PURE__ */ jsx20(
+    activeDialog === "model-picker" ? /* @__PURE__ */ jsx23(
       ModelPicker,
       {
         context,
@@ -22872,7 +24038,7 @@ function App({ context }) {
         refreshData
       }
     ) : null,
-    activeDialog === "connect" ? /* @__PURE__ */ jsx20(
+    activeDialog === "connect" ? /* @__PURE__ */ jsx23(
       ConnectDialog,
       {
         context,
@@ -22885,7 +24051,7 @@ function App({ context }) {
         refreshData
       }
     ) : null,
-    activeDialog === "providers" ? /* @__PURE__ */ jsx20(
+    activeDialog === "providers" ? /* @__PURE__ */ jsx23(
       ProvidersDialog,
       {
         context,
@@ -22896,7 +24062,7 @@ function App({ context }) {
         onRequestConnect: () => setDialogStack((stack) => [...stack.slice(0, -1), "connect"])
       }
     ) : null,
-    activeDialog === "tasks" ? /* @__PURE__ */ jsx20(
+    activeDialog === "tasks" ? /* @__PURE__ */ jsx23(
       TasksDialog,
       {
         context,
@@ -22910,7 +24076,7 @@ function App({ context }) {
         refreshData
       }
     ) : null,
-    activeDialog === "diff" ? /* @__PURE__ */ jsx20(
+    activeDialog === "diff" ? /* @__PURE__ */ jsx23(
       DiffDialog,
       {
         context,
@@ -22918,7 +24084,7 @@ function App({ context }) {
         onClose: closeDialog
       }
     ) : null,
-    activeDialog === "undo" ? /* @__PURE__ */ jsx20(
+    activeDialog === "undo" ? /* @__PURE__ */ jsx23(
       UndoDialog,
       {
         context,
@@ -22928,7 +24094,7 @@ function App({ context }) {
         refreshData
       }
     ) : null,
-    activeDialog === "status" ? /* @__PURE__ */ jsx20(
+    activeDialog === "status" ? /* @__PURE__ */ jsx23(
       StatusDialog,
       {
         context,
@@ -22936,7 +24102,7 @@ function App({ context }) {
         onClose: closeDialog
       }
     ) : null,
-    activeDialog === "usage" ? /* @__PURE__ */ jsx20(
+    activeDialog === "usage" ? /* @__PURE__ */ jsx23(
       UsageDialog,
       {
         context,
@@ -22945,7 +24111,7 @@ function App({ context }) {
         refreshData
       }
     ) : null,
-    activeDialog === "settings" ? /* @__PURE__ */ jsx20(
+    activeDialog === "settings" ? /* @__PURE__ */ jsx23(
       SettingsDialog,
       {
         context,
@@ -22954,9 +24120,9 @@ function App({ context }) {
         refreshData
       }
     ) : null,
-    activeDialog === "shortcuts" ? /* @__PURE__ */ jsx20(ShortcutsDialog, { onClose: closeDialog }) : null,
-    activeDialog === "output" && outputContent ? /* @__PURE__ */ jsx20(OutputDialog, { title: outputContent.title, text: outputContent.text, onClose: closeDialog }) : null,
-    activeDialog === "effort" ? /* @__PURE__ */ jsx20(
+    activeDialog === "shortcuts" ? /* @__PURE__ */ jsx23(ShortcutsDialog, { onClose: closeDialog }) : null,
+    activeDialog === "output" && outputContent ? /* @__PURE__ */ jsx23(OutputDialog, { title: outputContent.title, text: outputContent.text, onClose: closeDialog }) : null,
+    activeDialog === "effort" ? /* @__PURE__ */ jsx23(
       EffortDialog,
       {
         context,
@@ -22965,7 +24131,7 @@ function App({ context }) {
         refreshData
       }
     ) : null,
-    activeDialog === "mode-picker" ? /* @__PURE__ */ jsx20(
+    activeDialog === "mode-picker" ? /* @__PURE__ */ jsx23(
       ModePicker,
       {
         current: agentMode,
@@ -22975,7 +24141,7 @@ function App({ context }) {
         refreshData
       }
     ) : null,
-    /* @__PURE__ */ jsx20(Footer, { hints, toast, width: columns })
+    /* @__PURE__ */ jsx23(Footer, { hints, toast, width: columns })
   ] });
 }
 async function runTui() {
@@ -22987,7 +24153,7 @@ async function runTui() {
   process.stdout.write("\x1B]0;ComiCode\x07");
   let instance = null;
   try {
-    instance = render(/* @__PURE__ */ jsx20(App, { context }), {
+    instance = render(/* @__PURE__ */ jsx23(App, { context }), {
       // Render inline (not the alternate screen) so conhost/Command Prompt
       // and other terminals keep native text selection and scrollback.
       alternateScreen: false,
@@ -23014,7 +24180,8 @@ var init_app2 = __esm({
     init_service();
     init_repository();
     init_components();
-    init_workspace();
+    init_mission_control();
+    init_bus();
     init_providers_dialog();
     init_model_picker();
     init_connect_dialog();
